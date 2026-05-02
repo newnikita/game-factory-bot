@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Тетрис</title>
+    
+    <script src="/sdk.js"></script>
+    
+    <style>
+        /* === ВНЕШНИЙ ФОН И КАРТИНКА === */
+        html, body {
+            margin: 0; padding: 0; 
+            width: 100%; height: 100%; 
+            position: fixed; top: 0; left: 0; overflow: hidden;
+            background-color: {{BG_COLOR}};
+            background-image: url('{{BG_IMAGE}}');
+            background-size: cover;
+            background-position: center center;
+            background-repeat: no-repeat;
+            color: #ffffff;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: block;
+            
+            touch-action: none; overscroll-behavior: none;
+            user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        }
+
+        /* ЭКРАН ЗАГРУЗКИ */
+        #loadingScreen {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: #000000; z-index: 9999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #ffffff; font-size: 1.5rem; font-weight: bold; letter-spacing: 2px;
+        }
+        .loader {
+            border: 6px solid rgba(255, 255, 255, 0.2); border-top: 6px solid #ffffff;
+            border-radius: 50%; width: 60px; height: 60px;
+            animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        #app {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(1);
+            transform-origin: center center;
+            width: 100%; max-width: 800px;
+            display: flex; flex-direction: column; align-items: center;
+        }
+
+        h1 {
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.8); margin-bottom: 15px;
+            letter-spacing: 2px; font-weight: 600; color: #ffffff; position: relative; 
+            z-index: 2; text-align: center;
+        }
+
+        #btnMute, #btnPauseGame {
+            position: absolute; width: auto; z-index: 100;
+            background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 255, 255, 0.2); padding: 10px;
+            font-size: 0.9rem; color: #fff; border-radius: 6px; cursor: pointer;
+            backdrop-filter: blur(5px); transition: all 0.2s ease;
+        }
+        #btnMute { top: 10px; right: 10px; }
+        #btnPauseGame { top: 10px; left: 10px; }
+        #btnMute:hover, #btnPauseGame:hover { background: rgba(0, 0, 0, 0.8); }
+
+        .game-wrapper {
+            position: relative; 
+            background: rgba(0, 0, 0, 0.4); 
+            backdrop-filter: blur(8px);
+            padding: 20px; border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8); 
+            border: 2px solid rgba(255, 255, 255, 0.2); 
+            z-index: 1;
+        }
+
+        .main-content {
+            display: flex; gap: 20px; position: relative; z-index: 2; justify-content: center;
+        }
+
+        .canvas-section { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+
+        @media (max-width: 600px) {
+            h1 { font-size: 1.5rem; margin-bottom: 5px; }
+            .game-wrapper { padding: 12px; }
+
+            .main-content { flex-direction: column; align-items: center; gap: 10px; }
+            
+            .side-panel { 
+                flex-direction: row !important; 
+                width: 100% !important; 
+                justify-content: center; 
+                gap: 15px !important; 
+                order: -1; 
+            }
+            .score-box, .next-piece-box { 
+                padding: 10px !important; 
+                flex: 1;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
+            }
+            .score-box h2, .next-piece-box h2 { font-size: 0.95rem; margin-bottom: 5px; padding-bottom: 4px; }
+            .score-value { font-size: 1.8rem; }
+            #nextCanvas { width: 60px; height: 60px; }
+
+            .controls-hint { display: none; } 
+            
+            .mobile-controls { gap: 6px; margin-top: 5px; }
+            .ctrl-btn { height: 55px; font-size: 1.4rem; border-radius: 6px; }
+        }
+
+        canvas {
+            background-color: rgba(0, 0, 0, 0.6); 
+            border: 2px solid rgba(255, 255, 255, 0.3); 
+            border-radius: 6px; 
+            box-shadow: inset 0 0 25px rgba(0,0,0,0.8);
+            display: block; touch-action: none;
+        }
+
+        .side-panel { display: flex; flex-direction: column; gap: 20px; width: 140px; }
+        .score-box, .next-piece-box {
+            background: rgba(0, 0, 0, 0.6); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid rgba(255, 255, 255, 0.2); 
+        }
+        .score-box h2, .next-piece-box h2 { margin: 0 0 10px 0; font-size: 1.1rem; color: #ffffff; letter-spacing: 1px; border-bottom: 1px solid rgba(255, 255, 255, 0.2); padding-bottom: 8px; }
+        .score-value { font-size: 2.2rem; color: #ffffff; font-weight: bold; text-shadow: 0 0 10px rgba(255, 255, 255, 0.4); }
+        .controls-hint { margin-top: auto; font-size: 0.85rem; color: #cccccc; text-align: center; line-height: 1.8; }
+        kbd { background: rgba(0,0,0,0.8); padding: 3px 6px; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; color: #fff; font-size: 0.8rem; }
+
+        .mobile-controls { display: flex; justify-content: space-between; width: 100%; gap: 10px; margin-top: 5px; }
+        .ctrl-btn {
+            background: rgba(0, 0, 0, 0.6); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; height: 55px; flex: 1; font-size: 1.5rem;
+            cursor: pointer; touch-action: manipulation; display: flex; align-items: center; justify-content: center;
+            transition: background 0.1s;
+        }
+        .ctrl-btn.active { background: rgba(255, 255, 255, 0.3); }
+
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.7); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 10;
+            backdrop-filter: blur(5px); border-radius: 10px; opacity: 1; transition: opacity 0.3s ease;
+        }
+        .hidden { opacity: 0; pointer-events: none; }
+        .menu-box {
+            background: rgba(0, 0, 0, 0.8); border: 2px solid rgba(255, 255, 255, 0.3); border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+            padding: 30px; text-align: center; width: 85%; max-width: 320px;
+        }
+        .menu-title { color: #ffffff; font-size: 1.6rem; font-weight: bold; margin-bottom: 25px; letter-spacing: 1px; }
+        .magic-btn {
+            background: rgba(255, 255, 255, 0.1); color: #fff; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 6px;
+            padding: 12px 20px; margin: 8px 0; width: 100%; font-size: 1rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s ease;
+        }
+        .magic-btn:hover { background: rgba(255, 255, 255, 0.3); }
+        
+        .ad-btn { background: rgba(46, 213, 115, 0.5); }
+        .ad-btn:hover { background: rgba(46, 213, 115, 0.8); }
+        
+        .game-over-score { font-size: 1.1rem; margin-bottom: 20px; color: #ffffff; }
+        .game-over-score span.score-number { display: block; font-size: 2.2rem; font-weight: bold; color: #ffffff; margin-top: 10px; }
+    </style>
+</head>
+<body oncontextmenu="return false;">
+
+    <div id="loadingScreen">
+        <div class="loader"></div>
+        <div id="loadingText">Загрузка...</div>
+    </div>
+
+    <button id="btnPauseGame" onclick="forcePauseGame()">⏸ Пауза</button>
+    <button id="btnMute" onclick="toggleMute()">🔊 Звук ВКЛ</button>
+
+    <div id="app">
+        <h1 id="gameTitle">Тетрис</h1>
+
+        <div class="game-wrapper">
+
+            <div class="main-content">
+                
+                <div id="mainMenu" class="overlay">
+                    <div class="menu-box">
+                        <div class="menu-title" id="menuTitleMain">Готовы?</div>
+                        <button class="magic-btn" id="btnPlay" onclick="startGame()">Играть</button>
+                        <button class="magic-btn" id="btnLB" onclick="openLeaderboard()">🏆 Рекорды</button>
+                        <button class="magic-btn" id="btnLang" onclick="toggleLanguage()">Language: EN / RU</button>
+                    </div>
+                </div>
+
+                <div id="leaderboardScreen" class="overlay hidden">
+                    <div class="menu-box">
+                        <div class="menu-title" id="menuTitleLB">Рекорды</div>
+                        <div class="lb-tabs">
+                            <button class="magic-btn" id="btnTabLocal" onclick="showLocalLB()">Локальные</button>
+                            <button class="magic-btn" id="btnTabGlobal" onclick="showGlobalLB()">Глобальные</button>
+                        </div>
+                        <div id="lbContent"></div>
+                        <button class="magic-btn" id="btnLbBack" onclick="closeLeaderboard()">Назад</button>
+                    </div>
+                </div>
+
+                <div id="pauseMenu" class="overlay hidden">
+                    <div class="menu-box">
+                        <div class="menu-title" id="menuTitlePause">Пауза</div>
+                        <button class="magic-btn" id="btnResume" onclick="resumeGame()">Продолжить</button>
+                        <button class="magic-btn" id="btnRestart1" onclick="resetGame()">Начать заново</button>
+                        <button class="magic-btn" id="btnMenu1" onclick="goToMainMenu()">Главное меню</button>
+                    </div>
+                </div>
+
+                <div id="gameOverMenu" class="overlay hidden">
+                    <div class="menu-box">
+                        <div class="menu-title" id="menuTitleOver">Игра окончена</div>
+                        <div class="game-over-score">
+                            <span id="lblFinalScore">Итоговый счет:</span>
+                            <span class="score-number" id="finalScore">0</span>
+                        </div>
+                        <button class="magic-btn ad-btn" id="btnRevive" onclick="continueGameAd()">▶ Возродиться за рекламу</button>
+                        <button class="magic-btn" id="btnRestart2" onclick="resetGame()">Играть снова</button>
+                        <button class="magic-btn" id="btnMenu2" onclick="goToMainMenu()">Главное меню</button>
+                    </div>
+                </div>
+
+                <div class="canvas-section">
+                    <canvas id="gameCanvas" width="300" height="600"></canvas>
+                    
+                    <div class="mobile-controls">
+                        <button class="ctrl-btn" id="mBtnLeft">⬅️</button>
+                        <button class="ctrl-btn" id="mBtnRight">➡️</button>
+                        <button class="ctrl-btn" id="mBtnRotate">🔄</button>
+                        <button class="ctrl-btn" id="mBtnDown">⬇️</button>
+                    </div>
+                </div>
+                
+                <div class="side-panel">
+                    <div class="score-box">
+                        <h2 id="lblScore">Счет</h2>
+                        <div class="score-value" id="score">0</div>
+                    </div>
+                    
+                    <div class="next-piece-box">
+                        <h2 id="lblNext">Следующая</h2>
+                        <canvas id="nextCanvas" width="90" height="90"></canvas>
+                    </div>
+
+                    <div class="controls-hint">
+                        <kbd>←</kbd> <kbd>→</kbd> <span id="ctrlMove">Вправо/Влево</span><br><br>
+                        <kbd>↑</kbd> <span id="ctrlRotate">Поворот</span><br><br>
+                        <kbd>↓</kbd> <span id="ctrlSpeed">Ускорить</span><br><br>
+                        <kbd>Esc</kbd> <span id="ctrlPause">Пауза</span>
+                    </div>
+                </div>
+            </div> 
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.getElementById('gameCanvas').addEventListener('touchstart', e => {
+            if(e.cancelable) e.preventDefault();
+        }, {passive: false});
+
+        let ysdk = null;
+        let lb = null;
+        let currentLang = localStorage.getItem('magic_runes_lang') || 'ru'; 
+
+        function initSDK() {
+            if (typeof YaGames !== 'undefined') {
+                YaGames.init().then(_ysdk => {
+                    ysdk = _ysdk;
+                    if (ysdk.environment && ysdk.environment.i18n) {
+                        let envLang = ysdk.environment.i18n.lang;
+                        currentLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
+                    }
+                    applyTranslations(); 
+                    document.getElementById('loadingText').textContent = currentLang === 'ru' ? 'Загрузка...' : 'Loading...';
+                    
+                    Promise.all([
+                        loadAudioFile('music/menu.mp3', 'menu'),
+                        loadAudioFile('music/game.mp3', 'game')
+                    ]).then(() => {
+                        if (ysdk.features && ysdk.features.LoadingAPI) {
+                            ysdk.features.LoadingAPI.ready(); 
+                        }
+                        hideLoadingAndStart();
+                        showAd(); 
+                    });
+                    ysdk.getLeaderboards().then(_lb => lb = _lb).catch(e => console.warn('LB Error:', e));
+                }).catch(e => {
+                    console.warn('Yandex SDK Init Error:', e);
+                    fallbackInit();
+                });
+            } else {
+                loadAudioFile('music/menu.mp3', 'menu');
+                loadAudioFile('music/game.mp3', 'game');
+                fallbackInit();
+            }
+        }
+
+        function hideLoadingAndStart() {
+            const ls = document.getElementById('loadingScreen');
+            if (ls) ls.style.display = 'none';
+            resizeApp(); 
+            initField(); 
+            draw();
+            showMainMenuUI();
+        }
+
+        function fallbackInit() {
+            applyTranslations();
+            hideLoadingAndStart();
+        }
+        
+        function showAd(onCloseCallback) {
+            if (ysdk && ysdk.adv) {
+                try {
+                    pauseAllAudio();
+                    ysdk.adv.showFullscreenAdv({
+                        callbacks: {
+                            onClose: function() { resumeAudioContext(); if (onCloseCallback) onCloseCallback(); },
+                            onError: function() { resumeAudioContext(); if (onCloseCallback) onCloseCallback(); }
+                        }
+                    });
+                } catch(e) {
+                    resumeAudioContext();
+                    if (onCloseCallback) onCloseCallback();
+                }
+            } else {
+                if (onCloseCallback) onCloseCallback();
+            }
+        }
+
+        function showRewardedAd(onSuccessCallback) {
+            if (ysdk && ysdk.adv) {
+                try {
+                    pauseAllAudio();
+                    let isRewarded = false;
+                    ysdk.adv.showRewardedVideo({
+                        callbacks: {
+                            onOpen: () => {},
+                            onRewarded: () => { isRewarded = true; },
+                            onClose: () => { if (isRewarded && onSuccessCallback) onSuccessCallback(); resumeAudioContext(); },
+                            onError: (e) => { resumeAudioContext(); }
+                        }
+                    });
+                } catch (e) {
+                    resumeAudioContext();
+                }
+            } else {
+                if (onSuccessCallback) onSuccessCallback(); 
+            }
+        }
+
+        function saveScore(newScore) {
+            if (newScore <= 0) return;
+            
+            let localScores = JSON.parse(localStorage.getItem('magic_runes_scores') || '[]');
+            localScores.push(newScore);
+            localScores.sort((a,b) => b-a);
+            localScores = localScores.slice(0, 10);
+            localStorage.setItem('magic_runes_scores', JSON.stringify(localScores));
+
+            if (ysdk && lb) {
+                ysdk.isAvailableMethod('leaderboards.setLeaderboardScore').then(status => {
+                    if (status) lb.setLeaderboardScore('leaderboard', newScore).catch(e => console.warn('Global LB save error', e));
+                });
+            }
+        }
+
+        function openLeaderboard() { hideAllMenus(); document.getElementById('leaderboardScreen').classList.remove('hidden'); showLocalLB(); }
+        function closeLeaderboard() { document.getElementById('leaderboardScreen').classList.add('hidden'); showMainMenuUI(); }
+
+        function showLocalLB() {
+            document.getElementById('btnTabLocal').style.background = 'rgba(255, 255, 255, 0.3)';
+            document.getElementById('btnTabGlobal').style.background = 'rgba(255, 255, 255, 0.1)';
+            const content = document.getElementById('lbContent');
+            let localScores = JSON.parse(localStorage.getItem('magic_runes_scores') || '[]');
+            if (localScores.length === 0) {
+                content.innerHTML = `<div style="text-align:center; padding:20px; color:#cccccc;">${translations[currentLang].lbEmpty}</div>`; return;
+            }
+            content.innerHTML = '';
+            localScores.forEach((s, i) => { content.innerHTML += `<div class="lb-row"><span>#${i+1} ${translations[currentLang].lbYou}</span><span>${s}</span></div>`; });
+        }
+
+        function showGlobalLB() {
+            document.getElementById('btnTabLocal').style.background = 'rgba(255, 255, 255, 0.1)';
+            document.getElementById('btnTabGlobal').style.background = 'rgba(255, 255, 255, 0.3)';
+            const content = document.getElementById('lbContent');
+            content.innerHTML = `<div style="text-align:center; padding:20px; color:#cccccc;">${translations[currentLang].lbLoading}</div>`;
+            if (lb) {
+                lb.getLeaderboardEntries('leaderboard', { quantityTop: 10, includeUser: true })
+                  .then(res => {
+                      content.innerHTML = '';
+                      res.entries.forEach(entry => {
+                          let name = entry.player.publicName || translations[currentLang].lbAnon;
+                          let isUser = entry.rank === res.userRank;
+                          content.innerHTML += `<div class="lb-row ${isUser ? 'player' : ''}"><span>#${entry.rank} ${name}</span><span>${entry.score}</span></div>`;
+                      });
+                  }).catch(err => { content.innerHTML = `<div style="text-align:center; padding:20px; color:#ff4444;">${translations[currentLang].lbError}</div>`; });
+            } else {
+                content.innerHTML = `<div style="text-align:center; padding:20px; color:#ff4444;">${translations[currentLang].lbError}</div>`;
+            }
+        }
+
+        let audioCtx = null;
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AC();
+        } catch(e) {
+            console.warn("Web Audio API недоступен");
+        }
+        
+        let audioBuffers = { menu: null, game: null };
+        let activeSources = { menu: null, game: null };
+        let isMuted = false;
+        let currentTrack = 'menu';
+        let audioContextUnlocked = false; 
+
+        async function loadAudioFile(url, key) {
+            if (!audioCtx) return false;
+            try {
+                const response = await fetch(url);
+                const arrayBuffer = await response.arrayBuffer();
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                audioBuffers[key] = audioBuffer;
+                return true;
+            } catch (e) { 
+                return false;
+            }
+        }
+
+        function playMusic(key) {
+            if (isMuted || document.hidden || !audioCtx) return;
+            currentTrack = key;
+            try { if (activeSources.menu) activeSources.menu.stop(); } catch(e){}
+            activeSources.menu = null;
+            try { if (activeSources.game) activeSources.game.stop(); } catch(e){}
+            activeSources.game = null;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            if (audioBuffers[key]) {
+                try {
+                    let source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffers[key];
+                    source.loop = true;
+                    let gainNode = audioCtx.createGain();
+                    gainNode.gain.value = 0.5; 
+                    source.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    source.start(0);
+                    activeSources[key] = source;
+                } catch(e) {}
+            }
+        }
+
+        function pauseAllAudio() { if (audioCtx && audioCtx.state === 'running') audioCtx.suspend(); }
+        function resumeAudioContext() {
+            if (audioCtx && !isMuted && !document.hidden && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+                if (!activeSources[currentTrack] && audioBuffers[currentTrack]) playMusic(currentTrack);
+            }
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            if (isMuted) pauseAllAudio(); else resumeAudioContext();
+            applyTranslations(); 
+        }
+
+        function initAudioOnFirstTouch() {
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            if (!isMuted && !document.hidden && !activeSources.menu && !activeSources.game) {
+                playMusic(gameState === 'PLAYING' ? 'game' : 'menu');
+            }
+            audioContextUnlocked = true; 
+            ['click', 'touchstart', 'keydown'].forEach(evt => document.removeEventListener(evt, initAudioOnFirstTouch, true));
+        }
+        ['click', 'touchstart', 'keydown'].forEach(evt => document.addEventListener(evt, initAudioOnFirstTouch, true));
+
+        document.addEventListener("visibilitychange", function() {
+            if (document.hidden) pauseAllAudio(); else resumeAudioContext();
+        });
+
+        const translations = {
+            ru: {
+                gameTitle: "Тетрис", menuTitleMain: "Готовы?", btnPlay: "Играть",
+                btnLang: "Язык: РУССКИЙ", menuTitlePause: "Пауза", btnResume: "Продолжить",
+                btnRestart1: "Начать заново", btnMenu1: "Главное меню", menuTitleOver: "Игра окончена",
+                lblFinalScore: "Итоговый счет:", btnRestart2: "Играть снова", btnMenu2: "Главное меню",
+                lblScore: "Счет", lblNext: "Следующая", ctrlMove: "Вправо/Влево", ctrlRotate: "Поворот",
+                ctrlSpeed: "Ускорить", ctrlPause: "Пауза", btnPauseGame: "⏸ Пауза",
+                btnMute: "🔊 Звук ВКЛ", btnMuteOff: "🔇 Звук ВЫКЛ", btnRevive: "▶ Возродиться за рекламу",
+                btnLB: "🏆 Рекорды", menuTitleLB: "Рекорды", btnTabLocal: "Локальные", btnTabGlobal: "Глобальные",
+                btnLbBack: "Назад", lbEmpty: "Пока нет рекордов", lbYou: "Вы", lbLoading: "Загрузка...", 
+                lbAnon: "Аноним", lbError: "Глобальные рекорды недоступны"
+            },
+            en: {
+                gameTitle: "Tetris", menuTitleMain: "Ready?", btnPlay: "Play",
+                btnLang: "Language: ENGLISH", menuTitlePause: "Paused", btnResume: "Resume",
+                btnRestart1: "Restart", btnMenu1: "Main Menu", menuTitleOver: "Game Over",
+                lblFinalScore: "Final Score:", btnRestart2: "Play Again", btnMenu2: "Main Menu",
+                lblScore: "Score", lblNext: "Next", ctrlMove: "Left / Right", ctrlRotate: "Rotate",
+                ctrlSpeed: "Speed Up", ctrlPause: "Pause", btnPauseGame: "⏸ Pause",
+                btnMute: "🔊 Sound ON", btnMuteOff: "🔇 Sound OFF", btnRevive: "▶ Revive (Ad)",
+                btnLB: "🏆 Leaderboards", menuTitleLB: "Leaderboards", btnTabLocal: "Local", btnTabGlobal: "Global",
+                btnLbBack: "Back", lbEmpty: "No records yet", lbYou: "You", lbLoading: "Loading...", 
+                lbAnon: "Anonymous", lbError: "Global leaderboards unavailable"
+            }
+        };
+
+        function applyTranslations() {
+            const t = translations[currentLang];
+            for (const id in t) {
+                if (id === 'btnMute' || id === 'btnMuteOff' || id === 'btnPauseGame') continue; 
+                const element = document.getElementById(id);
+                if (element) element.textContent = t[id];
+            }
+            const muteBtn = document.getElementById('btnMute');
+            if (muteBtn) muteBtn.textContent = isMuted ? t.btnMuteOff : t.btnMute;
+            const pauseBtn = document.getElementById('btnPauseGame');
+            if (pauseBtn) pauseBtn.textContent = t.btnPauseGame;
+        }
+
+        function toggleLanguage() {
+            currentLang = currentLang === 'ru' ? 'en' : 'ru';
+            localStorage.setItem('magic_runes_lang', currentLang);
+            applyTranslations();
+        }
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const nextCanvas = document.getElementById('nextCanvas');
+        const nextCtx = nextCanvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const mainMenu = document.getElementById('mainMenu');
+        const pauseMenu = document.getElementById('pauseMenu');
+        const gameOverMenu = document.getElementById('gameOverMenu');
+        const leaderboardScreen = document.getElementById('leaderboardScreen');
+        const finalScoreElement = document.getElementById('finalScore');
+
+        const ROWS = 20; const COLS = 10; const BLOCK_SIZE = 30;
+        let playField = []; let score = 0; let animationId; let gameState = 'MENU'; let particles = [];
+        
+        /* === МУТАЦИЯ: ЦВЕТ БЛОКОВ === */
+        const themeColor = '{{BLOCK_COLOR}}';
+        const colors = [
+            null, 
+            { base: themeColor, glow: '#ffffff' }, 
+            { base: themeColor, glow: '#ffffff' },
+            { base: themeColor, glow: '#ffffff' }, 
+            { base: themeColor, glow: '#ffffff' },
+            { base: themeColor, glow: '#ffffff' }, 
+            { base: themeColor, glow: '#ffffff' }, 
+            { base: themeColor, glow: '#ffffff' } 
+        ];
+        
+        const tetrominoes = [
+            [], [[1, 1, 0], [0, 1, 1], [0, 0, 0]], [[0, 2, 2], [2, 2, 0], [0, 0, 0]],
+            [[0, 3, 0], [3, 3, 3], [0, 0, 0]], [[4, 4], [4, 4]], [[0, 0, 0, 0], [5, 5, 5, 5], [0, 0, 0, 0], [0, 0, 0, 0]],
+            [[6, 0, 0], [6, 6, 6], [0, 0, 0]], [[0, 0, 7], [7, 7, 7], [0, 0, 0]]
+        ];
+
+        class Particle {
+            constructor(x, y, colorTheme) {
+                this.x = x; this.y = y; this.vx = (Math.random() - 0.5) * 2.5; this.vy = (Math.random() - 0.5) * 2.5;
+                this.gravity = 0.08; this.size = Math.random() * 4 + 2; this.color = colorTheme.base; this.life = 1.0;
+                this.angle = Math.random() * Math.PI * 2; this.spin = (Math.random() - 0.5) * 0.05;
+            }
+            update() { this.vy += this.gravity; this.x += this.vx; this.y += this.vy; this.life -= 0.005; this.angle += this.spin; }
+            draw(ctx) { ctx.save(); ctx.globalAlpha = this.life; ctx.translate(this.x, this.y); ctx.rotate(this.angle); ctx.fillStyle = this.color; ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size); ctx.restore(); }
+        }
+
+        let currentPiece; let nextPiece; let dropCounter = 0; let dropInterval = 1000; let lastTime = 0;
+
+        function drawBlock(context, x, y, colorId, size = BLOCK_SIZE, isGhost = false) {
+            if (colorId === 0) return;
+            const theme = colors[colorId]; const px = x * size; const py = y * size;
+            if (isGhost) {
+                context.strokeStyle = theme.base; context.lineWidth = 2; context.setLineDash([2, 2]);
+                context.strokeRect(px + 2, py + 2, size - 4, size - 4); context.setLineDash([]);
+                context.fillStyle = theme.base; context.globalAlpha = 0.15; context.fillRect(px + 4, py + 4, size - 8, size - 8); context.globalAlpha = 1.0;
+            } else {
+                context.fillStyle = theme.base; context.fillRect(px, py, size, size);
+                const border = Math.max(4, size * 0.15); 
+                context.fillStyle = 'rgba(255, 255, 255, 0.4)'; context.beginPath(); context.moveTo(px, py); context.lineTo(px + size, py); context.lineTo(px + size - border, py + border); context.lineTo(px + border, py + border); context.fill();
+                context.fillStyle = 'rgba(255, 255, 255, 0.2)'; context.beginPath(); context.moveTo(px, py); context.lineTo(px + border, py + border); context.lineTo(px + border, py + size - border); context.lineTo(px, py + size); context.fill();
+                context.fillStyle = 'rgba(0, 0, 0, 0.6)'; context.beginPath(); context.moveTo(px, py + size); context.lineTo(px + border, py + size - border); context.lineTo(px + size - border, py + size - border); context.lineTo(px + size, py + size); context.fill();
+                context.fillStyle = 'rgba(0, 0, 0, 0.4)'; context.beginPath(); context.moveTo(px + size, py); context.lineTo(px + size - border, py + border); context.lineTo(px + size - border, py + size - border); context.lineTo(px + size, py + size); context.fill();
+                let grad = context.createLinearGradient(px + border, py + border, px + size - border, py + size - border);
+                grad.addColorStop(0, theme.glow); grad.addColorStop(1, theme.base);
+                context.fillStyle = grad; context.fillRect(px + border, py + border, size - border * 2, size - border * 2);
+                context.strokeStyle = 'rgba(255, 255, 255, 0.5)'; context.lineWidth = 1; context.beginPath(); context.moveTo(px + border, py + size - border); context.lineTo(px + border, py + border); context.lineTo(px + size - border, py + border); context.stroke();
+                context.strokeStyle = 'rgba(0, 0, 0, 0.8)'; context.lineWidth = 1; context.strokeRect(px, py, size, size);
+            }
+        }
+
+        function initField() { playField = Array.from({ length: ROWS }, () => Array(COLS).fill(0)); particles = []; }
+        function getRandomTetromino() {
+            const index = Math.floor(Math.random() * (tetrominoes.length - 1)) + 1;
+            return { matrix: tetrominoes[index], x: Math.floor(COLS / 2) - Math.floor(tetrominoes[index][0].length / 2), y: 0, colorId: index };
+        }
+        function drawNextPiece() {
+            nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+            if (!nextPiece) return;
+            const matrix = nextPiece.matrix; const size = 22; 
+            const offsetX = (nextCanvas.width - matrix[0].length * size) / 2; const offsetY = (nextCanvas.height - matrix.length * size) / 2;
+            nextCtx.save(); nextCtx.translate(offsetX, offsetY);
+            for (let row = 0; row < matrix.length; row++) for (let col = 0; col < matrix[row].length; col++) if (matrix[row][col]) drawBlock(nextCtx, col, row, nextPiece.colorId, size, false);
+            nextCtx.restore();
+        }
+
+        function isValidMove(matrix, cellX, cellY) {
+            for (let row = 0; row < matrix.length; row++) for (let col = 0; col < matrix[row].length; col++) if (matrix[row][col] && (cellX + col < 0 || cellX + col >= COLS || cellY + row >= ROWS || playField[cellY + row][cellX + col])) return false;
+            return true;
+        }
+
+        function getGhostY() { let ghostY = currentPiece.y; while (isValidMove(currentPiece.matrix, currentPiece.x, ghostY + 1)) ghostY++; return ghostY; }
+        function rotateMatrix(matrix) {
+            const N = matrix.length; const rotated = Array.from({ length: N }, () => Array(N).fill(0));
+            for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) rotated[c][N - 1 - r] = matrix[r][c]; return rotated;
+        }
+
+        function placePiece() {
+            for (let row = 0; row < currentPiece.matrix.length; row++) {
+                for (let col = 0; col < currentPiece.matrix[row].length; col++) {
+                    if (currentPiece.matrix[row][col]) {
+                        if (currentPiece.y + row <= 0) { triggerGameOver(); return; }
+                        playField[currentPiece.y + row][currentPiece.x + col] = currentPiece.colorId;
+                    }
+                }
+            }
+            let linesCleared = 0;
+            for (let row = ROWS - 1; row >= 0; row--) {
+                if (playField[row].every(cell => cell !== 0)) {
+                    for (let col = 0; col < COLS; col++) {
+                        const colorId = playField[row][col]; const centerX = col * BLOCK_SIZE + BLOCK_SIZE / 2; const centerY = row * BLOCK_SIZE + BLOCK_SIZE / 2;
+                        for(let i = 0; i < 8; i++) particles.push(new Particle(centerX, centerY, colors[colorId]));
+                    }
+                    playField.splice(row, 1); playField.unshift(Array(COLS).fill(0)); linesCleared++; row++; 
+                }
+            }
+            if (linesCleared > 0) { const points = [0, 100, 300, 500, 800]; score += points[linesCleared]; scoreElement.textContent = score; }
+            currentPiece = nextPiece; nextPiece = getRandomTetromino(); drawNextPiece();
+        }
+
+        function actionLeft() { if (gameState !== 'PLAYING') return; currentPiece.x--; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x++; }
+        function actionRight() { if (gameState !== 'PLAYING') return; currentPiece.x++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x--; }
+        function actionDown() {
+            if (gameState !== 'PLAYING') return;
+            currentPiece.y++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) { currentPiece.y--; placePiece(); } dropCounter = 0;
+        }
+        function actionRotate() {
+            if (gameState !== 'PLAYING') return;
+            const rotated = rotateMatrix(currentPiece.matrix); const prevX = currentPiece.x; let offset = 1;
+            while (!isValidMove(rotated, currentPiece.x, currentPiece.y)) {
+                currentPiece.x += offset; offset = -(offset + (offset > 0 ? 1 : -1)); 
+                if (offset > rotated[0].length) { currentPiece.x = prevX; return; }
+            }
+            currentPiece.matrix = rotated;
+        }
+
+        document.addEventListener('keydown', event => {
+            if (!audioContextUnlocked && !isMuted && gameState === 'MENU') { playMusic('menu'); audioContextUnlocked = true; }
+            if (event.key === 'Escape') { if (gameState === 'PLAYING') pauseGame(); else if (gameState === 'PAUSED') resumeGame(); return; }
+            if (gameState !== 'PLAYING') return;
+            if (event.key === 'ArrowLeft') actionLeft();
+            else if (event.key === 'ArrowRight') actionRight();
+            else if (event.key === 'ArrowDown') actionDown();
+            else if (event.key === 'ArrowUp') actionRotate();
+        });
+
+        function setupButton(id, actionFn, continuous = false) {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            let localTimeout = null;
+            let localInterval = null;
+            const startAction = (e) => {
+                if (e.cancelable) e.preventDefault(); 
+                btn.classList.add('active');
+                if (continuous) {
+                    actionFn();
+                    localTimeout = setTimeout(() => { localInterval = setInterval(actionFn, 60); }, 250);
+                } else {
+                    actionFn();
+                }
+            };
+            const stopAction = (e) => {
+                if (e.cancelable) e.preventDefault();
+                btn.classList.remove('active');
+                if (continuous) { clearTimeout(localTimeout); clearInterval(localInterval); }
+            };
+            btn.addEventListener('touchstart', startAction, {passive: false});
+            btn.addEventListener('touchend', stopAction, {passive: false});
+            btn.addEventListener('touchcancel', stopAction, {passive: false});
+            btn.addEventListener('mousedown', startAction);
+            btn.addEventListener('mouseup', stopAction);
+            btn.addEventListener('mouseleave', stopAction);
+        }
+
+        setupButton('mBtnLeft', actionLeft, true); 
+        setupButton('mBtnRight', actionRight, true);
+        setupButton('mBtnDown', actionDown, true); 
+        setupButton('mBtnRotate', actionRotate, false); 
+
+        function hideAllMenus() { 
+            mainMenu.classList.add('hidden'); pauseMenu.classList.add('hidden'); 
+            gameOverMenu.classList.add('hidden'); leaderboardScreen.classList.add('hidden');
+        }
+
+        function showMainMenuUI() {
+            gameState = 'MENU'; hideAllMenus(); mainMenu.classList.remove('hidden');
+            playMusic('menu');
+        }
+
+        function startGame() {
+            showAd(() => {
+                initField(); score = 0; scoreElement.textContent = score;
+                currentPiece = getRandomTetromino(); nextPiece = getRandomTetromino(); drawNextPiece();
+                gameState = 'PLAYING'; hideAllMenus(); playMusic('game');
+                lastTime = performance.now(); dropCounter = 0;
+                if (!animationId) update();
+                document.getElementById('btnRevive').style.display = 'inline-block';
+            });
+        }
+
+        function continueGameAd() {
+            showRewardedAd(() => {
+                let half = Math.floor(ROWS / 2);
+                playField.splice(ROWS - half, half);
+                for(let i = 0; i < half; i++) playField.unshift(Array(COLS).fill(0));
+                gameState = 'PLAYING'; hideAllMenus();
+                currentPiece = getRandomTetromino(); nextPiece = getRandomTetromino(); drawNextPiece();
+                playMusic('game'); lastTime = performance.now(); dropCounter = 0;
+                document.getElementById('btnRevive').style.display = 'none';
+            });
+        }
+
+        function forcePauseGame() { if (gameState === 'PLAYING') pauseGame(); }
+        function pauseGame() { if (gameState === 'PLAYING') { gameState = 'PAUSED'; pauseMenu.classList.remove('hidden'); pauseAllAudio(); } }
+        function resumeGame() { if (gameState === 'PAUSED') { gameState = 'PLAYING'; pauseMenu.classList.add('hidden'); resumeAudioContext(); lastTime = performance.now(); } }
+        function resetGame() { showAd(() => { startGame(); }); }
+        function goToMainMenu() { showAd(() => { showMainMenuUI(); }); }
+        
+        function triggerGameOver() { 
+            gameState = 'GAMEOVER'; finalScoreElement.textContent = score; 
+            hideAllMenus(); gameOverMenu.classList.remove('hidden'); 
+            playMusic('menu'); saveScore(score); 
+        }
+
+        function update(time = 0) {
+            animationId = requestAnimationFrame(update);
+            const deltaTime = time - lastTime; lastTime = time;
+            if (gameState === 'PLAYING') {
+                dropCounter += deltaTime; const currentDropInterval = Math.max(80, dropInterval - (score * 0.5));
+                if (dropCounter > currentDropInterval) {
+                    currentPiece.y++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) { currentPiece.y--; placePiece(); }
+                    dropCounter = 0;
+                }
+            }
+            particles.forEach(p => p.update()); particles = particles.filter(p => p.life > 0); draw();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'; ctx.lineWidth = 1;
+            for(let i = 0; i < COLS; i++) { ctx.beginPath(); ctx.moveTo(i * BLOCK_SIZE, 0); ctx.lineTo(i * BLOCK_SIZE, canvas.height); ctx.stroke(); }
+            for(let j = 0; j < ROWS; j++) { ctx.beginPath(); ctx.moveTo(0, j * BLOCK_SIZE); ctx.lineTo(canvas.width, j * BLOCK_SIZE); ctx.stroke(); }
+            for (let row = 0; row < ROWS; row++) for (let col = 0; col < COLS; col++) drawBlock(ctx, col, row, playField[row][col], BLOCK_SIZE, false);
+            if (gameState === 'PLAYING' && currentPiece) {
+                const ghostY = getGhostY();
+                for (let row = 0; row < currentPiece.matrix.length; row++) for (let col = 0; col < currentPiece.matrix[row].length; col++) if (currentPiece.matrix[row][col]) drawBlock(ctx, currentPiece.x + col, ghostY + row, currentPiece.colorId, BLOCK_SIZE, true);
+                for (let row = 0; row < currentPiece.matrix.length; row++) for (let col = 0; col < currentPiece.matrix[row].length; col++) if (currentPiece.matrix[row][col]) drawBlock(ctx, currentPiece.x + col, currentPiece.y + row, currentPiece.colorId, BLOCK_SIZE, false);
+            }
+            particles.forEach(p => p.draw(ctx));
+        }
+
+        function resizeApp() {
+            const app = document.getElementById('app'); 
+            app.style.transform = 'translate(-50%, -50%) scale(1)';
+            const appW = app.offsetWidth; const appH = app.offsetHeight;
+            const winW = window.innerWidth; const winH = window.innerHeight;
+            const padding = window.innerWidth <= 600 ? 10 : 40; 
+            const scaleW = winW / (appW + padding); const scaleH = winH / (appH + padding);
+            const scale = Math.min(scaleW, scaleH, 1);
+            app.style.transform = `translate(-50%, -50%) scale(${scale})`;
+        }
+
+        window.addEventListener('resize', resizeApp);
+        
+        initSDK(); 
+    </script>
+</body>
+</html>

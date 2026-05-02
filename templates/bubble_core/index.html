@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Бабл Шутер</title>
+    
+    <link rel="preload" href="/sdk.js" as="script">
+    <script src="/sdk.js"></script>
+
+    <style>
+        /* === ВНЕШНИЙ ФОН И КАРТИНКА === */
+        html, body {
+            margin: 0 !important; 
+            padding: 0 !important; 
+            width: 100% !important; 
+            height: 100% !important; 
+            max-width: 100%;
+            max-height: 100%;
+            overflow: hidden !important;
+            position: fixed !important; 
+            top: 0 !important; 
+            left: 0 !important;
+            background-color: {{BG_COLOR}} !important;
+            background-image: url('{{BG_IMAGE}}') !important;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
+            color: #fff; 
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none !important; 
+            overscroll-behavior: none !important; 
+            -webkit-overflow-scrolling: auto !important; 
+            user-select: none; 
+            -webkit-user-select: none; 
+            -webkit-touch-callout: none;
+            display: flex; 
+            justify-content: center; 
+            align-items: stretch;
+        }
+
+        .game-container {
+            position: relative; 
+            width: auto; 
+            height: 100%; 
+            display: flex; 
+            flex-direction: column;
+            align-items: center; 
+            justify-content: center; 
+            box-shadow: 0 0 50px rgba(0,0,0,0.9);
+            border-left: 2px solid {{BLOCK_COLOR}}; 
+            border-right: 2px solid {{BLOCK_COLOR}}; 
+            background: rgba(0, 0, 0, 0.5); 
+            backdrop-filter: blur(8px);
+            z-index: 1;
+        }
+        
+        canvas { background: transparent; border-bottom: 3px dashed {{BLOCK_COLOR}}; transition: transform 0.05s; max-width: 100%; max-height: 100%; object-fit: contain; touch-action: none; pointer-events: auto; }
+        
+        #topUI { position: fixed; top: 20px; left: 30px; pointer-events: none; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); z-index: 10000; }
+        #topUI h1 { margin: 0; font-size: 28px; color: #fff; }
+        #topUI h2 { margin: 5px 0 0 0; font-size: 22px; color: #fff; }
+        #topUI h3 { margin: 5px 0 0 0; font-size: 22px; color: #ffd700; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        
+        .goal-box { margin-top: 10px; background: rgba(0, 0, 0, 0.7); padding: 8px 15px; border-radius: 10px; border: 1px solid {{BLOCK_COLOR}}; display: inline-block; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+        .goal-box span { font-size: 18px; font-weight: bold; color: #fff; }
+
+        #controls { position: fixed; top: 20px; right: 30px; z-index: 10000; display: flex; gap: 15px; }
+        .btn-ui { padding: 12px 24px; font-size: 18px; color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; cursor: pointer; font-weight: bold; transition: 0.3s; touch-action: manipulation; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px); }
+        .btn-ui:hover { transform: translateY(-3px); background: rgba(255,255,255,0.2); }
+
+        #boosterUI { position: fixed; bottom: 20px; left: 30px; z-index: 10000; display: flex; gap: 15px; }
+        .booster-btn { background: rgba(0,0,0,0.8); border: 2px solid {{BLOCK_COLOR}}; border-radius: 12px; padding: 10px 15px; font-size: 22px; color: white; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: 0.3s; backdrop-filter: blur(5px); }
+        .booster-btn:hover { transform: translateY(-3px); background: {{BLOCK_COLOR}}; color: #000; }
+        .booster-btn span { font-weight: bold; font-size: 20px; }
+
+        #musicToggleBtn { position: fixed; bottom: 20px; right: 20px; z-index: 15000; width: 60px; height: 60px; background: rgba(0,0,0,0.7); border: 2px solid {{BLOCK_COLOR}}; border-radius: 50%; font-size: 28px; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; transition: 0.3s; backdrop-filter: blur(5px); }
+        #musicToggleBtn:hover { transform: scale(1.1); background: {{BLOCK_COLOR}}; color: #000; }
+
+        .overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(8px); flex-direction: column; justify-content: center; align-items: center; z-index: 20000; text-align: center; }
+        .menu-box { background: rgba(0, 0, 0, 0.85); padding: 40px 60px; border-radius: 25px; border: 3px solid {{BLOCK_COLOR}}; display: flex; flex-direction: column; align-items: center; box-shadow: 0 0 30px rgba(0,0,0,0.8); max-width: 900px; width: 90%; max-height: 90vh; overflow-y: auto; pointer-events: auto; }
+        .menu-box::-webkit-scrollbar { width: 8px; } .menu-box::-webkit-scrollbar-track { background: #111; border-radius: 10px;} .menu-box::-webkit-scrollbar-thumb { background: #555; border-radius: 10px;}
+        
+        .overlay button { padding: 15px 40px; font-size: 22px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3); color: #fff; border-radius: 30px; cursor: pointer; font-weight: bold; transition: 0.2s; margin: 10px; width: 100%; max-width: 300px; }
+        .overlay button:hover { background: rgba(255,255,255,0.3); transform: scale(1.05); }
+
+        .levels-container { display: flex; gap: 20px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        .level-card { background: rgba(0,0,0,0.6); border: 2px solid {{BLOCK_COLOR}}; border-radius: 15px; padding: 20px; width: 220px; cursor: pointer; transition: 0.3s; display: flex; flex-direction: column; justify-content: center; }
+        .level-card h2 { margin: 0 0 10px 0; color: #fff; font-size: 24px;}
+        .level-card p { margin: 0; color: #ccc; font-size: 15px; line-height: 1.4;}
+        .level-card:hover:not(.locked) { transform: translateY(-5px); background: {{BLOCK_COLOR}}; color: #000; }
+        .level-card:hover:not(.locked) h2, .level-card:hover:not(.locked) p { color: #000; }
+        .level-card.locked { border-color: #444; background: rgba(0,0,0,0.8); color: #666; cursor: not-allowed; } .level-card.locked h2 { color: #555; }
+
+        .shop-item { background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 15px; margin: 10px 0; display: flex; justify-content: space-between; align-items: center; width: 550px; max-width: 100%; border: 1px solid rgba(255, 255, 255, 0.2); gap: 15px;}
+        .shop-item span { font-size: 20px; font-weight: bold; }
+        .shop-item button { padding: 10px 20px; font-size: 18px; margin: 0; width: auto; }
+        .shop-item button:disabled { background: #333; color: #777; border-color: #444; cursor: not-allowed; }
+        
+        .lb-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; margin-bottom: 8px; background: rgba(255,255,255,0.05); border-radius: 10px; font-size: 20px; border: 1px solid rgba(255,255,255,0.1); width: 100%; box-sizing: border-box; }
+        .lb-row.player { border-color: {{BLOCK_COLOR}}; box-shadow: 0 0 10px rgba(0,0,0,0.5); font-weight: bold; }
+        .lb-rank { width: 40px; color: #aaa; font-weight: bold; }
+        .lb-name { flex-grow: 1; text-align: left; margin-left: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lb-score { font-weight: bold; }
+
+        @media (max-width: 800px) {
+            #topUI { top: 10px; left: 10px; } #topUI h1 { font-size: 18px; } #topUI h2, #topUI h3 { font-size: 16px; }
+            .goal-box { padding: 5px 10px; } .goal-box span { font-size: 14px; }
+            #controls { top: 10px; right: 10px; flex-direction: column; gap: 5px; } .btn-ui { padding: 8px 12px; font-size: 14px; }
+            .menu-box { padding: 20px; width: 95%; } .shop-item { flex-direction: column; text-align: center; }
+            #musicToggleBtn { width: 50px; height: 50px; font-size: 24px; bottom: 15px; right: 15px; }
+            #boosterUI { bottom: 15px; left: 15px; gap: 5px; } .booster-btn { padding: 8px; font-size: 16px;} .booster-btn span { font-size: 16px;}
+            .level-card { width: 140px; padding: 15px; } .level-card h2 { font-size: 18px; } .level-card p { font-size: 12px; }
+            #uiMainTitle { font-size: 38px !important; }
+            .lb-row { font-size: 16px; padding: 10px; }
+        }
+    </style>
+</head>
+<body oncontextmenu="return false;">
+
+<div id="loadingScreen" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 999999; display: flex; justify-content: center; align-items: center; color: #fff; font-size: 24px; font-weight: bold; text-transform: uppercase;">
+    <span id="loadingText"></span>
+</div>
+
+<script>
+    let initialLang = 'ru'; 
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        let envLang = urlParams.get('lang'); 
+        
+        if (envLang) {
+            initialLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
+        } else {
+            initialLang = localStorage.getItem('bs_lang') || 'ru';
+        }
+        localStorage.setItem('bs_lang', initialLang); 
+    } catch(e) {
+        console.warn("URL Parse Error", e);
+    }
+    
+    document.getElementById('loadingText').innerText = initialLang === 'ru' ? 'Загрузка...' : 'Loading...';
+</script>
+
+<div class="game-container"><canvas id="gameCanvas"></canvas></div>
+
+<button id="musicToggleBtn" onclick="toggleMusic(event)">🔊</button>
+
+<div id="boosterUI">
+    <button class="booster-btn" onclick="useFireball()">🔥 <span id="uiFireCount">0</span></button>
+    <button class="booster-btn" onclick="useLightning()">⚡ <span id="uiLightCount">0</span></button>
+</div>
+
+<div id="topUI">
+    <h1><span id="uiLvlStr">УРОВЕНЬ</span> <span id="uiLevelDisplay">1</span></h1>
+    <h2><span id="uiScoreStr">Очки:</span> <span id="score">0</span></h2>
+    <h3>🪙 <span id="uiCoinsStr">Монеты:</span> <span id="coins">0</span></h3>
+    <div class="goal-box"><span id="goalText">Цель: ...</span></div>
+</div>
+
+<div id="controls">
+    <button id="btnPause" class="btn-ui" onclick="togglePause()">⏸ Пауза (Esc)</button>
+    <button id="btnShop" class="btn-ui" onclick="openShop()">🛒 Магазин</button>
+</div>
+
+<div id="mainMenuScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiMainTitle" style="font-size: 50px; margin-bottom: 25px; text-align: center;">Бабл Шутер</h1>
+        <button id="btnPlay" onclick="showLevelSelection()">▶ ИГРАТЬ</button>
+        <button id="btnLeaderboard" onclick="showLeaderboard()">🏆 РЕКОРДЫ</button>
+        <button id="btnMoreGames" onclick="openDeveloperProfile()">🎮 ДРУГИЕ ИГРЫ</button>
+        <button id="btnLang" onclick="toggleLanguage()">🌐 EN</button>
+    </div>
+</div>
+
+<div id="leaderboardScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiLbTitle" style="margin-bottom: 20px;">ТАБЛИЦА РЕКОРДОВ</h1>
+        <div id="lbContainer" style="width: 100%; display: flex; flex-direction: column; align-items: center; margin-bottom: 20px;"></div>
+        <button id="btnLbBack" onclick="closeLeaderboard()">Назад</button>
+    </div>
+</div>
+
+<div id="levelSelectScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiWorldMap" style="margin-bottom: 10px;">КАРТА МИРА</h1>
+        <div class="levels-container" id="levelsGrid"></div>
+        <button id="btnBackLevels" onclick="backToMenuNoAd()" style="margin-top: 25px;">Назад</button>
+    </div>
+</div>
+
+<div id="victoryScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiVicTitle" style="font-size: 60px;">ПОБЕДА!</h1>
+        <p style="font-size: 24px;"><span id="uiVicScoreStr">Очки:</span> <b id="vicScore">0</b></p>
+        <p style="font-size: 24px; color: #ffd700;"><span id="uiVicCoinsStr">Заработано монет: +</span><b id="vicCoins">0</b></p>
+        <p id="uiVicRewards" style="font-size: 20px; color: #ff8c00;">Награды: +1 🔥 | +1 ⚡</p>
+        <button id="btnNextLevel" onclick="nextLevelAction()">▶ Следующий уровень</button>
+        <button id="btnVicMenu" onclick="exitToLevelSelect()">В меню уровней</button>
+    </div>
+</div>
+
+<div id="gameOverScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiGoTitle">ПОРАЖЕНИЕ</h1>
+        <p style="font-size: 24px;"><span id="uiGoScoreStr">Очки:</span> <b id="finalScore">0</b></p>
+        <p style="font-size: 24px; color: #ffd700;"><span id="uiGoCoinsStr">Заработано монет: +</span><b id="finalCoins">0</b></p>
+        <button id="btnContinueAd" onclick="continueGameAd()" style="width: 100%;">▶ Продолжить (Реклама)</button>
+        <div style="display: flex; gap: 10px; width: 100%; max-width: 300px; justify-content: center; flex-direction: column; align-items: center;">
+            <button id="btnRetry" onclick="retryLevelAction()">🔄 Повторить</button>
+            <button id="btnGoMenu" onclick="exitToLevelSelect()">В меню</button>
+        </div>
+    </div>
+</div>
+
+<div id="shopScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiShopTitle">МАГАЗИН</h1>
+        <p style="font-size: 24px;"><span id="uiShopCoinsStr">Монеты:</span> <b id="shopCoinsCount" style="color: #ffd700;">0</b></p>
+        <div class="shop-item">
+            <span id="uiShopFreeBoostersStr">🎁 Бустеры (1🔥 + 1⚡)</span>
+            <button id="btnWatchAdBoosters" onclick="watchAdForBoosters()">▶ Бесплатно</button>
+        </div>
+        <div class="shop-item"><span id="uiShopFireStr">🔥 Огненный шар (шт.)</span><button id="btnBuyFire" onclick="buyFire()"></button></div>
+        <div class="shop-item"><span id="uiShopLightStr">⚡ Цепная молния (шт.)</span><button id="btnBuyLight" onclick="buyLight()"></button></div>
+        <div class="shop-item">
+            <span><span id="uiShopAimStr">🔭 Длинный прицел</span> <span style="color:#aaa;">(<span id="uiLvl1Str">Ур.</span> <span id="lvlAim">0</span>)</span></span>
+            <button id="btnAim" onclick="buyAim()"></button>
+        </div>
+        <div class="shop-item">
+            <span><span id="uiShopDropStr">⏳ Медленный потолок</span> <span style="color:#aaa;">(<span id="uiLvl2Str">Ур.</span> <span id="lvlDrop">0</span>)</span></span>
+            <button id="btnDrop" onclick="buyDrop()"></button>
+        </div>
+        <button id="btnShopBack" onclick="closeShop()" style="margin-top: 20px;">Назад</button>
+    </div>
+</div>
+
+<div id="pauseScreen" class="overlay">
+    <div class="menu-box">
+        <h1 id="uiPauseTitle">ПАУЗА</h1>
+        <button id="btnResume" onclick="togglePause()">▶ Продолжить</button>
+        <button id="btnPauseShop" onclick="openShop()">🛒 Магазин</button>
+        <button id="btnPauseMenu" onclick="exitToMenuAction()">Выйти в меню</button>
+    </div>
+</div>
+
+<script>
+document.addEventListener('contextmenu', event => event.preventDefault());
+
+window.addEventListener('scroll', function() {
+    window.scrollTo(0, 0); 
+}, { passive: false });
+
+document.addEventListener('touchmove', function(e) { 
+    if (!e.target.closest('.menu-box') && !e.target.closest('button')) { 
+        e.preventDefault(); 
+    } 
+}, { passive: false, capture: true });
+
+document.addEventListener('touchstart', function(e) {
+    if (!e.target.closest('.menu-box') && !e.target.closest('button')) {
+        e.preventDefault();
+    }
+}, { passive: false });
+
+let ysdk = null;
+let currentLang = localStorage.getItem('bs_lang') || 'ru'; 
+let isAdShowing = false;
+let developerURL = null; 
+
+function removeLoadingScreen() {
+    document.getElementById('loadingScreen').style.display = 'none';
+    showMainMenu();
+    if (ysdk && ysdk.features && ysdk.features.LoadingAPI) {
+        ysdk.features.LoadingAPI.ready();
+    }
+}
+
+function initSDK() {
+    if (typeof YaGames !== 'undefined') {
+        YaGames.init().then(_ysdk => {
+            ysdk = _ysdk;
+            if (ysdk.environment && ysdk.environment.i18n) {
+                let envLang = ysdk.environment.i18n.lang;
+                currentLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
+                localStorage.setItem('bs_lang', currentLang); 
+            }
+            if (ysdk.features && ysdk.features.GamesAPI) {
+                ysdk.features.GamesAPI.getAllGames().then(data => {
+                    if (data && data.developerURL) developerURL = data.developerURL; 
+                }).catch(e => console.warn("GamesAPI error:", e));
+            }
+            applyLang(); 
+            requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
+        }).catch(e => { 
+            applyLang();
+            requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
+        });
+    } else {
+        applyLang();
+        requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
+    }
+}
+
+let isTransitioning = false;
+
+function transitionWithAd(callback) {
+    if (isTransitioning) return; 
+    if (ysdk && ysdk.adv) {
+        isTransitioning = true;
+        ysdk.adv.showFullscreenAdv({
+            callbacks: {
+                onOpen: function() { isAdShowing = true; pauseAllAudio(); },
+                onClose: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); },
+                onError: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); },
+                onOffline: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); }
+            }
+        });
+    } else {
+        if (callback) callback();
+    }
+}
+
+function showRewardedAd(onSuccessCallback) {
+    if (ysdk && ysdk.adv) {
+        let isRewarded = false;
+        ysdk.adv.showRewardedVideo({
+            callbacks: {
+                onOpen: () => { isAdShowing = true; pauseAllAudio(); },
+                onRewarded: () => { isRewarded = true; },
+                onClose: () => { isAdShowing = false; if (isRewarded && onSuccessCallback) onSuccessCallback(); resumeAudioContext(); },
+                onError: (e) => { isAdShowing = false; resumeAudioContext(); }
+            }
+        });
+    } else { 
+        if (onSuccessCallback) onSuccessCallback(); 
+    }
+}
+
+function nextLevelAction() { transitionWithAd(() => { if (currentLevel !== 'endless' && currentLevel < 9) startLevel(currentLevel + 1); else showLevelSelection(); }); }
+function retryLevelAction() { transitionWithAd(() => { startLevel(currentLevel); }); }
+function exitToLevelSelect() { transitionWithAd(() => { showLevelSelection(); }); }
+function exitToMenuAction() { transitionWithAd(() => { showMainMenu(); }); }
+function backToMenuNoAd() { showMainMenu(); } 
+
+const AudioContext = window.AudioContext || window.webkitAudioContext;
+let audioCtx = new AudioContext();
+let buffers = { menu: null, game: null }; let activeSources = { menu: null, game: null }; let isMusicMuted = false; let currentTrack = 'menu';
+
+async function loadAudioFile(url, key) {
+    try { const response = await fetch(url); const arrayBuffer = await response.arrayBuffer(); const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer); buffers[key] = audioBuffer; } catch (e) {}
+}
+
+loadAudioFile('music/music1.mp3', 'menu'); loadAudioFile('music/music2.mp3', 'game');
+
+function playAudioTrack(key) {
+    currentTrack = key; if (isMusicMuted || document.hidden || isAdShowing) return;
+    if (activeSources.menu) { activeSources.menu.stop(); activeSources.menu = null; }
+    if (activeSources.game) { activeSources.game.stop(); activeSources.game = null; }
+    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+    if (buffers[key]) {
+        let source = audioCtx.createBufferSource(); source.buffer = buffers[key]; source.loop = true;
+        let gainNode = audioCtx.createGain(); gainNode.gain.value = key === 'menu' ? 0.5 : 0.4;
+        source.connect(gainNode); gainNode.connect(audioCtx.destination); source.start(0); activeSources[key] = source;
+    }
+}
+
+function pauseAllAudio() { if (audioCtx.state === 'running') { audioCtx.suspend(); } }
+function resumeAudioContext() { if (!isMusicMuted && !document.hidden && !isAdShowing && audioCtx.state === 'suspended') { audioCtx.resume(); if (!activeSources[currentTrack] && buffers[currentTrack]) { playAudioTrack(currentTrack); } } }
+function playMenuMusic() { playAudioTrack('menu'); } function playGameMusic() { playAudioTrack('game'); }
+
+function toggleMusic(e) {
+    if (e) e.stopPropagation(); isMusicMuted = !isMusicMuted; const btn = document.getElementById('musicToggleBtn');
+    if (isMusicMuted) { btn.innerText = '🔇'; pauseAllAudio(); } else { btn.innerText = '🔊'; resumeAudioContext(); }
+}
+
+function initAudioOnFirstTouch() {
+    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
+    if (!isMusicMuted && !document.hidden && !isAdShowing && !activeSources.menu && !activeSources.game) { if (inMainMenu || inLevelSelect || isVictory || isGameOver) playMenuMusic(); else playGameMusic(); }
+    ['click', 'touchstart', 'keydown'].forEach(evt => document.removeEventListener(evt, initAudioOnFirstTouch, true));
+}
+['click', 'touchstart', 'keydown'].forEach(evt => document.addEventListener(evt, initAudioOnFirstTouch, true));
+document.addEventListener("visibilitychange", function() { if (document.hidden) { pauseAllAudio(); } else { resumeAudioContext(); } });
+
+function openDeveloperProfile() { if (developerURL) window.open(developerURL, '_blank'); }
+
+const i18n = {
+    ru: {
+        mainTitle: "Бабл Шутер",
+        level: "УРОВЕНЬ", score: "Очки:", coins: "Монеты:", goal: "Цель:",
+        pauseBtn: "⏸ Пауза (Esc)", shopBtn: "🛒 Магазин", playBtn: "▶ ИГРАТЬ",
+        lbBtn: "🏆 РЕКОРДЫ", lbTitle: "ТАБЛИЦА РЕКОРДОВ", you: "Вы (Рекорд)",
+        moreGamesBtn: "🎮 ДРУГИЕ ИГРЫ", 
+        worldMap: "КАРТА МИРА", backBtn: "Назад", locked: "🔒 Заблокировано",
+        victory: "ПОБЕДА!", earned: "Заработано монет: +", rewards: "Награды: +1 🔥 | +1 ⚡",
+        nextLevelBtn: "▶ Следующий уровень", levelMenuBtn: "В меню уровней",
+        gameOver: "ПОРАЖЕНИЕ", retryBtn: "🔄 Повторить", mainMenuBtn: "В меню",
+        continueAdBtn: "▶ Продолжить (Реклама)", shopTitle: "МАГАЗИН", fireballItem: "🔥 Огненный шар (шт.)", lightItem: "⚡ Цепная молния (шт.)",
+        aimItem: "🔭 Длинный прицел", dropItem: "⏳ Медленный потолок", freeBoosters: "🎁 1🔥 и 1⚡ бесплатно", watchBtn: "▶ За рекламу",
+        lvl: "Ур.", buy: "Купить:", max: "МАКС", pauseTitle: "ПАУЗА", resumeBtn: "▶ Продолжить", next: "След:",
+        endless: "БЕСКОНЕЧНЫЙ", endlessDesc: "🌌 Играй, пока не проиграешь. Поставь рекорд!", bestScore: "Рекорд:",
+        lvlDesc: [
+            { t: "УРОВЕНЬ 1", d: "🎯 Сделай 10 успешных комбо." }, { t: "УРОВЕНЬ 2", d: "💣 Взорви 5 бомб. Шанс 15%." },
+            { t: "УРОВЕНЬ 3", d: "🔥 Набери 1000 очков." }, { t: "УРОВЕНЬ 4", d: "🎯 Сделай 20 комбо." },
+            { t: "УРОВЕНЬ 5", d: "💰 Набери 1500 очков." }, { t: "УРОВЕНЬ 6", d: "💣 Взорви 10 бомб. Шанс 10%." },
+            { t: "УРОВЕНЬ 7", d: "🔥 Набери 2500 очков." }, { t: "УРОВЕНЬ 8", d: "🎯 Сделай 30 комбо. Долгая осада." },
+            { t: "УРОВЕНЬ 9", d: "👑 Набери 5000 очков." }
+        ],
+        goalCombo: "🎯 Цель: Комбо", goalBombs: "💣 Цель: Бомбы", goalScore: "Цель: Очки", goalScoreF: "🔥 Цель: Очки", goalScoreM: "💰 Цель: Очки", goalScoreC: "👑 Цель: Очки", langBtn: "🌐 EN"
+    },
+    en: {
+        mainTitle: "Bubble Shooter",
+        level: "LEVEL", score: "Score:", coins: "Coins:", goal: "Goal:",
+        pauseBtn: "⏸ Pause (Esc)", shopBtn: "🛒 Shop", playBtn: "▶ PLAY",
+        lbBtn: "🏆 LEADERBOARD", lbTitle: "HIGH SCORES", you: "You (Best)",
+        moreGamesBtn: "🎮 MORE GAMES", 
+        worldMap: "WORLD MAP", backBtn: "Back", locked: "🔒 Locked",
+        victory: "VICTORY!", earned: "Coins earned: +", rewards: "Rewards: +1 🔥 | +1 ⚡",
+        nextLevelBtn: "▶ Next Level", levelMenuBtn: "Level Menu",
+        gameOver: "GAME OVER", retryBtn: "🔄 Retry", mainMenuBtn: "Main Menu",
+        continueAdBtn: "▶ Continue (Ad)", shopTitle: "SHOP", fireballItem: "🔥 Fireball (pcs)", lightItem: "⚡ Chain Lightning (pcs)",
+        aimItem: "🔭 Long Aim", dropItem: "⏳ Slow Ceiling", freeBoosters: "🎁 1🔥 & 1⚡ for free", watchBtn: "▶ Watch Ad",
+        lvl: "Lvl.", buy: "Buy:", max: "MAX", pauseTitle: "PAUSE", resumeBtn: "▶ Resume", next: "Next:",
+        endless: "ENDLESS", endlessDesc: "🌌 Play until you lose. Set a high score!", bestScore: "Best:",
+        lvlDesc: [
+            { t: "LEVEL 1", d: "🎯 Make 10 successful combos." }, { t: "LEVEL 2", d: "💣 Detonate 5 bombs. Chance 15%." },
+            { t: "LEVEL 3", d: "🔥 Score 1000 points." }, { t: "LEVEL 4", d: "🎯 Make 20 combos." },
+            { t: "LEVEL 5", d: "💰 Score 1500 points." }, { t: "LEVEL 6", d: "💣 Detonate 10 bombs. Chance 10%." },
+            { t: "LEVEL 7", d: "🔥 Score 2500 points." }, { t: "LEVEL 8", d: "🎯 Make 30 combos. Long siege." },
+            { t: "LEVEL 9", d: "👑 Score 5000 points." }
+        ],
+        goalCombo: "🎯 Goal: Combos", goalBombs: "💣 Goal: Bombs", goalScore: "Goal: Score", goalScoreF: "🔥 Goal: Score", goalScoreM: "💰 Goal: Score", goalScoreC: "👑 Goal: Score", langBtn: "🌐 RU"
+    }
+};
+
+function toggleLanguage() { currentLang = currentLang === 'ru' ? 'en' : 'ru'; localStorage.setItem('bs_lang', currentLang); applyLang(); }
+
+function applyLang() {
+    let l = i18n[currentLang];
+    document.getElementById('uiMainTitle').innerText = l.mainTitle; document.title = l.mainTitle; 
+    document.getElementById('uiLvlStr').innerText = l.level; document.getElementById('uiScoreStr').innerText = l.score;
+    document.getElementById('uiCoinsStr').innerText = l.coins; document.getElementById('btnPause').innerText = l.pauseBtn;
+    document.getElementById('btnShop').innerText = l.shopBtn; document.getElementById('btnPlay').innerText = l.playBtn;
+    document.getElementById('btnLeaderboard').innerText = l.lbBtn; document.getElementById('uiLbTitle').innerText = l.lbTitle;
+    document.getElementById('btnMoreGames').innerText = l.moreGamesBtn; 
+    document.getElementById('uiWorldMap').innerText = l.worldMap; document.getElementById('btnBackLevels').innerText = l.backBtn;
+    document.getElementById('btnLbBack').innerText = l.backBtn; document.getElementById('uiVicTitle').innerText = l.victory; 
+    document.getElementById('uiVicScoreStr').innerText = l.score; document.getElementById('uiVicCoinsStr').innerText = l.earned; 
+    document.getElementById('uiVicRewards').innerText = l.rewards; document.getElementById('btnNextLevel').innerText = l.nextLevelBtn; 
+    document.getElementById('btnVicMenu').innerText = l.levelMenuBtn; document.getElementById('uiGoTitle').innerText = l.gameOver; 
+    document.getElementById('uiGoScoreStr').innerText = l.score; document.getElementById('uiGoCoinsStr').innerText = l.earned; 
+    document.getElementById('btnRetry').innerText = l.retryBtn; document.getElementById('btnContinueAd').innerText = l.continueAdBtn;
+    document.getElementById('btnGoMenu').innerText = l.mainMenuBtn; document.getElementById('uiShopTitle').innerText = l.shopTitle;
+    document.getElementById('uiShopCoinsStr').innerText = l.coins; document.getElementById('uiShopFireStr').innerText = l.fireballItem;
+    document.getElementById('uiShopLightStr').innerText = l.lightItem; document.getElementById('uiShopAimStr').innerText = l.aimItem;
+    document.getElementById('uiShopDropStr').innerText = l.dropItem; document.getElementById('btnShopBack').innerText = l.backBtn;
+    document.getElementById('uiShopFreeBoostersStr').innerText = l.freeBoosters; document.getElementById('btnWatchAdBoosters').innerText = l.watchBtn;
+    document.getElementById('uiPauseTitle').innerText = l.pauseTitle; document.getElementById('btnResume').innerText = l.resumeBtn;
+    document.getElementById('btnPauseShop').innerText = l.shopBtn; document.getElementById('btnPauseMenu').innerText = l.mainMenuBtn; 
+    document.getElementById('btnLang').innerText = l.langBtn; document.getElementById('uiLvl1Str').innerText = l.lvl; document.getElementById('uiLvl2Str').innerText = l.lvl;
+    
+    if(document.getElementById('loadingText')) {
+        document.getElementById('loadingText').innerText = currentLang === 'ru' ? 'Загрузка...' : 'Loading...';
+    }
+    updateUI(); updateShopUI(); if (inLevelSelect) showLevelSelection();
+}
+
+function getBombChance(lvl) { if (lvl === 'endless') return 0.08; switch(lvl) { case 2: return 0.15; case 3: return 0.05; case 4: return 0.00; case 5: return 0.05; case 6: return 0.10; case 7: return 0.05; case 8: return 0.02; case 9: return 0.10; default: return 0; } }
+
+const CONFIG = { cols: 13, rows: 25, radius: 18, speed: 22, colors: ['#ff4757', '#2ed573', '#ffa502', '#ffffff', '#a55eea', '#1e90ff'] };
+const DIAMETER = CONFIG.radius * 2; const ROW_HEIGHT = DIAMETER * Math.sin(Math.PI / 3); const CANVAS_WIDTH = CONFIG.cols * DIAMETER + CONFIG.radius; const CANVAS_HEIGHT = 860; const COLLISION_DIST = DIAMETER - 2; const CONNECT_DIST = DIAMETER + 6; const CANNON_X = CANVAS_WIDTH / 2; const CANNON_Y = CANVAS_HEIGHT - 35; const BARREL_LENGTH = 50; 
+const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d'); canvas.width = CANVAS_WIDTH; canvas.height = CANVAS_HEIGHT;
+
+let grid = []; let particles = []; let bullet = null; let nextBulletType = 'normal'; let nextBubbleColor = null; let angle = -Math.PI / 2; let score = 0; let globalDropOffset = 0; let gridOffsetPhase = 0; let predictedCell = null; let inMainMenu = true; let isPaused = false; let inShop = false; let isGameOver = false; let isVictory = false; let inLevelSelect = false; let isReloading = false; let recoilOffset = 0; 
+let currentLevel = 1; let unlockedLevel = 1; let combosMade = 0; let bombsBlown = 0; let sessionCoins = 0; let coins = 0; let upgradeAim = 0; let upgradeDrop = 0; let fireballs = 0; let lightnings = 0; let bestEndlessScore = 0;
+
+try { coins = parseInt(localStorage.getItem('bs_coins')) || 0; upgradeAim = parseInt(localStorage.getItem('bs_aim')) || 0; upgradeDrop = parseInt(localStorage.getItem('bs_drop')) || 0; unlockedLevel = parseInt(localStorage.getItem('bs_unlock')) || 1; fireballs = parseInt(localStorage.getItem('bs_fire')) || 0; lightnings = parseInt(localStorage.getItem('bs_light')) || 0; bestEndlessScore = parseInt(localStorage.getItem('bs_best_endless')) || 0; } catch (e) {}
+function saveProgress() { try { localStorage.setItem('bs_coins', coins); localStorage.setItem('bs_aim', upgradeAim); localStorage.setItem('bs_drop', upgradeDrop); localStorage.setItem('bs_unlock', unlockedLevel); localStorage.setItem('bs_fire', fireballs); localStorage.setItem('bs_light', lightnings); localStorage.setItem('bs_best_endless', bestEndlessScore); } catch (e) {} updateUI(); }
+
+function getAimLength() { return 200 + upgradeAim * 150; } function getDropPixels() { return Math.max(0.5, 3 - upgradeDrop * 0.5); }
+function hideAllOverlays() { document.querySelectorAll('.overlay').forEach(o => o.style.display = 'none'); }
+
+function showMainMenu() { document.getElementById('loadingScreen').style.display = 'none'; hideAllOverlays(); inMainMenu = true; inLevelSelect = false; document.getElementById('mainMenuScreen').style.display = 'flex'; document.getElementById('topUI').style.display = 'none'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; generateFairGrid(1); draw(); playMenuMusic(); }
+
+function showLeaderboard() {
+    hideAllOverlays(); document.getElementById('leaderboardScreen').style.display = 'flex'; let l = i18n[currentLang];
+    let fakePlayers = [ { name: "ShadowWizard99", score: 95400 }, { name: "CannonKing", score: 82150 }, { name: "xX_BubbleSlayer_Xx", score: 78900 }, { name: "GamerPro", score: 55000 }, { name: "Alex_2010", score: 42000 }, { name: "MysticAura", score: 38450 }, { name: "KnightRider", score: 25000 }, { name: "FireStarter", score: 19300 }, { name: "NoobMaster", score: 12500 } ];
+    fakePlayers.push({ name: l.you, score: bestEndlessScore, isPlayer: true }); fakePlayers.sort((a, b) => b.score - a.score);
+    let container = document.getElementById('lbContainer'); container.innerHTML = ""; 
+    for(let i = 0; i < 10 && i < fakePlayers.length; i++) { let p = fakePlayers[i]; let row = document.createElement('div'); row.className = 'lb-row' + (p.isPlayer ? ' player' : ''); let rank = document.createElement('span'); rank.className = 'lb-rank'; rank.innerText = `#${i + 1}`; let name = document.createElement('span'); name.className = 'lb-name'; name.innerText = p.name; let sc = document.createElement('span'); sc.className = 'lb-score'; sc.innerText = p.score; row.appendChild(rank); row.appendChild(name); row.appendChild(sc); container.appendChild(row); }
+}
+
+function closeLeaderboard() { showMainMenu(); }
+
+function showLevelSelection() {
+    hideAllOverlays(); inMainMenu = false; inLevelSelect = true; isVictory = false; isGameOver = false; document.getElementById('levelSelectScreen').style.display = 'flex'; const gridContainer = document.getElementById('levelsGrid'); gridContainer.innerHTML = ''; let l = i18n[currentLang];
+    l.lvlDesc.forEach((lvl, index) => { let id = index + 1; let card = document.createElement('div'); card.className = 'level-card'; if (id > unlockedLevel) { card.classList.add('locked'); card.innerHTML = `<h2>${lvl.t}</h2><p>${l.locked}</p>`; } else { card.onclick = () => startLevel(id); card.innerHTML = `<h2>${lvl.t}</h2><p>${lvl.d}</p>`; } gridContainer.appendChild(card); });
+    let endlessCard = document.createElement('div'); endlessCard.className = 'level-card'; endlessCard.style.borderColor = '{{BLOCK_COLOR}}'; endlessCard.onclick = () => startLevel('endless'); endlessCard.innerHTML = `<h2>♾️ ${l.endless}</h2><p>${l.endlessDesc}<br><br><b style="color:#ffd700">${l.bestScore} ${bestEndlessScore}</b></p>`; gridContainer.appendChild(endlessCard);
+    playMenuMusic();
+}
+
+function startLevel(lvl) { hideAllOverlays(); inLevelSelect = false; isPaused = false; isGameOver = false; isVictory = false; isReloading = false; document.getElementById('topUI').style.display = 'block'; document.getElementById('controls').style.display = 'flex'; document.getElementById('boosterUI').style.display = 'flex'; currentLevel = lvl; score = 0; sessionCoins = 0; combosMade = 0; bombsBlown = 0; globalDropOffset = 0; particles = []; generateFairGrid(lvl); nextBulletType = Math.random() < getBombChance(currentLevel) ? 'bomb' : 'normal'; nextBubbleColor = getRandomColor(); createNewBullet(); updateUI(); playGameMusic(); }
+
+function showVictoryScreen() { isVictory = true; document.getElementById('vicScore').innerText = score; document.getElementById('vicCoins').innerText = sessionCoins; document.getElementById('btnNextLevel').style.display = (currentLevel !== 'endless' && currentLevel < 9) ? 'inline-block' : 'none'; document.getElementById('victoryScreen').style.display = 'flex'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; document.getElementById('topUI').style.display = 'none'; fireballs++; lightnings++; saveProgress(); for(let i=0; i<50; i++) particles.push({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT/2, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, color: getRandomColor(), size: Math.random() * 8 + 4, life: 60 + Math.random() * 40 }); playMenuMusic(); }
+
+function checkVictoryCondition() {
+    if (isGameOver || isVictory || currentLevel === 'endless') return; let won = false;
+    if (currentLevel === 1 && combosMade >= 10) won = true; else if (currentLevel === 2 && bombsBlown >= 5) won = true; else if (currentLevel === 3 && score >= 1000) won = true; else if (currentLevel === 4 && combosMade >= 20) won = true; else if (currentLevel === 5 && score >= 1500) won = true; else if (currentLevel === 6 && bombsBlown >= 10) won = true; else if (currentLevel === 7 && score >= 2500) won = true; else if (currentLevel === 8 && combosMade >= 30) won = true; else if (currentLevel === 9 && score >= 5000) won = true;
+    if (won) { if (currentLevel === unlockedLevel && unlockedLevel < 9) { unlockedLevel++; } setTimeout(showVictoryScreen, 500); }
+}
+
+function togglePause() { if (isGameOver || isVictory || inShop || inMainMenu || inLevelSelect) return; isPaused = !isPaused; document.getElementById('pauseScreen').style.display = isPaused ? 'flex' : 'none'; }
+function openShop() { inShop = true; hideAllOverlays(); document.getElementById('shopScreen').style.display = 'flex'; updateShopUI(); }
+function closeShop() { inShop = false; hideAllOverlays(); if (isGameOver) document.getElementById('gameOverScreen').style.display = 'flex'; else if (isVictory) document.getElementById('victoryScreen').style.display = 'flex'; else if (inMainMenu) showMainMenu(); else if (inLevelSelect) showLevelSelection(); else if (isPaused) document.getElementById('pauseScreen').style.display = 'flex'; }
+function watchAdForBoosters() { showRewardedAd(() => { fireballs++; lightnings++; saveProgress(); updateShopUI(); }); }
+function continueGameAd() { showRewardedAd(() => { isGameOver = false; for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active) { let pos = getGridPos(r, c); if (pos.y > CANVAS_HEIGHT - 450) { createDustExplosion(pos.x, pos.y, grid[r][c].type === 'bomb' ? '#ff2222' : grid[r][c].color); grid[r][c] = null; } } } } cleanFloatingBubbles(); document.getElementById('gameOverScreen').style.display = 'none'; document.getElementById('controls').style.display = 'flex'; document.getElementById('boosterUI').style.display = 'flex'; document.getElementById('topUI').style.display = 'block'; bullet.moving = false; createNewBullet(); }); }
+
+function useFireball() { if (!bullet.moving && fireballs > 0 && bullet.type !== 'fireball' && !isPaused && !isGameOver && !isVictory) { fireballs--; bullet.type = 'fireball'; saveProgress(); } }
+function useLightning() { if (!bullet.moving && lightnings > 0 && bullet.type !== 'lightning' && !isPaused && !isGameOver && !isVictory) { lightnings--; bullet.type = 'lightning'; saveProgress(); } }
+function buyAim() { let c = 100 + upgradeAim * 100; if (coins >= c && upgradeAim < 5) { coins -= c; upgradeAim++; saveProgress(); updateShopUI(); } }
+function buyDrop() { let c = 150 + upgradeDrop * 150; if (coins >= c && upgradeDrop < 5) { coins -= c; upgradeDrop++; saveProgress(); updateShopUI(); } }
+function buyFire() { if (coins >= 50) { coins -= 50; fireballs++; saveProgress(); updateShopUI(); } }
+function buyLight() { if (coins >= 75) { coins -= 75; lightnings++; saveProgress(); updateShopUI(); } }
+
+function updateShopUI() { let l = i18n[currentLang]; document.getElementById('shopCoinsCount').innerText = coins; document.getElementById('btnBuyFire').disabled = (coins < 50); document.getElementById('btnBuyLight').disabled = (coins < 75); document.getElementById('btnBuyFire').innerText = `${l.buy} 50`; document.getElementById('btnBuyLight').innerText = `${l.buy} 75`; document.getElementById('lvlAim').innerText = upgradeAim; let cA = 100 + upgradeAim * 100; let bA = document.getElementById('btnAim'); if (upgradeAim >= 5) { bA.innerText = l.max; bA.disabled = true; } else { bA.innerText = `${l.buy} ${cA}`; bA.disabled = (coins < cA); } document.getElementById('lvlDrop').innerText = upgradeDrop; let cD = 150 + upgradeDrop * 150; let bD = document.getElementById('btnDrop'); if (upgradeDrop >= 5) { bD.innerText = l.max; bD.disabled = true; } else { bD.innerText = `${l.buy} ${cD}`; bD.disabled = (coins < cD); } }
+function updateUI() { let l = i18n[currentLang]; document.getElementById('score').innerText = score; document.getElementById('coins').innerText = coins; document.getElementById('uiFireCount').innerText = fireballs; document.getElementById('uiLightCount').innerText = lightnings; let gt = ""; if (currentLevel === 'endless') { document.getElementById('uiLevelDisplay').innerText = "♾️"; document.getElementById('uiLvlStr').style.display = 'none'; gt = `🏆 ${l.bestScore} ${bestEndlessScore}`; } else { document.getElementById('uiLevelDisplay').innerText = currentLevel; document.getElementById('uiLvlStr').style.display = 'inline'; if (currentLevel === 1) gt = `${l.goalCombo} ${combosMade} / 10`; else if (currentLevel === 2) gt = `${l.goalBombs} ${bombsBlown} / 5`; else if (currentLevel === 3) gt = `${l.goalScoreF} ${score} / 1000`; else if (currentLevel === 4) gt = `${l.goalCombo} ${combosMade} / 20`; else if (currentLevel === 5) gt = `${l.goalScoreM} ${score} / 1500`; else if (currentLevel === 6) gt = `${l.goalBombs} ${bombsBlown} / 10`; else if (currentLevel === 7) gt = `${l.goalScoreF} ${score} / 2500`; else if (currentLevel === 8) gt = `${l.goalCombo} ${combosMade} / 30`; else if (currentLevel === 9) gt = `${l.goalScoreC} ${score} / 5000`; } document.getElementById('goalText').innerText = gt; }
+
+function createRow(lvl, allowBombs = true) { let row = []; let chance = getBombChance(lvl); for (let c = 0; c < CONFIG.cols; c++) { let t = (allowBombs && Math.random() < chance) ? 'bomb' : 'normal'; row.push({ color: getRandomColor(), active: true, type: t }); } return row; }
+function generateFairGrid(lvl) { grid = []; gridOffsetPhase = 0; for (let r = 0; r < 9; r++) grid.push(createRow(lvl, false)); let stable = false; let loops = 0; while (!stable && loops < 50) { stable = true; for(let r=0; r<grid.length; r++) { for(let c=0; c<CONFIG.cols; c++) { if (!grid[r] || !grid[r][c] || !grid[r][c].active) continue; let cluster = findPhysicalCluster(r, c, grid[r][c].color); if (cluster.length >= 3) { stable = false; grid[r][c].color = getRandomColor(); } } } loops++; } }
+function getRandomColor() { return CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)]; }
+function createNewBullet() { if (isGameOver || isVictory) return; bullet = { x: CANNON_X, y: CANNON_Y, color: nextBubbleColor, dx: 0, dy: 0, moving: false, type: nextBulletType }; nextBulletType = Math.random() < getBombChance(currentLevel) ? 'bomb' : 'normal'; nextBubbleColor = getRandomColor(); isReloading = true; setTimeout(() => { isReloading = false; }, 350); }
+function getGridPos(r, c) { let isOdd = (r + gridOffsetPhase) % 2 !== 0; let shiftX = isOdd ? CONFIG.radius : 0; let x = c * DIAMETER + CONFIG.radius + shiftX; let y = r * ROW_HEIGHT + CONFIG.radius + globalDropOffset; return {x, y}; }
+
+function endBulletTurn() { bullet.moving = false; cleanFloatingBubbles(); globalDropOffset += getDropPixels(); if (globalDropOffset >= ROW_HEIGHT) { globalDropOffset -= ROW_HEIGHT; grid.unshift(createRow(currentLevel, true)); gridOffsetPhase = 1 - gridOffsetPhase; } updateUI(); checkGameOver(); checkVictoryCondition(); if (!isGameOver && !isVictory) createNewBullet(); }
+
+function update() {
+    for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.5; p.life--; p.size *= 0.95; if (p.life <= 0) particles.splice(i, 1); }
+    if (isVictory || isGameOver) return; 
+    if (recoilOffset > 0) { recoilOffset -= 2; if (recoilOffset < 0) recoilOffset = 0; }
+    if (!bullet.moving) { bullet.x = CANNON_X + Math.cos(angle) * (BARREL_LENGTH - recoilOffset); bullet.y = CANNON_Y + Math.sin(angle) * (BARREL_LENGTH - recoilOffset); predictedCell = (bullet.type === 'normal' || bullet.type === 'bomb') ? calculateLanding(bullet.x, bullet.y) : null; } else { predictedCell = null; }
+    if (bullet && bullet.moving) {
+        bullet.x += bullet.dx; bullet.y += bullet.dy; if (bullet.x < CONFIG.radius) { bullet.x = CONFIG.radius; bullet.dx = -bullet.dx; } else if (bullet.x > CANVAS_WIDTH - CONFIG.radius) { bullet.x = CANVAS_WIDTH - CANVAS_WIDTH; bullet.dx = -bullet.dx; }
+        if (bullet.type === 'fireball') { if (bullet.y < CONFIG.radius + globalDropOffset) { endBulletTurn(); return; } for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && Math.hypot(bullet.x - getGridPos(r, c).x, bullet.y - getGridPos(r, c).y) < DIAMETER + 5) { createDustExplosion(getGridPos(r, c).x, getGridPos(r, c).y, '#ff8c00'); grid[r][c] = null; score += 15; } } } } 
+        else if (bullet.type === 'lightning') { if (bullet.y < CONFIG.radius + globalDropOffset) { endBulletTurn(); return; } let hitTarget = null; for (let r = 0; r < grid.length; r++) { if (hitTarget) break; for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && Math.hypot(bullet.x - getGridPos(r,c).x, bullet.y - getGridPos(r,c).y) < COLLISION_DIST) { hitTarget = b; break; } } } if (hitTarget) { let tType = hitTarget.type; let tColor = hitTarget.color; let destroyed = 0; for(let r=0; r<grid.length; r++) { for(let c=0; c<CONFIG.cols; c++) { let b = grid[r][c]; if(b && b.active && ((tType === 'bomb' && b.type === 'bomb') || (tType === 'normal' && b.type === 'normal' && b.color === tColor))) { createDustExplosion(getGridPos(r,c).x, getGridPos(r,c).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[r][c] = null; destroyed++; } } } score += destroyed * 15; canvas.style.transform = "translate(5px, 5px)"; setTimeout(() => canvas.style.transform = "none", 50); endBulletTurn(); return; } } 
+        else { if (bullet.y < CONFIG.radius + globalDropOffset) { snapBubble(); return; } for (let r = 0; r < grid.length; r++) { if (Math.abs((r * ROW_HEIGHT + globalDropOffset) - bullet.y) > DIAMETER * 2) continue; for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active && Math.hypot(bullet.x - getGridPos(r,c).x, bullet.y - getGridPos(r,c).y) < COLLISION_DIST) { snapBubble(); return; } } } }
+    }
+}
+
+function calculateLanding(startX, startY) { let bestDist = Infinity; let bestCell = null; for (let r = 0; r < grid.length + 2; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active) continue; let dist = Math.hypot(startX - getGridPos(r, c).x, startY - getGridPos(r, c).y); if (dist < bestDist) { bestDist = dist; bestCell = {r, c}; } } } return bestCell; }
+
+function snapBubble() {
+    bullet.moving = false; let cell = calculateLanding(bullet.x, bullet.y); if (!cell) cell = {r:0, c:0}; let {r, c} = cell; while (grid.length <= r) grid.push(new Array(CONFIG.cols).fill(null)); grid[r][c] = { color: bullet.color, active: true, type: bullet.type };
+    if (bullet.type === 'bomb') { let p1 = getGridPos(r, c); let bombsToDetonate = [{r,c}]; for (let rr = Math.max(0, r-2); rr <= Math.min(grid.length-1, r+2); rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { let b = grid[rr][cc]; if (b && b.active && b.type === 'bomb' && !(rr === r && cc === c) && Math.hypot(p1.x - getGridPos(rr,cc).x, p1.y - getGridPos(rr,cc).y) < CONNECT_DIST) bombsToDetonate.push({r: rr, c: cc}); } } let destroyed = new Set(); for (let bomb of bombsToDetonate) { let bPos = getGridPos(bomb.r, bomb.c); for (let rr = 0; rr < grid.length; rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { if (grid[rr][cc] && grid[rr][cc].active && Math.hypot(bPos.x - getGridPos(rr,cc).x, bPos.y - getGridPos(rr,cc).y) < DIAMETER * 2.5) { destroyed.add(rr + "," + cc); } } } } let bombsFoundInBlast = 0; destroyed.forEach(key => { let [rr, cc] = key.split(',').map(Number); let b = grid[rr][cc]; if (b.type === 'bomb') bombsFoundInBlast++; createDustExplosion(getGridPos(rr, cc).x, getGridPos(rr, cc).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[rr][cc] = null; score += 15; }); bombsBlown += bombsFoundInBlast; canvas.style.transform = "translate(5px, 5px)"; setTimeout(() => canvas.style.transform = "none", 50); } else { let cluster = findPhysicalCluster(r, c, bullet.color); if (cluster.length >= 3) { cluster.forEach(m => { createDustExplosion(getGridPos(m.r, m.c).x, getGridPos(m.r, m.c).y, grid[m.r][m.c].color); grid[m.r][m.c] = null; }); score += cluster.length * 10; coins += 10; sessionCoins += 10; combosMade++; saveProgress(); } } endBulletTurn();
+}
+
+function findPhysicalCluster(startR, startC, targetColor) { let cluster = []; let queue = [{r: startR, c: startC}]; let visited = new Set([startR + "," + startC]); let head = 0; while(head < queue.length) { let curr = queue[head++]; cluster.push(curr); let pos1 = getGridPos(curr.r, curr.c); for (let r = Math.max(0, curr.r - 2); r <= Math.min(grid.length - 1, curr.r + 2); r++) { for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && b.type === 'normal' && b.color === targetColor) { let key = r + "," + c; if (!visited.has(key) && Math.hypot(pos1.x - getGridPos(r,c).x, pos1.y - getGridPos(r,c).y) < CONNECT_DIST) { visited.add(key); queue.push({r, c}); } } } } } return cluster; }
+
+function cleanFloatingBubbles() { let connected = new Set(); let queue = []; for (let c = 0; c < CONFIG.cols; c++) { if (grid[0] && grid[0][c] && grid[0][c].active) { connected.add("0," + c); queue.push({r: 0, c: c}); } } let head = 0; while(head < queue.length) { let curr = queue[head++]; let pos1 = getGridPos(curr.r, curr.c); for (let r = Math.max(0, curr.r - 2); r <= Math.min(grid.length - 1, curr.r + 2); r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r][c] && grid[r][c].active && !connected.has(r + "," + c) && Math.hypot(pos1.x - getGridPos(r, c).x, pos1.y - getGridPos(r, c).y) < CONNECT_DIST) { connected.add(r + "," + c); queue.push({r, c}); } } } } let dropped = 0; for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active && !connected.has(r + "," + c)) { createDustExplosion(getGridPos(r, c).x, getGridPos(r, c).y, grid[r][c].type === 'bomb' ? '#ff2222' : grid[r][c].color); grid[r][c] = null; dropped++; } } } if (dropped > 0) { score += dropped * 50; coins += dropped; sessionCoins += dropped; saveProgress(); } }
+
+function createDustExplosion(x, y, color) { for (let i = 0; i < 15; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 15, vy: (Math.random() - 0.5) * 15, color: color, size: Math.random() * 5 + 3, life: 30 + Math.random() * 20 }); }
+
+function checkGameOver() {
+    if (isGameOver) return; 
+    for(let r=0; r<grid.length; r++) {
+        if (getGridPos(r, 0).y > CANVAS_HEIGHT - 100) {
+            for(let c=0; c<CONFIG.cols; c++) {
+                if (grid[r][c] && grid[r][c].active) {
+                    isGameOver = true; 
+                    if (currentLevel === 'endless' && score > bestEndlessScore) { bestEndlessScore = score; saveProgress(); }
+                    document.getElementById('finalScore').innerText = score; document.getElementById('finalCoins').innerText = sessionCoins;
+                    document.getElementById('gameOverScreen').style.display = 'flex'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; document.getElementById('topUI').style.display = 'none'; 
+                    playMenuMusic(); 
+                    return;
+                }
+            }
+        }
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r][c] && grid[r][c].active) { let pos = getGridPos(r, c); if (pos.y < -DIAMETER) continue; if (grid[r][c].type === 'bomb') drawBomb(pos.x, pos.y); else drawBubble3D(pos.x, pos.y, grid[r][c].color); } } }
+    if (!inMainMenu && !inLevelSelect && !isVictory && predictedCell && bullet && bullet.moving && (bullet.type === 'normal' || bullet.type === 'bomb')) { let pos = getGridPos(predictedCell.r, predictedCell.c); ctx.beginPath(); ctx.arc(pos.x, pos.y, CONFIG.radius - 2, 0, Math.PI*2); ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; ctx.lineWidth = 2; ctx.stroke(); }
+    for (let p of particles) { ctx.fillStyle = p.color; ctx.beginPath(); ctx.rect(p.x, p.y, p.size, p.size); ctx.fill(); }
+    if (!inMainMenu && !inLevelSelect && !isVictory && !isGameOver) {
+        ctx.save(); ctx.translate(CANNON_X, CANNON_Y); ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 2; ctx.setLineDash([4, 12]); ctx.beginPath(); ctx.moveTo(Math.cos(angle) * BARREL_LENGTH, Math.sin(angle) * BARREL_LENGTH); ctx.lineTo(Math.cos(angle) * getAimLength(), Math.sin(angle) * getAimLength()); ctx.stroke(); ctx.restore(); ctx.setLineDash([]);
+        ctx.save(); ctx.translate(CANNON_X, CANNON_Y); ctx.rotate(angle); ctx.translate(-recoilOffset, 0); 
+        let bronzeGrad = ctx.createLinearGradient(0, -20, 0, 20); bronzeGrad.addColorStop(0, '{{BLOCK_COLOR}}'); bronzeGrad.addColorStop(1, '#222'); ctx.fillStyle = bronzeGrad; ctx.beginPath(); ctx.moveTo(-20, -22); ctx.lineTo(BARREL_LENGTH + 5, -15); ctx.lineTo(BARREL_LENGTH + 5, 15); ctx.lineTo(-20, 22); ctx.closePath(); ctx.fill(); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(-10, -23, 12, 46); ctx.fillRect(BARREL_LENGTH / 2 - 5, -19, 10, 38); ctx.fillRect(BARREL_LENGTH, -17, 14, 34); ctx.beginPath(); ctx.arc(BARREL_LENGTH + 7, 0, 13, 0, Math.PI*2); ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
+        if (bullet) { if (bullet.type === 'bomb') drawBomb(bullet.x, bullet.y); else if (bullet.type === 'fireball') drawFireball(bullet.x, bullet.y); else if (bullet.type === 'lightning') drawLightning(bullet.x, bullet.y); else drawBubble3D(bullet.x, bullet.y, bullet.color); }
+        let woodGrad = ctx.createLinearGradient(CANNON_X - 50, CANNON_Y, CANNON_X + 50, CANNON_Y); woodGrad.addColorStop(0, '#111'); woodGrad.addColorStop(0.5, '#333'); woodGrad.addColorStop(1, '#111'); ctx.fillStyle = woodGrad; ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(CANNON_X - 50, CANNON_Y + 15); ctx.lineTo(CANNON_X - 40, CANVAS_HEIGHT); ctx.lineTo(CANNON_X + 40, CANVAS_HEIGHT); ctx.lineTo(CANNON_X + 50, CANNON_Y + 15); ctx.quadraticCurveTo(CANNON_X, CANNON_Y - 25, CANNON_X - 50, CANNON_Y + 15); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(CANNON_X, CANNON_Y, 14, 0, Math.PI * 2); let boltGrad = ctx.createRadialGradient(CANNON_X - 5, CANNON_Y - 5, 2, CANNON_X, CANNON_Y, 14); boltGrad.addColorStop(0, '#777'); boltGrad.addColorStop(1, '#222'); ctx.fillStyle = boltGrad; ctx.fill(); ctx.strokeStyle = '#111'; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Segoe UI'; ctx.fillText(i18n[currentLang].next, 20, CANVAS_HEIGHT - 25); if (nextBulletType === 'bomb') drawBomb(80, CANVAS_HEIGHT - 30); else drawBubble3D(80, CANVAS_HEIGHT - 30, nextBubbleColor);
+        ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 3; ctx.setLineDash([20, 10]); ctx.beginPath(); ctx.moveTo(0, CANVAS_HEIGHT - 100); ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT - 100); ctx.stroke(); ctx.setLineDash([]);
+    }
+}
+
+function drawBubble3D(x, y, color) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, Math.PI*2); let isWhite = (color.toLowerCase() === '#ffffff'); let grad = ctx.createRadialGradient(x - 6, y - 6, 4, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); if (isWhite) { grad.addColorStop(0.5, '#f0f0f0'); grad.addColorStop(1, '#a0a0a0'); } else { grad.addColorStop(0.4, color); grad.addColorStop(1, '#000'); } ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1; ctx.stroke(); }
+function drawBomb(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, Math.PI*2); let grad = ctx.createRadialGradient(x - 6, y - 6, 4, x, y, CONFIG.radius); grad.addColorStop(0, '#555'); grad.addColorStop(0.5, '#111'); grad.addColorStop(1, '#000'); ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fillStyle = '#ff2222'; ctx.shadowColor = '#ff4444'; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0; }
+function drawFireball(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius + 2, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius+2); grad.addColorStop(0, '#fff'); grad.addColorStop(0.3, '#ffeb3b'); grad.addColorStop(0.7, '#ff4757'); grad.addColorStop(1, 'transparent'); ctx.fillStyle = grad; ctx.fill(); }
+function drawLightning(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); grad.addColorStop(0.5, '#00d2d3'); grad.addColorStop(1, '#000'); ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x-8, y-8); ctx.lineTo(x+2, y); ctx.lineTo(x-4, y+4); ctx.lineTo(x+8, y+10); ctx.stroke(); }
+
+function loop() { 
+    if (!isPaused && !inShop && !isGameOver && !inMainMenu && !inLevelSelect && document.getElementById('leaderboardScreen').style.display !== 'flex' && !isAdShowing) {
+        update(); 
+    }
+    draw(); 
+    requestAnimationFrame(loop); 
+}
+
+function handleAim(clientX, clientY) { if (isPaused || inShop || isGameOver || inMainMenu || inLevelSelect || isVictory || document.getElementById('leaderboardScreen').style.display === 'flex' || isAdShowing) return; let rect = canvas.getBoundingClientRect(); let scaleX = canvas.width / rect.width; let scaleY = canvas.height / rect.height; let dx = ((clientX - rect.left) * scaleX) - CANNON_X; let dy = ((clientY - rect.top) * scaleY) - CANNON_Y; angle = Math.atan2(dy, dx); if (angle > -0.15) angle = -0.15; if (angle < -Math.PI + 0.15) angle = -Math.PI + 0.15; }
+function handleShoot() { if (isPaused || inShop || isGameOver || inMainMenu || inLevelSelect || isVictory || isReloading || document.getElementById('leaderboardScreen').style.display === 'flex' || isAdShowing) return; if (audioCtx.state === 'suspended') { audioCtx.resume(); } if (!bullet.moving) { bullet.moving = true; bullet.dx = Math.cos(angle) * CONFIG.speed; bullet.dy = Math.sin(angle) * CONFIG.speed; recoilOffset = 20; } }
+
+canvas.addEventListener('mousemove', e => handleAim(e.clientX, e.clientY)); canvas.addEventListener('mousedown', () => handleShoot()); canvas.addEventListener('touchstart', e => { if(e.target === canvas) e.preventDefault(); handleAim(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false}); canvas.addEventListener('touchmove', e => { if(e.target === canvas) e.preventDefault(); handleAim(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false}); canvas.addEventListener('touchend', e => { if(e.target === canvas) e.preventDefault(); handleShoot(); }, {passive: false});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !inMainMenu && !inLevelSelect) togglePause(); if (e.key === '1') useFireball(); if (e.key === '2') useLightning(); });
+
+initSDK(); 
+requestAnimationFrame(loop); 
+</script>
+</body>
+</html>

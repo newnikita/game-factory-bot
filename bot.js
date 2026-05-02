@@ -2,82 +2,108 @@ require('dotenv').config();
 const { Telegraf, session, Markup } = require('telegraf');
 const fs = require('fs');
 const path = require('path');
-const os = require('os'); // Подключаем работу с оперативной памятью облака
+const os = require('os');
 const archiver = require('archiver');
 const express = require('express');
 const fse = require('fs-extra');
 
-// === 🛡️ СИСТЕМА БЕССМЕРТИЯ (Анти-Краш) ===
-process.on('uncaughtException', (err) => {
-    console.error('❌ Критическая ошибка:', err.message);
-});
-process.on('unhandledRejection', (err) => {
-    console.error('❌ Ошибка сети/промиса:', err.message);
-});
+// === 🛡️ СИСТЕМА АНТИ-КРАШ ===
+process.on('uncaughtException', (err) => console.error('❌ Ошибка:', err.message));
+process.on('unhandledRejection', (err) => console.error('❌ Ошибка сети:', err.message));
 
 // Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
-// Перехват внутренних ошибок Телеграфа
-bot.catch((err, ctx) => {
-    console.log(`❌ Ошибка логики бота:`, err.message);
-});
-
-// База данных стилей
+// === 📊 БАЗА ДАННЫХ БИОМОВ (5 СТИЛЕЙ) ===
 const styles = {
-    'space': { bg: '#0B0C10', block: '#66FCF1', img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop' }, 
-    'darkfantasy': { bg: '#1A1A1D', block: '#8B0000', img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop' }, 
-    'forest': { bg: '#2C5E3B', block: '#8B5A2B', img: 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop' } 
+    'silent_stars': { 
+        name: 'Немые Звезды',
+        bg: '#050510', 
+        block: '#E0E0FF', 
+        img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop',
+        font: '"Courier New", monospace',
+        shadow: '0 0 15px rgba(224, 224, 255, 0.5)',
+        vibe: 'melancholic_orchestral'
+    }, 
+    'credo_fantasy': { 
+        name: 'Темное Фэнтези',
+        bg: '#110000', 
+        block: '#8B0000', 
+        img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop',
+        font: '"Palatino Linotype", "Book Antiqua", serif',
+        shadow: '0 0 20px rgba(139, 0, 0, 0.8)',
+        vibe: 'dark_orchestral_metal'
+    }, 
+    'ghibli_forest': { 
+        name: 'Волшебный Лес',
+        bg: '#1E3B27', 
+        block: '#A8E6CF', 
+        img: 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop',
+        font: '"Comic Sans MS", cursive, sans-serif',
+        shadow: '2px 2px 5px rgba(0, 0, 0, 0.3)',
+        vibe: 'calm_acoustic'
+    },
+    'neon_tokyo': { 
+        name: 'Неоновый Токио',
+        bg: '#090014', 
+        block: '#FF00FF', 
+        img: 'https://images.unsplash.com/photo-1555580399-5ddb9eb8518e?q=80&w=1080&auto=format&fit=crop',
+        font: '"Trebuchet MS", sans-serif',
+        shadow: '0 0 10px #00FFFF, 0 0 20px #FF00FF',
+        vibe: 'j_pop_dynamic'
+    },
+    'wasteland': { 
+        name: 'Ржавая Пустошь',
+        bg: '#2B1D14', 
+        block: '#D2691E', 
+        img: 'https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop',
+        font: '"Impact", charcoal, sans-serif',
+        shadow: '4px 4px 0px rgba(0, 0, 0, 0.8)',
+        vibe: 'aggressive_metal'
+    }
 };
 
-// === УМНЫЙ СЕРВЕР ПРЕДПРОСМОТРА ===
+// === 🌐 УМНЫЙ СЕРВЕР ПРЕДПРОСМОТРА ===
 const app = express();
-app.get('/', (req, res) => res.send('OK'));
-// ОБЛАЧНЫЙ ПОРТ (Render сам решит, какой порт нам выдать)
 const PORT = process.env.PORT || 3000;
+
+// Заглушка для UptimeRobot (чтобы статус всегда был UP)
+app.get('/', (req, res) => res.send('Фабрка Игр: Статус OK'));
 
 app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
 
 app.get('/:engine/', (req, res) => {
     const engine = req.params.engine;
-    const biome = req.query.biome || 'space';
-    const selectedStyle = styles[biome] || styles['space'];
+    const biome = req.query.biome || 'silent_stars';
+    const s = styles[biome] || styles['silent_stars'];
     
     const indexPath = path.join(__dirname, 'templates', `${engine}_core`, 'index.html');
-    
-    if (!fs.existsSync(indexPath)) {
-        return res.status(404).send("<h2 style='color:white; text-align:center; margin-top:50px;'>⚙️ Движок еще в разработке.</h2>");
-    }
+    if (!fs.existsSync(indexPath)) return res.status(404).send("<h2>⚙️ Движок в разработке.</h2>");
 
-    try {
-        let htmlCode = fs.readFileSync(indexPath, 'utf8');
-        htmlCode = htmlCode.replace(/{{BG_COLOR}}/g, selectedStyle.bg);
-        htmlCode = htmlCode.replace(/{{BLOCK_COLOR}}/g, selectedStyle.block);
-        htmlCode = htmlCode.replace(/{{BG_IMAGE}}/g, selectedStyle.img); 
-        res.send(htmlCode);
-    } catch (e) {
-        res.status(500).send("Ошибка рендеринга матрицы.");
-    }
+    let html = fs.readFileSync(indexPath, 'utf8');
+    html = html.replace(/{{BG_COLOR}}/g, s.bg)
+               .replace(/{{BLOCK_COLOR}}/g, s.block)
+               .replace(/{{BG_IMAGE}}/g, s.img)
+               .replace(/{{FONT_FAMILY}}/g, s.font)
+               .replace(/{{SHADOW}}/g, s.shadow);
+    res.send(html);
 });
 
 app.use('/:engine', (req, res, next) => {
-    const engine = req.params.engine;
-    const dir = path.join(__dirname, 'templates', `${engine}_core`);
+    const dir = path.join(__dirname, 'templates', `${req.params.engine}_core`);
     if (fs.existsSync(dir)) express.static(dir)(req, res, next); else next();
 });
 
-// Запускаем сервер 
 app.listen(PORT, () => {
-    console.log(`[Сервер] Облачный мульти-хостинг запущен на порту ${PORT}`);
+    console.log(`[Сервер] Запущен на порту ${PORT}`);
     console.log(`[Туннель] Ссылка: ${process.env.WEBAPP_URL}`);
 });
 
-// === ШАГ 0: СТАРТ ===
+// === 🤖 ЛОГИКА БОТА ===
 bot.start((ctx) => {
     ctx.session = { gameData: {} }; 
-    return ctx.reply(
-        'Привет, Демиург! 🌌\nВыбери платформу:',
+    return ctx.reply('Привет, Демиург! 🌌\nВыбери платформу:',
         Markup.inlineKeyboard([
             [Markup.button.callback('📱 Мобильная', 'platform_mobile')],
             [Markup.button.callback('💻 ПК', 'platform_pc')]
@@ -85,10 +111,8 @@ bot.start((ctx) => {
     );
 });
 
-// === ШАГ 1: ПЛАТФОРМА -> ДВИЖОК ===
 bot.action(/platform_(.+)/, async (ctx) => {
-    if (!ctx.session || !ctx.session.gameData) ctx.session = { gameData: {} };
-    ctx.session.gameData.platform = ctx.match[1]; 
+    ctx.session.gameData = { platform: ctx.match[1] }; 
     await ctx.editMessageText('Выбери движок:', Markup.inlineKeyboard([
         [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble')],
         [Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')],
@@ -96,75 +120,61 @@ bot.action(/platform_(.+)/, async (ctx) => {
     ]));
 });
 
-// === ШАГ 2: ДВИЖОК -> БИОМ ===
 bot.action(/engine_(.+)/, async (ctx) => {
-    if (!ctx.session || !ctx.session.gameData) return ctx.reply('⏳ Нажми /start');
     ctx.session.gameData.engine = ctx.match[1];
-    await ctx.editMessageText('Выбери сеттинг:', Markup.inlineKeyboard([
-        [Markup.button.callback('🌌 Космос', 'biome_space')],
-        [Markup.button.callback('🏰 Фэнтези', 'biome_darkfantasy')],
-        [Markup.button.callback('🌲 Лес', 'biome_forest')]
+    await ctx.editMessageText('Выбери атмосферу и сеттинг:', Markup.inlineKeyboard([
+        [Markup.button.callback('🌌 Немые Звезды', 'biome_silent_stars')],
+        [Markup.button.callback('🩸 Темное Фэнтези', 'biome_credo_fantasy')],
+        [Markup.button.callback('🍃 Волшебный Лес', 'biome_ghibli_forest')],
+        [Markup.button.callback('🌃 Неоновый Токио', 'biome_neon_tokyo')],
+        [Markup.button.callback('⚙️ Ржавая Пустошь', 'biome_wasteland')]
     ]));
 });
 
-// === ШАГ 3: ФИНАЛ ===
 bot.action(/biome_(.+)/, async (ctx) => {
-    if (!ctx.session || !ctx.session.gameData || !ctx.session.gameData.engine) return ctx.reply('⏳ Нажми /start');
     ctx.session.gameData.biome = ctx.match[1];
     const data = ctx.session.gameData;
-
     setTimeout(async () => {
-        const currentUrl = process.env.WEBAPP_URL ? `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}` : `https://yandex.ru/games`; 
-        await ctx.reply('✅ Готово! Можешь играть:', Markup.inlineKeyboard([
-            [Markup.button.webApp('🎮 ИГРАТЬ', currentUrl)],
-            [Markup.button.callback('📦 Скачать', 'download_source')]
+        const url = `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}`; 
+        await ctx.reply(`✅ Сборка "${styles[data.biome].name}" готова:`, Markup.inlineKeyboard([
+            [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+            [Markup.button.callback('📦 Скачать Архив', 'download_source')]
         ]));
-    }, 1500);
+    }, 1000);
 });
 
-// === ШАГ 4: СБОРКА АРХИВА ===
 bot.action('download_source', async (ctx) => {
-    if (!ctx.session || !ctx.session.gameData || !ctx.session.gameData.biome) return ctx.reply('⏳ Нажми /start');
-    
-    await ctx.reply('⚙️ Упаковываю...');
     const data = ctx.session.gameData;
-    const selectedStyle = styles[data.biome] || styles['space']; 
+    const s = styles[data.biome];
     const templatePath = path.join(__dirname, 'templates', `${data.engine}_core`);
     
-    if (!fs.existsSync(templatePath)) return ctx.reply('❌ Движок в разработке.');
-
-    // Используем временную директорию облачного сервера (os.tmpdir)
-    const tempDirPath = path.join(os.tmpdir(), `temp_${ctx.from.id}_${Date.now()}`); 
-    const buildPath = path.join(os.tmpdir(), `game_build_${ctx.from.id}.zip`); 
+    const tempDir = path.join(os.tmpdir(), `build_${Date.now()}`); 
+    const zipPath = path.join(os.tmpdir(), `game_${data.engine}.zip`); 
 
     try {
-        fse.copySync(templatePath, tempDirPath);
-        const indexPath = path.join(tempDirPath, 'index.html');
-        let htmlCode = fs.readFileSync(indexPath, 'utf8');
-        htmlCode = htmlCode.replace(/{{BG_COLOR}}/g, selectedStyle.bg);
-        htmlCode = htmlCode.replace(/{{BLOCK_COLOR}}/g, selectedStyle.block);
-        htmlCode = htmlCode.replace(/{{BG_IMAGE}}/g, selectedStyle.img); 
-        fs.writeFileSync(indexPath, htmlCode, 'utf8');
+        fse.copySync(templatePath, tempDir);
+        const indexPath = path.join(tempDir, 'index.html');
+        let html = fs.readFileSync(indexPath, 'utf8');
+        html = html.replace(/{{BG_COLOR}}/g, s.bg)
+                   .replace(/{{BLOCK_COLOR}}/g, s.block)
+                   .replace(/{{BG_IMAGE}}/g, s.img)
+                   .replace(/{{FONT_FAMILY}}/g, s.font)
+                   .replace(/{{SHADOW}}/g, s.shadow);
+        fs.writeFileSync(indexPath, html);
 
-        const output = fs.createWriteStream(buildPath);
+        const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', { zlib: { level: 9 } });
-
         output.on('close', async () => {
-            await ctx.replyWithDocument({ source: buildPath });
-            fse.removeSync(tempDirPath);
-            fs.unlinkSync(buildPath);
+            await ctx.replyWithDocument({ source: zipPath, filename: `game_${data.biome}.zip` });
+            fse.removeSync(tempDir);
+            fs.unlinkSync(zipPath);
         });
         archive.pipe(output);
-        archive.directory(tempDirPath, false);
+        archive.directory(tempDir, false);
         archive.finalize();
-    } catch (error) {
-        console.error('Ошибка сборки в облаке:', error);
-        ctx.reply('❌ Ошибка сборки архива.');
-        if (fs.existsSync(tempDirPath)) fse.removeSync(tempDirPath);
+    } catch (e) {
+        ctx.reply('❌ Ошибка сборки.');
     }
 });
 
 bot.launch();
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-

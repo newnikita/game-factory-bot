@@ -53,7 +53,6 @@ const styles = {
 // Функция проверки на NSFW (Заглушка до подключения API)
 async function checkImageSafety(imageUrl) {
     console.log("Проверка картинки модератором:", imageUrl);
-    // В будущем здесь будет проверка через нейросеть
     return true; 
 }
 
@@ -113,7 +112,7 @@ bot.start((ctx) => {
 bot.action(/platform_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.platform = ctx.match[1]; 
-    await ctx.editMessageText('Выбери движок:', Markup.inlineKeyboard([
+    await ctx.editMessageText('Выбери движок (механику игры):', Markup.inlineKeyboard([
         [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble')], [Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')], [Markup.button.callback('🧩 Тетрис', 'engine_tetris')]
     ]));
 });
@@ -121,7 +120,8 @@ bot.action(/platform_(.+)/, async (ctx) => {
 bot.action(/engine_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.engine = ctx.match[1];
-    await ctx.editMessageText('Выбери атмосферу и сеттинг:', Markup.inlineKeyboard([
+    // Шаг 1: Игрок выбирает стиль (шаблон)
+    await ctx.editMessageText('Отлично! Теперь выбери визуальный шаблон (атмосферу) для твоей игры:', Markup.inlineKeyboard([
         [Markup.button.callback('🌌 Немые Звезды', 'biome_silent_stars')], [Markup.button.callback('🩸 Темное Фэнтези', 'biome_credo_fantasy')],
         [Markup.button.callback('🍃 Волшебный Лес', 'biome_ghibli_forest')], [Markup.button.callback('🌃 Неоновый Токио', 'biome_neon_tokyo')], [Markup.button.callback('⚙️ Ржавая Пустошь', 'biome_wasteland')]
     ]));
@@ -131,46 +131,47 @@ bot.action(/biome_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.biome = ctx.match[1];
     ctx.session.step = 'awaiting_name';
-    await ctx.editMessageText('Отличный выбор! 🎨\nТеперь придумай и напиши мне крутое название для твоей игры:');
+    // Шаг 2: Ввод названия
+    await ctx.editMessageText('Шаблон применен! 🎨\nТеперь придумай и напиши мне название для твоей игры:');
 });
 
-// ШАГ: Ловим название и предлагаем выбор фона
+// Шаг 3: Ловим название и предлагаем кастомизацию фона
 bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_name') {
         ctx.session.gameData.gameName = ctx.message.text;
         ctx.session.step = 'awaiting_bg_choice';
         
-        await ctx.reply(`Супер! Название «${ctx.message.text}» принято.\n\nКак насчет визуального оформления? Ты можешь использовать атмосферный арт из выбранного сеттинга или загрузить собственную картинку:`,
+        await ctx.reply(`Супер! Название «${ctx.message.text}» принято.\n\nПоследний штрих: хочешь добавить на задний фон свою собственную фотографию? Или оставим всё как есть (стандартный фон выбранного шаблона)?`,
             Markup.inlineKeyboard([
-                [Markup.button.callback('🏞 Готовый шаблон', 'bg_choice_standard')],
-                [Markup.button.callback('🖼 Добавить свою картинку (PRO)', 'bg_choice_custom')]
+                [Markup.button.callback('🏞 Оставить всё как есть', 'bg_choice_standard')],
+                [Markup.button.callback('🖼 Добавить свою фотографию (PRO)', 'bg_choice_custom')]
             ])
         );
     }
 });
 
-// ШАГ: Пользователь выбрал стандартный фон
+// Игрок решил ничего не менять
 bot.action('bg_choice_standard', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
         ctx.session.gameData.customBgFile = null;
         ctx.session.step = null;
-        await ctx.editMessageText('✅ Выбран стандартный шаблон. Запускаю конвейер...');
+        await ctx.editMessageText('✅ Оставляем стандартный фон. Запускаю сборку...');
         finishGameGeneration(ctx);
     }
 });
 
-// ШАГ: Пользователь захотел свою картинку
+// Игрок захотел свою картинку
 bot.action('bg_choice_custom', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
         ctx.session.step = 'awaiting_photo';
-        await ctx.editMessageText('Отличное решение! Отправь мне картинку, которая станет фоном твоей игры 🖼️\n\n(Только без пошлятины, наша нейросеть-модератор следит за порядком!)');
+        await ctx.editMessageText('Отлично! Отправь мне картинку, которая станет фоном твоей игры 🖼️\n\n(Только без пошлятины, наша нейросеть-модератор следит за порядком!)');
     }
 });
 
-// ШАГ: Загрузка кастомной картинки
+// Ловим и сохраняем кастомную картинку
 bot.on('photo', async (ctx) => {
     if (ctx.session?.step === 'awaiting_photo') {
-        const msg = await ctx.reply('⏳ Проверяю картинку и скачиваю на сервер...');
+        const msg = await ctx.reply('⏳ Проверяю картинку и применяю к игре...');
         try {
             const photo = ctx.message.photo.pop();
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
@@ -201,7 +202,7 @@ bot.on('photo', async (ctx) => {
     }
 });
 
-// Финальная сборка
+// Финальная генерация
 async function finishGameGeneration(ctx) {
     const data = ctx.session.gameData;
     const s = styles[data.biome];

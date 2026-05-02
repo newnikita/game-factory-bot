@@ -33,6 +33,7 @@ const styles = {
 
 // === УМНЫЙ СЕРВЕР ПРЕДПРОСМОТРА ===
 const app = express();
+app.get('/', (req, res) => res.send('OK'));
 // ОБЛАЧНЫЙ ПОРТ (Render сам решит, какой порт нам выдать)
 const PORT = process.env.PORT || 3000;
 

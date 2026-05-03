@@ -50,10 +50,38 @@ const styles = {
     }
 };
 
-// Функция проверки на NSFW (Заглушка до подключения API)
+// === 🕵️‍♂️ РЕАЛЬНАЯ НЕЙРОСЕТЬ-МОДЕРАТОР ===
 async function checkImageSafety(imageUrl) {
-    console.log("Проверка картинки модератором:", imageUrl);
-    return true; 
+    try {
+        if (!process.env.SIGHT_USER || !process.env.SIGHT_SECRET) {
+            console.warn("⚠️ Ключи Sightengine не настроены в .env! Фильтр отключен.");
+            return true; 
+        }
+
+        console.log("Отправляем картинку модератору Sightengine...");
+        const response = await axios.get('https://api.sightengine.com/1.0/check.json', {
+            params: {
+                'url': imageUrl,
+                'models': 'nudity-2.0',
+                'api_user': process.env.SIGHT_USER,
+                'api_secret': process.env.SIGHT_SECRET,
+            }
+        });
+
+        if (response.data.status === 'success') {
+            const nudity = response.data.nudity;
+            // Если вероятность того, что контент "чистый" (none) меньше 80%, блокируем
+            if (nudity.none < 0.8) { 
+                console.log("⛔ NSFW контент обнаружен!");
+                return false; 
+            }
+            return true;
+        }
+        return true;
+    } catch (e) {
+        console.error("❌ Ошибка при запросе к Sightengine:", e.message);
+        return true; // В случае падения API пропускаем, чтобы не блокировать бота полностью
+    }
 }
 
 // === 🌐 УМНЫЙ СЕРВЕР ПРЕДПРОСМОТРА ===
@@ -120,7 +148,6 @@ bot.action(/platform_(.+)/, async (ctx) => {
 bot.action(/engine_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.engine = ctx.match[1];
-    // Шаг 1: Игрок выбирает стиль (шаблон)
     await ctx.editMessageText('Отлично! Теперь выбери визуальный шаблон (атмосферу) для твоей игры:', Markup.inlineKeyboard([
         [Markup.button.callback('🌌 Немые Звезды', 'biome_silent_stars')], [Markup.button.callback('🩸 Темное Фэнтези', 'biome_credo_fantasy')],
         [Markup.button.callback('🍃 Волшебный Лес', 'biome_ghibli_forest')], [Markup.button.callback('🌃 Неоновый Токио', 'biome_neon_tokyo')], [Markup.button.callback('⚙️ Ржавая Пустошь', 'biome_wasteland')]
@@ -131,11 +158,9 @@ bot.action(/biome_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.biome = ctx.match[1];
     ctx.session.step = 'awaiting_name';
-    // Шаг 2: Ввод названия
     await ctx.editMessageText('Шаблон применен! 🎨\nТеперь придумай и напиши мне название для твоей игры:');
 });
 
-// Шаг 3: Ловим название и предлагаем кастомизацию фона
 bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_name') {
         ctx.session.gameData.gameName = ctx.message.text;
@@ -150,7 +175,6 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// Игрок решил ничего не менять
 bot.action('bg_choice_standard', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
         ctx.session.gameData.customBgFile = null;
@@ -160,7 +184,6 @@ bot.action('bg_choice_standard', async (ctx) => {
     }
 });
 
-// Игрок захотел свою картинку
 bot.action('bg_choice_custom', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
         ctx.session.step = 'awaiting_photo';
@@ -168,18 +191,18 @@ bot.action('bg_choice_custom', async (ctx) => {
     }
 });
 
-// Ловим и сохраняем кастомную картинку
 bot.on('photo', async (ctx) => {
     if (ctx.session?.step === 'awaiting_photo') {
-        const msg = await ctx.reply('⏳ Проверяю картинку и применяю к игре...');
+        const msg = await ctx.reply('⏳ Проверяю картинку нейросетью и применяю к игре...');
         try {
             const photo = ctx.message.photo.pop();
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
             const url = fileLink.href;
 
+            // Вызываем боевую проверку Sightengine
             const isSafe = await checkImageSafety(url);
             if (!isSafe) {
-                return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Ого-го! Мой сканер заметил что-то неприличное. Давай выберем картинку поскромнее!');
+                return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Ого-го! Мой сканер заметил что-то неприличное на этом фото. За такое на платформе сразу бан. Давай выберем картинку поскромнее!');
             }
 
             const fileName = `bg_${Date.now()}.jpg`;
@@ -202,10 +225,8 @@ bot.on('photo', async (ctx) => {
     }
 });
 
-// Финальная генерация
 async function finishGameGeneration(ctx) {
     const data = ctx.session.gameData;
-    const s = styles[data.biome];
     const encName = encodeURIComponent(data.gameName);
     const encBg = data.customBgFile ? `&bg=${data.customBgFile}` : '';
     

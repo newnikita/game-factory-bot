@@ -38,7 +38,7 @@ const styles = {
     },
     'neon_tokyo': { 
         name: 'Неоновый Токио', bg: '#090014', block: '#FF00FF', 
-        img: 'https://images.unsplash.com/photo-1555580399-5ddb9eb8518e?q=80&w=1080&auto=format&fit=crop',
+        img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop', // <-- Отремонтированная ссылка здесь!
         font: '"Trebuchet MS", sans-serif', shadow: '0 0 10px #00FFFF, 0 0 20px #FF00FF', vibe: 'j_pop_dynamic',
         life: '🔋', score: '💿', b_wide: '🛹', b_triple: '💠', b_fire: '💥', b_lightning: '⚡'
     },
@@ -101,7 +101,7 @@ app.get('/:engine/', (req, res) => {
     
     const gameName = req.query.name || s.name;
     const customBg = req.query.bg ? `/uploads/${req.query.bg}` : s.img;
-    const platform = req.query.platform || 'pc'; // <-- Ловим платформу
+    const platform = req.query.platform || 'pc'; 
     
     const indexPath = path.join(__dirname, 'templates', `${engine}_core`, 'index.html');
     if (!fs.existsSync(indexPath)) return res.status(404).send("<h2>⚙️ Движок в разработке.</h2>");
@@ -119,7 +119,7 @@ app.get('/:engine/', (req, res) => {
                .replace(/{{BOOSTER_TRIPLE}}/g, s.b_triple)
                .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
-               .replace(/{{PLATFORM}}/g, platform); // <-- Вшиваем платформу в игру
+               .replace(/{{PLATFORM}}/g, platform); 
     res.send(html);
 });
 
@@ -229,7 +229,7 @@ async function finishGameGeneration(ctx) {
     const data = ctx.session.gameData;
     const encName = encodeURIComponent(data.gameName);
     const encBg = data.customBgFile ? `&bg=${data.customBgFile}` : '';
-    const platformParam = `&platform=${data.platform || 'pc'}`; // <-- Добавляем параметр
+    const platformParam = `&platform=${data.platform || 'pc'}`; 
     
     const url = `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}&name=${encName}${encBg}${platformParam}`; 
     
@@ -242,7 +242,7 @@ async function finishGameGeneration(ctx) {
 bot.action('download_source', async (ctx) => {
     const data = ctx.session.gameData;
     const s = styles[data.biome];
-    const platform = data.platform || 'pc'; // <-- Для архива
+    const platform = data.platform || 'pc';
     const templatePath = path.join(__dirname, 'templates', `${data.engine}_core`);
     const tempDir = path.join(os.tmpdir(), `build_${Date.now()}`); 
     const zipPath = path.join(os.tmpdir(), `game_${data.engine}.zip`); 
@@ -271,7 +271,7 @@ bot.action('download_source', async (ctx) => {
                    .replace(/{{BOOSTER_TRIPLE}}/g, s.b_triple)
                    .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                    .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
-                   .replace(/{{PLATFORM}}/g, platform); // <-- Вшиваем платформу в скачанный код
+                   .replace(/{{PLATFORM}}/g, platform); 
         fs.writeFileSync(indexPath, html);
 
         const output = fs.createWriteStream(zipPath);

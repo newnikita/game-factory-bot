@@ -44,7 +44,7 @@ async function generateAIGame(userPrompt) {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-pro",
+            model: "gemini-1.5-pro-latest",
             systemInstruction: "Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя. СТРОГИЕ ПРАВИЛА: 1) Используй только HTML, CSS и Vanilla JS. Без библиотек. 2) Размер Canvas сделай адаптивным (max-width 800px). 3) Включи requestAnimationFrame, управление (мышь/клавиатура), физику, счетчик очков, логику проигрыша. 4) Вместо картинок рисуй примитивы (ctx.arc, ctx.fillRect) или используй эмодзи (ctx.fillText). 5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений, извинений или Markdown (БЕЗ ```html). Начинай строго с <!DOCTYPE html>."
         });
 

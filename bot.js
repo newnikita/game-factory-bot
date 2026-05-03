@@ -70,7 +70,6 @@ async function checkImageSafety(imageUrl) {
 
         if (response.data.status === 'success') {
             const nudity = response.data.nudity;
-            // Если вероятность того, что контент "чистый" (none) меньше 80%, блокируем
             if (nudity.none < 0.8) { 
                 console.log("⛔ NSFW контент обнаружен!");
                 return false; 
@@ -80,7 +79,7 @@ async function checkImageSafety(imageUrl) {
         return true;
     } catch (e) {
         console.error("❌ Ошибка при запросе к Sightengine:", e.message);
-        return true; // В случае падения API пропускаем, чтобы не блокировать бота полностью
+        return true; 
     }
 }
 
@@ -102,6 +101,7 @@ app.get('/:engine/', (req, res) => {
     
     const gameName = req.query.name || s.name;
     const customBg = req.query.bg ? `/uploads/${req.query.bg}` : s.img;
+    const platform = req.query.platform || 'pc'; // <-- Ловим платформу
     
     const indexPath = path.join(__dirname, 'templates', `${engine}_core`, 'index.html');
     if (!fs.existsSync(indexPath)) return res.status(404).send("<h2>⚙️ Движок в разработке.</h2>");
@@ -118,7 +118,8 @@ app.get('/:engine/', (req, res) => {
                .replace(/{{BOOSTER_WIDE}}/g, s.b_wide)
                .replace(/{{BOOSTER_TRIPLE}}/g, s.b_triple)
                .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
-               .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning);
+               .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
+               .replace(/{{PLATFORM}}/g, platform); // <-- Вшиваем платформу в игру
     res.send(html);
 });
 
@@ -199,7 +200,6 @@ bot.on('photo', async (ctx) => {
             const fileLink = await ctx.telegram.getFileLink(photo.file_id);
             const url = fileLink.href;
 
-            // Вызываем боевую проверку Sightengine
             const isSafe = await checkImageSafety(url);
             if (!isSafe) {
                 return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Ого-го! Мой сканер заметил что-то неприличное на этом фото. За такое на платформе сразу бан. Давай выберем картинку поскромнее!');
@@ -229,8 +229,9 @@ async function finishGameGeneration(ctx) {
     const data = ctx.session.gameData;
     const encName = encodeURIComponent(data.gameName);
     const encBg = data.customBgFile ? `&bg=${data.customBgFile}` : '';
+    const platformParam = `&platform=${data.platform || 'pc'}`; // <-- Добавляем параметр
     
-    const url = `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}&name=${encName}${encBg}`; 
+    const url = `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}&name=${encName}${encBg}${platformParam}`; 
     
     await ctx.reply(`✅ Игра "${data.gameName}" успешно сгенерирована!`, Markup.inlineKeyboard([
         [Markup.button.webApp('🎮 ИГРАТЬ', url)],
@@ -241,6 +242,7 @@ async function finishGameGeneration(ctx) {
 bot.action('download_source', async (ctx) => {
     const data = ctx.session.gameData;
     const s = styles[data.biome];
+    const platform = data.platform || 'pc'; // <-- Для архива
     const templatePath = path.join(__dirname, 'templates', `${data.engine}_core`);
     const tempDir = path.join(os.tmpdir(), `build_${Date.now()}`); 
     const zipPath = path.join(os.tmpdir(), `game_${data.engine}.zip`); 
@@ -268,7 +270,8 @@ bot.action('download_source', async (ctx) => {
                    .replace(/{{BOOSTER_WIDE}}/g, s.b_wide)
                    .replace(/{{BOOSTER_TRIPLE}}/g, s.b_triple)
                    .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
-                   .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning);
+                   .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
+                   .replace(/{{PLATFORM}}/g, platform); // <-- Вшиваем платформу в скачанный код
         fs.writeFileSync(indexPath, html);
 
         const output = fs.createWriteStream(zipPath);

@@ -7,7 +7,6 @@ const archiver = require('archiver');
 const express = require('express');
 const fse = require('fs-extra');
 const axios = require('axios');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // === 🛡️ СИСТЕМА АНТИ-КРАШ ===
 process.on('uncaughtException', (err) => console.error('❌ Ошибка:', err.message));
@@ -17,7 +16,7 @@ process.on('unhandledRejection', (err) => console.error('❌ Ошибка сет
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
-// === 📊 БАЗА ДАННЫХ БИОМОВ ===
+// === 📊 БАЗА ДАННЫХ БИОМОВ (СМАЙЛЫ И ИКОНКИ) ===
 const styles = {
     'silent_stars': { 
         name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', 
@@ -67,7 +66,7 @@ async function checkImageSafety(imageUrl) {
             }
         });
         if (response.data.status === 'success' && response.data.nudity.none < 0.8) { 
-            return false; // NSFW обнаружено
+            return false; 
         }
         return true;
     } catch (e) {
@@ -76,16 +75,11 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI (ЖЕЛЕЗОБЕТОННАЯ ВЕРСИЯ) ===
+// === 🧠 ПРЯМОЙ REST-ЗАПРОС К GEMINI (БЕЗ ГЛЮЧНЫХ БИБЛИОТЕК) ===
 async function generateAIGame(userPrompt) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        
-        // Меняем модель на базовую gemini-pro. Она не выдает ошибку 404 никогда!
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-        // Вшиваем все правила прямо в тело запроса
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя. 
 СТРОГИЕ ПРАВИЛА: 
 1) Используй только HTML, CSS и Vanilla JS. Без внешних библиотек. 
@@ -96,14 +90,24 @@ async function generateAIGame(userPrompt) {
 
 Идея для игры: ${userPrompt}`;
 
-        const response = await model.generateContent(fullPrompt);
-        let code = response.text();
+        // Стучимся напрямую к самой быстрой модели Flash через чистый HTTP-запрос
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
-        // Очищаем код от лишнего
+        const response = await axios.post(url, {
+            contents: [{ parts: [{ text: fullPrompt }] }]
+        }, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        // Парсим ответ напрямую из JSON
+        let code = response.data.candidates[0].content.parts[0].text;
+        
+        // Очищаем от случайных артефактов
         code = code.replace(/```html/gi, '').replace(/```/g, '').trim();
         return code;
     } catch(e) {
-        console.error("❌ ОШИБКА GEMINI API:", e);
+        // Если Гугл выдаст ошибку, мы увидим её чистый текст в логах
+        console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
         return null;
     }
 }
@@ -214,7 +218,7 @@ bot.on('text', async (ctx) => {
         const gameCode = await generateAIGame(ctx.message.text);
         
         if (!gameCode) {
-            return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '❌ Ошибка генерации. Проверь настройки Gemini API!');
+            return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '❌ Ошибка генерации. Проверь логи на Render!');
         }
 
         const gameId = `ai_${Date.now()}`;

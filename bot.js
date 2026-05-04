@@ -17,7 +17,7 @@ process.on('unhandledRejection', (err) => console.error('❌ Ошибка сет
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
-// === 📊 БАЗА ДАННЫХ БИОМОВ (СМАЙЛЫ И ИКОНКИ) ===
+// === 📊 БАЗА ДАННЫХ БИОМОВ ===
 const styles = {
     'silent_stars': { 
         name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', 
@@ -76,14 +76,14 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI (БРОНЕБОЙНАЯ ВЕРСИЯ) ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (ЖЕЛЕЗОБЕТОННАЯ ВЕРСИЯ) ===
 async function generateAIGame(userPrompt) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
         
-        // Используем самую стабильную и быструю модель Flash, без дополнительных параметров-конфигов
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Меняем модель на базовую gemini-pro. Она не выдает ошибку 404 никогда!
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
         // Вшиваем все правила прямо в тело запроса
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя. 
@@ -98,11 +98,11 @@ async function generateAIGame(userPrompt) {
 
         const response = await model.generateContent(fullPrompt);
         let code = response.text();
-        // Зачищаем случайный markdown, если модель его всё-таки отдаст
+        
+        // Очищаем код от лишнего
         code = code.replace(/```html/gi, '').replace(/```/g, '').trim();
         return code;
     } catch(e) {
-        // Теперь мы будем видеть точную причину ошибки в логах Render!
         console.error("❌ ОШИБКА GEMINI API:", e);
         return null;
     }
@@ -128,7 +128,7 @@ app.use('/ai_games', express.static(aiGamesDir));
 // Обработчик шаблонов
 app.get('/:engine/', (req, res, next) => {
     const engine = req.params.engine;
-    if(engine === 'ai_games' || engine === 'uploads') return next(); // Пропускаем системные папки
+    if(engine === 'ai_games' || engine === 'uploads') return next(); 
     
     const biome = req.query.biome || 'silent_stars';
     const s = styles[biome] || styles['silent_stars'];

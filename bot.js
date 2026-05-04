@@ -90,8 +90,8 @@ async function generateAIGame(userPrompt) {
 
 Идея для игры: ${userPrompt}`;
 
-        // Стучимся напрямую к самой быстрой модели Flash через чистый HTTP-запрос
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // ТЕПЕРЬ ССЫЛКА 100% ВЕДЕТ НА РАБОЧИЙ GEMINI-PRO!
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
             contents: [{ parts: [{ text: fullPrompt }] }]

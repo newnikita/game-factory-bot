@@ -205,6 +205,20 @@ bot.start((ctx) => {
     );
 });
 
+// ГЛАВНОЕ МЕНЮ (Возврат без перезапуска)
+bot.action('main_menu', async (ctx) => {
+    ctx.session = { gameData: {}, step: 'platform' }; 
+    try {
+        await ctx.editMessageText('Привет, Демиург! 🌌\nВыбери платформу:',
+            Markup.inlineKeyboard([ [Markup.button.callback('📱 Мобильная', 'platform_mobile')], [Markup.button.callback('💻 ПК', 'platform_pc')] ])
+        );
+    } catch(e) {
+        await ctx.reply('Привет, Демиург! 🌌\nВыбери платформу:',
+            Markup.inlineKeyboard([ [Markup.button.callback('📱 Мобильная', 'platform_mobile')], [Markup.button.callback('💻 ПК', 'platform_pc')] ])
+        );
+    }
+});
+
 bot.action(/platform_(.+)/, async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.platform = ctx.match[1]; 
@@ -220,7 +234,9 @@ bot.action('engine_ai', async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.engine = 'ai';
     ctx.session.step = 'awaiting_ai_prompt';
-    await ctx.editMessageText('✨ Режим Нейросети активирован!\n\nОпиши свою игру в одном-двух предложениях (например: Мрачный рыцарь бежит по подземелью и уворачивается от шипов).');
+    await ctx.editMessageText('✨ Режим Нейросети активирован!\n\nОпиши свою игру в одном-двух предложениях (например: Мрачный рыцарь бежит по подземелью и уворачивается от шипов).', Markup.inlineKeyboard([
+        [Markup.button.callback('🏠 Главное меню', 'main_menu')]
+    ]));
 });
 
 bot.action(/engine_(?!ai)(.+)/, async (ctx) => {
@@ -239,40 +255,63 @@ bot.action(/biome_(.+)/, async (ctx) => {
     await ctx.editMessageText('Шаблон применен! 🎨\nТеперь придумай и напиши мне название для твоей игры:');
 });
 
+// Функция для обработки генерации в фоне
+async function handleAIGeneration(chatId, msgId, prompt, ctx) {
+    generateAIGame(prompt).then(async (gameCode) => {
+        if (!gameCode) {
+            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google слишком загружены.', Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Попробовать снова', 'regen_ai')],
+                [Markup.button.callback('📝 Изменить запрос', 'engine_ai')],
+                [Markup.button.callback('🏠 Главное меню', 'main_menu')]
+            ]));
+        }
+
+        const gameId = `ai_${Date.now()}`;
+        fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
+        
+        const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
+        
+        await bot.telegram.editMessageText(chatId, msgId, null, `✅ Твоя игра успешно создана нейросетью в твоём фирменном стиле!`, Markup.inlineKeyboard([
+            [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+            [Markup.button.callback('📦 Скачать Архив', `dl_ai_${gameId}`)],
+            [Markup.button.callback('🔁 Перегенерировать (тот же запрос)', 'regen_ai')],
+            [Markup.button.callback('📝 Новая игра (другой запрос)', 'engine_ai')],
+            [Markup.button.callback('🏠 В главное меню', 'main_menu')]
+        ]));
+    }).catch(err => {
+        console.error("Ошибка в фоне:", err);
+        bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации.', Markup.inlineKeyboard([
+            [Markup.button.callback('🔄 Попробовать снова', 'regen_ai')],
+            [Markup.button.callback('🏠 Главное меню', 'main_menu')]
+        ]));
+    });
+}
+
+// ПОВТОРНАЯ ГЕНЕРАЦИЯ ПО ТОМУ ЖЕ ПРОМПТУ
+bot.action('regen_ai', async (ctx) => {
+    const prompt = ctx.session?.gameData?.lastPrompt;
+    if (!prompt) return ctx.answerCbQuery('❌ Прошлый запрос не найден. Создай игру заново.', { show_alert: true });
+
+    await ctx.editMessageText('✨ Призываю мощности Gemini 2.5 Flash... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
+    const msgId = ctx.callbackQuery.message.message_id;
+    const chatId = ctx.chat.id;
+
+    handleAIGeneration(chatId, msgId, prompt, ctx);
+});
+
 bot.on('text', async (ctx) => {
-    // === ФОНОВАЯ ИИ-ГЕНЕРАЦИЯ БЕЗ ПАДЕНИЙ ===
+    // ВЕТКА ИИ-ГЕНЕРАЦИИ (Асинхронная)
     if (ctx.session?.step === 'awaiting_ai_prompt') {
         const prompt = ctx.message.text;
         const chatId = ctx.chat.id;
         
-        // Моментально сбрасываем шаг, чтобы бот не блокировался
         ctx.session.step = null;
+        ctx.session.gameData.lastPrompt = prompt; // Сохраняем запрос на случай перегенерации
         
         const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... \n\nПроцесс запущен в фоновом режиме. База эталонов огромная, поэтому генерация может занять 1-3 минуты. Просто подожди, я обновлю это сообщение! ⏳');
-        const msgId = msg.message_id;
-
-        // Запускаем генерацию БЕЗ await, чтобы функция Телеграма завершилась и не было таймаута в 90 секунд
-        generateAIGame(prompt).then(async (gameCode) => {
-            if (!gameCode) {
-                return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google слишком загружены.');
-            }
-
-            const gameId = `ai_${Date.now()}`;
-            fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
-            
-            const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
-            
-            // Кнопка скачивания теперь работает автономно через паттерн dl_ai_{gameId}
-            await bot.telegram.editMessageText(chatId, msgId, null, `✅ Твоя игра успешно создана нейросетью в твоём фирменном стиле!`, Markup.inlineKeyboard([
-                [Markup.button.webApp('🎮 ИГРАТЬ', url)],
-                [Markup.button.callback('📦 Скачать Архив', `dl_ai_${gameId}`)]
-            ]));
-        }).catch(err => {
-            console.error("Ошибка в фоне:", err);
-            bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации.');
-        });
-
-        return; // Завершаем выполнение сразу! Телеграм доволен, ошибки в 90000ms больше не будет.
+        
+        handleAIGeneration(chatId, msg.message_id, prompt, ctx);
+        return;
     }
 
     // ВЕТКА СТАНДАРТНЫХ ШАБЛОНОВ
@@ -348,13 +387,13 @@ async function finishGameGeneration(ctx) {
     
     await ctx.reply(`✅ Игра "${data.gameName}" успешно сгенерирована!`, Markup.inlineKeyboard([
         [Markup.button.webApp('🎮 ИГРАТЬ', url)],
-        [Markup.button.callback('📦 Скачать Архив', 'download_source')]
+        [Markup.button.callback('📦 Скачать Архив', 'download_source')],
+        [Markup.button.callback('🏠 Главное меню', 'main_menu')]
     ]));
 }
 
-// === НОВАЯ АВТОНОМНАЯ СКАЧКА ИИ-ИГРЫ ===
 bot.action(/dl_ai_(.+)/, async (ctx) => {
-    const gameId = ctx.match[1]; // Берем ID прямо из кнопки
+    const gameId = ctx.match[1]; 
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
     const zipPath = path.join(os.tmpdir(), `${gameId}.zip`);
 
@@ -379,7 +418,6 @@ bot.action(/dl_ai_(.+)/, async (ctx) => {
     }
 });
 
-// Загрузка шаблона
 bot.action('download_source', async (ctx) => {
     const data = ctx.session.gameData;
     const s = styles[data.biome];

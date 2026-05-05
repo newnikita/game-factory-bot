@@ -20,31 +20,31 @@ bot.use(session());
 const styles = {
     'silent_stars': { 
         name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', 
-        img: '[https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop)',
+        img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop',
         font: '"Courier New", monospace', shadow: '0 0 15px rgba(224, 224, 255, 0.5)', 
         life: '💠', score: '☄️', b_wide: '🌌', b_triple: '✨', b_fire: '🌠', b_lightning: '🌩️'
     }, 
     'credo_fantasy': { 
         name: 'Темное Фэнтези', bg: '#110000', block: '#8B0000', 
-        img: '[https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop)',
+        img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop',
         font: '"Palatino Linotype", "Book Antiqua", serif', shadow: '0 0 20px rgba(139, 0, 0, 0.8)', 
         life: '🩸', score: '💀', b_wide: '📜', b_triple: '🔮', b_fire: '🔥', b_lightning: '🗡️'
     }, 
     'ghibli_forest': { 
         name: 'Волшебный Лес', bg: '#1E3B27', block: '#A8E6CF', 
-        img: '[https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop)',
+        img: 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop',
         font: '"Comic Sans MS", cursive, sans-serif', shadow: '2px 2px 5px rgba(0, 0, 0, 0.3)', 
         life: '🌸', score: '🍃', b_wide: '🍄', b_triple: '✨', b_fire: '☀️', b_lightning: '🌩️'
     },
     'neon_tokyo': { 
         name: 'Неоновый Токио', bg: '#090014', block: '#FF00FF', 
-        img: '[https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop)',
+        img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop',
         font: '"Trebuchet MS", sans-serif', shadow: '0 0 10px #00FFFF, 0 0 20px #FF00FF', 
         life: '🔋', score: '💿', b_wide: '🛹', b_triple: '💠', b_fire: '💥', b_lightning: '⚡'
     },
     'wasteland': { 
         name: 'Ржавая Пустошь', bg: '#2B1D14', block: '#D2691E', 
-        img: '[https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop)',
+        img: 'https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop',
         font: '"Impact", charcoal, sans-serif', shadow: '4px 4px 0px rgba(0, 0, 0, 0.8)', 
         life: '⚙️', score: '🔩', b_wide: '🛡️', b_triple: '☢️', b_fire: '🔥', b_lightning: '⚡'
     }
@@ -57,7 +57,7 @@ async function checkImageSafety(imageUrl) {
             console.warn("⚠️ Ключи Sightengine не настроены в .env! Фильтр отключен.");
             return true; 
         }
-        const response = await axios.get('[https://api.sightengine.com/1.0/check.json](https://api.sightengine.com/1.0/check.json)', {
+        const response = await axios.get('https://api.sightengine.com/1.0/check.json', {
             params: {
                 'url': imageUrl,
                 'models': 'nudity-2.0',
@@ -109,7 +109,8 @@ ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=$){process.env.GEMINI_API_KEY}`;
+        // ТЕПЕРЬ ССЫЛКА ВЕДЕТ НА АКТУАЛЬНУЮ МОДЕЛЬ ДЛЯ БОЛЬШОГО КОНТЕКСТА: gemini-1.5-pro
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
             contents: [{
@@ -122,12 +123,13 @@ ${referenceCode}
 
         let code = response.data.candidates[0].content.parts[0].text;
         
-        // Бронебойная очистка от маркдауна, которая не ломает парсер Node.js
+        // Бронебойная очистка от маркдауна, которая 100% не ломает парсер Node.js
         code = code.replace(new RegExp('```html', 'gi'), '');
-        code = code.replace(new RegExp('```', 'g'), '');
+        code = code.replace(new RegExp('
+```', 'g'), '');
         return code.trim();
     } catch(e) {
-        console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI 3.1 PRO:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
+        console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
         return null;
     }
 }
@@ -215,7 +217,7 @@ bot.action('engine_ai', async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.engine = 'ai';
     ctx.session.step = 'awaiting_ai_prompt';
-    await ctx.editMessageText('✨ Режим Нейросети активирован!\n\nОпиши свою игру в одном-двух предложениях (например: Шотландская прямоухая кошка по имени Мартин бегает по низу экрана и ловит падающих мышей).');
+    await ctx.editMessageText('✨ Режим Нейросети активирован!\n\nОпиши свою игру в одном-двух предложениях (например: Мрачный рыцарь бежит по подземелью и уворачивается от шипов).');
 });
 
 bot.action(/engine_(?!ai)(.+)/, async (ctx) => {
@@ -237,7 +239,7 @@ bot.action(/biome_(.+)/, async (ctx) => {
 bot.on('text', async (ctx) => {
     // ВЕТКА ИИ-ГЕНЕРАЦИИ
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const msg = await ctx.reply('✨ Призываю Gemini 3.1 Pro... Изучаю библиотеку эталонов, пишу игру с нуля, это займет около 15-20 секунд ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности нейросети... Изучаю библиотеку эталонов, пишу игру с нуля. Твоих скриптов стало много, так что это займет около 15-20 секунд ⏳');
         const gameCode = await generateAIGame(ctx.message.text);
         
         if (!gameCode) {

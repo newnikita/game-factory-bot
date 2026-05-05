@@ -94,8 +94,6 @@ async function generateAIGame(userPrompt) {
             console.warn("⚠️ Папка references не найдена! ИИ будет генерировать без твоих эталонов.");
         }
 
-        const marker = String.fromCharCode(96, 96, 96);
-
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
 СТРОГИЕ ПРАВИЛА:
@@ -103,15 +101,15 @@ async function generateAIGame(userPrompt) {
 2) Размер Canvas должен быть адаптивным с правильной обработкой пропорций на мобильных устройствах.
 3) Включи requestAnimationFrame, плавное управление, продвинутую физику, логику победы/поражения.
 4) Вместо картинок рисуй примитивы или используй встроенные эмодзи.
-5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений или Markdown (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
+5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений или Markdown. Выдавай сырой текст, который начинается строго с <!DOCTYPE html>. БЕЗ разметки блоков кода.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА. ТЫ ДОЛЖЕН ОПИРАТЬСЯ на их стиль написания, архитектуру игрового цикла, проработку UI, сложную систему частиц и структуру функций. ПОЛНОСТЬЮ ИГНОРИРУЙ любую логику рекламных SDK, если встретишь её в примерах — создавай чистый изолированный Canvas-движок:
 ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        // ТА САМАЯ ПОБЕДНАЯ ССЫЛКА НА ВЕРСИЮ 2.5
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // МЕНЯЕМ МОДЕЛЬ НА FLASH. ОНА БЫСТРЕЕ И ИМЕЕТ ОГРОМНЫЕ ЛИМИТЫ ДЛЯ БОЛЬШИХ ФАЙЛОВ!
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
             contents: [{
@@ -124,8 +122,9 @@ ${referenceCode}
 
         let code = response.data.candidates[0].content.parts[0].text;
         
-        code = code.replace(new RegExp(marker + 'html', 'gi'), '');
-        code = code.replace(new RegExp(marker, 'g'), '');
+        // 100% безопасная очистка от маркдауна без риска синтаксических ошибок в Node.js
+        code = code.replace(/\x60\x60\x60html/gi, '');
+        code = code.replace(/\x60\x60\x60/g, '');
         
         return code.trim();
     } catch(e) {
@@ -239,7 +238,7 @@ bot.action(/biome_(.+)/, async (ctx) => {
 bot.on('text', async (ctx) => {
     // ВЕТКА ИИ-ГЕНЕРАЦИИ
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Pro... Изучаю библиотеку эталонов, пишу игру с нуля. Твоих скриптов стало много, так что это займет около 15-20 секунд ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... Изучаю библиотеку эталонов, пишу игру с нуля. Твоих скриптов стало много, так что это займет около 15-20 секунд ⏳');
         const gameCode = await generateAIGame(ctx.message.text);
         
         if (!gameCode) {

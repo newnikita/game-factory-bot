@@ -20,31 +20,31 @@ bot.use(session());
 const styles = {
     'silent_stars': { 
         name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', 
-        img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop',
+        img: '[https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop)',
         font: '"Courier New", monospace', shadow: '0 0 15px rgba(224, 224, 255, 0.5)', 
         life: '💠', score: '☄️', b_wide: '🌌', b_triple: '✨', b_fire: '🌠', b_lightning: '🌩️'
     }, 
     'credo_fantasy': { 
         name: 'Темное Фэнтези', bg: '#110000', block: '#8B0000', 
-        img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop',
+        img: '[https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop)',
         font: '"Palatino Linotype", "Book Antiqua", serif', shadow: '0 0 20px rgba(139, 0, 0, 0.8)', 
         life: '🩸', score: '💀', b_wide: '📜', b_triple: '🔮', b_fire: '🔥', b_lightning: '🗡️'
     }, 
     'ghibli_forest': { 
         name: 'Волшебный Лес', bg: '#1E3B27', block: '#A8E6CF', 
-        img: 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop',
+        img: '[https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=1080&auto=format&fit=crop)',
         font: '"Comic Sans MS", cursive, sans-serif', shadow: '2px 2px 5px rgba(0, 0, 0, 0.3)', 
         life: '🌸', score: '🍃', b_wide: '🍄', b_triple: '✨', b_fire: '☀️', b_lightning: '🌩️'
     },
     'neon_tokyo': { 
         name: 'Неоновый Токио', bg: '#090014', block: '#FF00FF', 
-        img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop',
+        img: '[https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1503899036084-c55cdd92da26?q=80&w=1080&auto=format&fit=crop)',
         font: '"Trebuchet MS", sans-serif', shadow: '0 0 10px #00FFFF, 0 0 20px #FF00FF', 
         life: '🔋', score: '💿', b_wide: '🛹', b_triple: '💠', b_fire: '💥', b_lightning: '⚡'
     },
     'wasteland': { 
         name: 'Ржавая Пустошь', bg: '#2B1D14', block: '#D2691E', 
-        img: 'https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop',
+        img: '[https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop](https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop)',
         font: '"Impact", charcoal, sans-serif', shadow: '4px 4px 0px rgba(0, 0, 0, 0.8)', 
         life: '⚙️', score: '🔩', b_wide: '🛡️', b_triple: '☢️', b_fire: '🔥', b_lightning: '⚡'
     }
@@ -57,7 +57,7 @@ async function checkImageSafety(imageUrl) {
             console.warn("⚠️ Ключи Sightengine не настроены в .env! Фильтр отключен.");
             return true; 
         }
-        const response = await axios.get('https://api.sightengine.com/1.0/check.json', {
+        const response = await axios.get('[https://api.sightengine.com/1.0/check.json](https://api.sightengine.com/1.0/check.json)', {
             params: {
                 'url': imageUrl,
                 'models': 'nudity-2.0',
@@ -80,7 +80,6 @@ async function generateAIGame(userPrompt) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
 
-        // ДИНАМИЧЕСКОЕ ЧТЕНИЕ ВСЕХ ЭТАЛОНОВ ИЗ ПАПКИ references
         let referenceCode = "";
         const referencesDir = path.join(__dirname, 'references');
         
@@ -95,6 +94,9 @@ async function generateAIGame(userPrompt) {
             console.warn("⚠️ Папка references не найдена! ИИ будет генерировать без твоих эталонов.");
         }
 
+        // Хак для обхода парсера Telegram: генерируем тройные обратные кавычки через коды символов
+        const marker = String.fromCharCode(96, 96, 96);
+
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
 СТРОГИЕ ПРАВИЛА:
@@ -102,15 +104,14 @@ async function generateAIGame(userPrompt) {
 2) Размер Canvas должен быть адаптивным с правильной обработкой пропорций на мобильных устройствах.
 3) Включи requestAnimationFrame, плавное управление, продвинутую физику, логику победы/поражения.
 4) Вместо картинок рисуй примитивы или используй встроенные эмодзи.
-5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений или Markdown (БЕЗ \`\`\`html). Начинай строго с <!DOCTYPE html>.
+5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений или Markdown (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА. ТЫ ДОЛЖЕН ОПИРАТЬСЯ на их стиль написания, архитектуру игрового цикла, проработку UI, сложную систему частиц и структуру функций. ПОЛНОСТЬЮ ИГНОРИРУЙ любую логику рекламных SDK, если встретишь её в примерах — создавай чистый изолированный Canvas-движок:
 ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        // ТЕПЕРЬ ССЫЛКА ВЕДЕТ НА АКТУАЛЬНУЮ МОДЕЛЬ ДЛЯ БОЛЬШОГО КОНТЕКСТА: gemini-1.5-pro
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=$){process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
             contents: [{
@@ -123,10 +124,10 @@ ${referenceCode}
 
         let code = response.data.candidates[0].content.parts[0].text;
         
-        // Бронебойная очистка от маркдауна, которая 100% не ломает парсер Node.js
-        code = code.replace(new RegExp('```html', 'gi'), '');
-        code = code.replace(new RegExp('
-```', 'g'), '');
+        // Очищаем от Markdown, используя нашу защищенную переменную
+        code = code.replace(new RegExp(marker + 'html', 'gi'), '');
+        code = code.replace(new RegExp(marker, 'g'), '');
+        
         return code.trim();
     } catch(e) {
         console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
@@ -144,7 +145,7 @@ app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
 // Папки для хранения файлов
 const uploadsDir = path.join(__dirname, 'uploads');
 const aiGamesDir = path.join(__dirname, 'ai_games');
-const referencesDir = path.join(__dirname, 'references'); // Папка эталонов
+const referencesDir = path.join(__dirname, 'references');
 
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 if (!fs.existsSync(aiGamesDir)) fs.mkdirSync(aiGamesDir);

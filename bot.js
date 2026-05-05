@@ -110,8 +110,8 @@ ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        // ВОЗВРАЩАЕМ РАБОЧУЮ ССЫЛКУ, КАК ТЫ И СКАЗАЛ! НИКАКОЙ ОТСЕБЯТИНЫ!
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // ТА САМАЯ ПОБЕДНАЯ ССЫЛКА НА ВЕРСИЮ 2.5
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
             contents: [{
@@ -239,7 +239,7 @@ bot.action(/biome_(.+)/, async (ctx) => {
 bot.on('text', async (ctx) => {
     // ВЕТКА ИИ-ГЕНЕРАЦИИ
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const msg = await ctx.reply('✨ Призываю мощности нейросети... Изучаю библиотеку эталонов, пишу игру с нуля. Твоих скриптов стало много, так что это займет около 15-20 секунд ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Pro... Изучаю библиотеку эталонов, пишу игру с нуля. Твоих скриптов стало много, так что это займет около 15-20 секунд ⏳');
         const gameCode = await generateAIGame(ctx.message.text);
         
         if (!gameCode) {

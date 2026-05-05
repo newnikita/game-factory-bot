@@ -75,39 +75,57 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-// === 🧠 ПРЯМОЙ REST-ЗАПРОС К GEMINI (БЕЗ ГЛЮЧНЫХ БИБЛИОТЕК) ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (МАССИВНАЯ БАЗА ЗНАНИЙ) ===
 async function generateAIGame(userPrompt) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
 
-        const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя. 
-СТРОГИЕ ПРАВИЛА: 
-1) Используй только HTML, CSS и Vanilla JS. Без внешних библиотек. 
-2) Размер Canvas сделай адаптивным (max-width 800px). 
-3) Включи requestAnimationFrame, управление (мышь/клавиатура), физику, счетчик очков, логику проигрыша. 
-4) Вместо картинок рисуй примитивы (ctx.arc, ctx.fillRect) или используй эмодзи (ctx.fillText). 
-5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений, извинений или Markdown (БЕЗ \`\`\`html). Начинай строго с <!DOCTYPE html>.
+        // ДИНАМИЧЕСКОЕ ЧТЕНИЕ ВСЕХ ЭТАЛОНОВ ИЗ ПАПКИ references
+        let referenceCode = "";
+        const referencesDir = path.join(__dirname, 'references');
+        
+        if (fs.existsSync(referencesDir)) {
+            const files = fs.readdirSync(referencesDir).filter(file => file.endsWith('.html'));
+            for (const file of files) {
+                const filePath = path.join(referencesDir, file);
+                referenceCode += `\n\n=== ЭТАЛОН КОДА: ${file} ===\n`;
+                referenceCode += fs.readFileSync(filePath, 'utf8');
+            }
+        } else {
+            console.warn("⚠️ Папка references не найдена! ИИ будет генерировать без твоих эталонов.");
+        }
 
-Идея для игры: ${userPrompt}`;
+        const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
-        // ТЕПЕРЬ ССЫЛКА ВЕДЕТ НА АКТУАЛЬНУЮ МОДЕЛЬ: gemini-2.5-flash
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+СТРОГИЕ ПРАВИЛА:
+1) Используй только HTML, CSS и Vanilla JS. Без сторонних библиотек и БЕЗ ЧУЖИХ SDK (никакой аналитики, облачных сохранений или рекламы).
+2) Размер Canvas должен быть адаптивным с правильной обработкой пропорций на мобильных устройствах.
+3) Включи requestAnimationFrame, плавное управление, продвинутую физику, логику победы/поражения.
+4) Вместо картинок рисуй примитивы или используй встроенные эмодзи.
+5) ВЫДАВАЙ ТОЛЬКО КОД. Никаких пояснений или Markdown (БЕЗ \`\`\`html). Начинай строго с <!DOCTYPE html>.
+
+Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА. ТЫ ДОЛЖЕН ОПИРАТЬСЯ на их стиль написания, архитектуру игрового цикла, проработку UI, сложную систему частиц и структуру функций. ПОЛНОСТЬЮ ИГНОРИРУЙ любую логику рекламных SDK, если встретишь её в примерах — создавай чистый изолированный Canvas-движок:
+${referenceCode}
+
+Идея для новой игры: ${userPrompt}`;
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const response = await axios.post(url, {
-            contents: [{ parts: [{ text: fullPrompt }] }]
+            contents: [{
+                role: "user",
+                parts: [{ text: fullPrompt }]
+            }]
         }, {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        // Парсим ответ напрямую из JSON
         let code = response.data.candidates[0].content.parts[0].text;
-        
-        // Очищаем от случайных артефактов
-        code = code.replace(/```html/gi, '').replace(/```/g, '').trim();
+        code = code.replace(/```html/gi, '').replace(/
+```/g, '').trim();
         return code;
     } catch(e) {
-        // Если Гугл выдаст ошибку, мы увидим её чистый текст в логах
-        console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
+        console.error("❌ ОШИБКА ПРЯМОГО ЗАПРОСА К GEMINI 3.1 PRO:", e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
         return null;
     }
 }
@@ -122,8 +140,11 @@ app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
 // Папки для хранения файлов
 const uploadsDir = path.join(__dirname, 'uploads');
 const aiGamesDir = path.join(__dirname, 'ai_games');
+const referencesDir = path.join(__dirname, 'references'); // Папка эталонов
+
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 if (!fs.existsSync(aiGamesDir)) fs.mkdirSync(aiGamesDir);
+if (!fs.existsSync(referencesDir)) fs.mkdirSync(referencesDir);
 
 // Раздаем статику
 app.use('/uploads', express.static(uploadsDir));
@@ -132,7 +153,7 @@ app.use('/ai_games', express.static(aiGamesDir));
 // Обработчик шаблонов
 app.get('/:engine/', (req, res, next) => {
     const engine = req.params.engine;
-    if(engine === 'ai_games' || engine === 'uploads') return next(); 
+    if(engine === 'ai_games' || engine === 'uploads' || engine === 'references') return next(); 
     
     const biome = req.query.biome || 'silent_stars';
     const s = styles[biome] || styles['silent_stars'];
@@ -214,7 +235,7 @@ bot.action(/biome_(.+)/, async (ctx) => {
 bot.on('text', async (ctx) => {
     // ВЕТКА ИИ-ГЕНЕРАЦИИ
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const msg = await ctx.reply('✨ Призываю нейросеть... Пишу код с нуля, это может занять 15-20 секунд ⏳');
+        const msg = await ctx.reply('✨ Призываю Gemini 3.1 Pro... Изучаю библиотеку эталонов, пишу игру с нуля, это займет около 15-20 секунд ⏳');
         const gameCode = await generateAIGame(ctx.message.text);
         
         if (!gameCode) {
@@ -228,7 +249,7 @@ bot.on('text', async (ctx) => {
         ctx.session.step = null;
 
         const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `✅ Твоя игра создана нейросетью с нуля!`, Markup.inlineKeyboard([
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `✅ Твоя игра создана нейросетью в твоём фирменном стиле!`, Markup.inlineKeyboard([
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
             [Markup.button.callback('📦 Скачать Архив', 'download_ai_source')]
         ]));

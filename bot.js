@@ -75,7 +75,7 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С АВТО-ПЕРЕЗАПУСКОМ) ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
 async function generateAIGame(userPrompt, maxRetries = 3) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
@@ -90,8 +90,6 @@ async function generateAIGame(userPrompt, maxRetries = 3) {
                 referenceCode += `\n\n=== ЭТАЛОН КОДА: ${file} ===\n`;
                 referenceCode += fs.readFileSync(filePath, 'utf8');
             }
-        } else {
-            console.warn("⚠️ Папка references не найдена! ИИ будет генерировать без твоих эталонов.");
         }
 
         const marker = String.fromCharCode(96, 96, 96);
@@ -112,7 +110,6 @@ ${referenceCode}
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
-        // ЦИКЛ АВТО-РЕТРАЯ ПРИ ПЕРЕГРУЗКЕ СЕРВЕРОВ
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const response = await axios.post(url, {
@@ -129,16 +126,12 @@ ${referenceCode}
                 return code.trim();
             } catch (apiError) {
                 const status = apiError.response ? apiError.response.status : null;
-                // Если Гугл занят (503) или мы превысили лимит запросов в минуту (429)
                 if (status === 503 || status === 429) {
                     console.warn(`⚠️ Сервера Google перегружены (Попытка ${attempt}/${maxRetries}). Ждем 6 секунд...`);
-                    if (attempt === maxRetries) throw apiError; // Если попытки исчерпаны - сдаемся
-                    
-                    // Ждем 6 секунд перед новой попыткой
+                    if (attempt === maxRetries) throw apiError; 
                     await new Promise(resolve => setTimeout(resolve, 6000));
                     continue; 
                 }
-                // Если ошибка другая (например, неверный ключ) - выбрасываем сразу
                 throw apiError;
             }
         }
@@ -155,7 +148,6 @@ const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Фабрка Игр: Статус OK'));
 app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
 
-// Папки для хранения файлов
 const uploadsDir = path.join(__dirname, 'uploads');
 const aiGamesDir = path.join(__dirname, 'ai_games');
 const referencesDir = path.join(__dirname, 'references');
@@ -164,11 +156,9 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 if (!fs.existsSync(aiGamesDir)) fs.mkdirSync(aiGamesDir);
 if (!fs.existsSync(referencesDir)) fs.mkdirSync(referencesDir);
 
-// Раздаем статику
 app.use('/uploads', express.static(uploadsDir));
 app.use('/ai_games', express.static(aiGamesDir));
 
-// Обработчик шаблонов
 app.get('/:engine/', (req, res, next) => {
     const engine = req.params.engine;
     if(engine === 'ai_games' || engine === 'uploads' || engine === 'references') return next(); 
@@ -226,7 +216,6 @@ bot.action(/platform_(.+)/, async (ctx) => {
     ]));
 });
 
-// ПЕРЕХВАТ ИИ-ГЕНЕРАТОРА
 bot.action('engine_ai', async (ctx) => {
     ctx.session = ctx.session || { gameData: {} };
     ctx.session.gameData.engine = 'ai';
@@ -251,27 +240,39 @@ bot.action(/biome_(.+)/, async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
-    // ВЕТКА ИИ-ГЕНЕРАЦИИ
+    // === ФОНОВАЯ ИИ-ГЕНЕРАЦИЯ БЕЗ ПАДЕНИЙ ===
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... Изучаю библиотеку эталонов. Если сервера перегружены, я автоматически подожду пару секунд и попробую снова ⏳');
-        const gameCode = await generateAIGame(ctx.message.text);
+        const prompt = ctx.message.text;
+        const chatId = ctx.chat.id;
         
-        if (!gameCode) {
-            return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '❌ Ошибка генерации. Сервера Google слишком загружены, попробуй еще раз через минуту!');
-        }
-
-        const gameId = `ai_${Date.now()}`;
-        fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
-        
-        ctx.session.gameData.aiGameId = gameId;
+        // Моментально сбрасываем шаг, чтобы бот не блокировался
         ctx.session.step = null;
+        
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... \n\nПроцесс запущен в фоновом режиме. База эталонов огромная, поэтому генерация может занять 1-3 минуты. Просто подожди, я обновлю это сообщение! ⏳');
+        const msgId = msg.message_id;
 
-        const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, `✅ Твоя игра создана нейросетью в твоём фирменном стиле!`, Markup.inlineKeyboard([
-            [Markup.button.webApp('🎮 ИГРАТЬ', url)],
-            [Markup.button.callback('📦 Скачать Архив', 'download_ai_source')]
-        ]));
-        return;
+        // Запускаем генерацию БЕЗ await, чтобы функция Телеграма завершилась и не было таймаута в 90 секунд
+        generateAIGame(prompt).then(async (gameCode) => {
+            if (!gameCode) {
+                return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google слишком загружены.');
+            }
+
+            const gameId = `ai_${Date.now()}`;
+            fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
+            
+            const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
+            
+            // Кнопка скачивания теперь работает автономно через паттерн dl_ai_{gameId}
+            await bot.telegram.editMessageText(chatId, msgId, null, `✅ Твоя игра успешно создана нейросетью в твоём фирменном стиле!`, Markup.inlineKeyboard([
+                [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+                [Markup.button.callback('📦 Скачать Архив', `dl_ai_${gameId}`)]
+            ]));
+        }).catch(err => {
+            console.error("Ошибка в фоне:", err);
+            bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации.');
+        });
+
+        return; // Завершаем выполнение сразу! Телеграм доволен, ошибки в 90000ms больше не будет.
     }
 
     // ВЕТКА СТАНДАРТНЫХ ШАБЛОНОВ
@@ -337,7 +338,6 @@ bot.on('photo', async (ctx) => {
     }
 });
 
-// Финальная сборка шаблона
 async function finishGameGeneration(ctx) {
     const data = ctx.session.gameData;
     const encName = encodeURIComponent(data.gameName);
@@ -352,11 +352,15 @@ async function finishGameGeneration(ctx) {
     ]));
 }
 
-// Загрузка ИИ-игры
-bot.action('download_ai_source', async (ctx) => {
-    const gameId = ctx.session.gameData.aiGameId;
+// === НОВАЯ АВТОНОМНАЯ СКАЧКА ИИ-ИГРЫ ===
+bot.action(/dl_ai_(.+)/, async (ctx) => {
+    const gameId = ctx.match[1]; // Берем ID прямо из кнопки
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
     const zipPath = path.join(os.tmpdir(), `${gameId}.zip`);
+
+    if (!fs.existsSync(gamePath)) {
+        return ctx.answerCbQuery('❌ Файл игры не найден на сервере!', { show_alert: true });
+    }
 
     try {
         const output = fs.createWriteStream(zipPath);
@@ -364,7 +368,7 @@ bot.action('download_ai_source', async (ctx) => {
         
         output.on('close', async () => {
             await ctx.replyWithDocument({ source: zipPath, filename: `ai_generated_game.zip` });
-            fs.unlinkSync(zipPath); // Удаляем временный архив
+            fs.unlinkSync(zipPath); 
         });
 
         archive.pipe(output);

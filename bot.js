@@ -108,8 +108,8 @@ ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        // ВОЗВРАЩАЕМ РАБОЧУЮ МОДЕЛЬ 2.5 PRO
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // === ПЕРЕКЛЮЧЕНО НА 2.5-FLASH ДЛЯ СКОРОСТИ И ЭКОНОМИИ ===
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
@@ -293,7 +293,7 @@ bot.action('regen_ai', async (ctx) => {
     const prompt = ctx.session?.gameData?.lastPrompt;
     if (!prompt) return ctx.answerCbQuery('❌ Прошлый запрос не найден. Создай игру заново.', { show_alert: true });
 
-    await ctx.editMessageText('✨ Призываю мощности Gemini 2.5 Pro... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
+    await ctx.editMessageText('✨ Призываю мощности Gemini 2.5 Flash... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⚡');
     const msgId = ctx.callbackQuery.message.message_id;
     const chatId = ctx.chat.id;
 
@@ -308,7 +308,7 @@ bot.on('text', async (ctx) => {
         ctx.session.step = null;
         ctx.session.gameData.lastPrompt = prompt; 
         
-        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Pro... \n\nПроцесс запущен в фоновом режиме. Генерация может занять время. Просто подожди, я обновлю это сообщение! ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... \n\nПроцесс запущен в фоновом режиме. Быстрая модель уже пишет код. Просто подожди, я обновлю это сообщение! ⚡');
         
         handleAIGeneration(chatId, msg.message_id, prompt, ctx);
         return;

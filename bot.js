@@ -75,8 +75,8 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
-async function generateAIGame(userPrompt, maxRetries = 3) {
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (УМНЫЙ РЕТРАЙ) ===
+async function generateAIGame(userPrompt, maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
 
@@ -94,7 +94,6 @@ async function generateAIGame(userPrompt, maxRetries = 3) {
 
         const marker = String.fromCharCode(96, 96, 96);
 
-        // ОБНОВЛЕННЫЙ ПРОМПТ С ТРЕБОВАНИЕМ НАЭКРАННОГО УПРАВЛЕНИЯ
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
 СТРОГИЕ ПРАВИЛА:
@@ -109,7 +108,8 @@ ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // Самая стабильная модель для бесплатного тарифа с большим окном контекста
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
@@ -128,9 +128,13 @@ ${referenceCode}
             } catch (apiError) {
                 const status = apiError.response ? apiError.response.status : null;
                 if (status === 503 || status === 429) {
-                    console.warn(`⚠️ Сервера Google перегружены (Попытка ${attempt}/${maxRetries}). Ждем 6 секунд...`);
+                    // Exponential backoff: 10s, 20s, 40s, 60s
+                    const waitTime = Math.min(10000 * Math.pow(2, attempt - 1), 60000);
+                    console.warn(`⚠️ Сервера Google перегружены (Попытка ${attempt}/${maxRetries}). Ждем ${waitTime / 1000} секунд...`);
+                    
                     if (attempt === maxRetries) throw apiError; 
-                    await new Promise(resolve => setTimeout(resolve, 6000));
+                    
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
                     continue; 
                 }
                 throw apiError;
@@ -293,7 +297,7 @@ bot.action('regen_ai', async (ctx) => {
     const prompt = ctx.session?.gameData?.lastPrompt;
     if (!prompt) return ctx.answerCbQuery('❌ Прошлый запрос не найден. Создай игру заново.', { show_alert: true });
 
-    await ctx.editMessageText('✨ Призываю мощности Gemini 2.5 Flash... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
+    await ctx.editMessageText('✨ Призываю мощности Gemini 1.5 Flash... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
     const msgId = ctx.callbackQuery.message.message_id;
     const chatId = ctx.chat.id;
 
@@ -309,7 +313,7 @@ bot.on('text', async (ctx) => {
         ctx.session.step = null;
         ctx.session.gameData.lastPrompt = prompt; 
         
-        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Flash... \n\nПроцесс запущен в фоновом режиме. База эталонов огромная, поэтому генерация может занять 1-3 минуты. Просто подожди, я обновлю это сообщение! ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 1.5 Flash... \n\nПроцесс запущен в фоновом режиме. База эталонов объемная, поэтому генерация может занять 1-3 минуты. Просто подожди, я обновлю это сообщение! ⏳');
         
         handleAIGeneration(chatId, msg.message_id, prompt, ctx);
         return;

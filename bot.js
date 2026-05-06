@@ -108,8 +108,8 @@ ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
 
-        // Самая стабильная модель для бесплатного тарифа с большим окном контекста
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+        // ВОЗВРАЩАЕМ РАБОЧУЮ МОДЕЛЬ 2.5 PRO
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
@@ -128,7 +128,6 @@ ${referenceCode}
             } catch (apiError) {
                 const status = apiError.response ? apiError.response.status : null;
                 if (status === 503 || status === 429) {
-                    // Exponential backoff: 10s, 20s, 40s, 60s
                     const waitTime = Math.min(10000 * Math.pow(2, attempt - 1), 60000);
                     console.warn(`⚠️ Сервера Google перегружены (Попытка ${attempt}/${maxRetries}). Ждем ${waitTime / 1000} секунд...`);
                     
@@ -210,7 +209,6 @@ bot.start((ctx) => {
     );
 });
 
-// ГЛАВНОЕ МЕНЮ (Возврат без перезапуска)
 bot.action('main_menu', async (ctx) => {
     ctx.session = { gameData: {}, step: 'platform' }; 
     try {
@@ -260,7 +258,6 @@ bot.action(/biome_(.+)/, async (ctx) => {
     await ctx.editMessageText('Шаблон применен! 🎨\nТеперь придумай и напиши мне название для твоей игры:');
 });
 
-// Функция для обработки генерации в фоне
 async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     generateAIGame(prompt).then(async (gameCode) => {
         if (!gameCode) {
@@ -292,12 +289,11 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     });
 }
 
-// ПОВТОРНАЯ ГЕНЕРАЦИЯ ПО ТОМУ ЖЕ ПРОМПТУ
 bot.action('regen_ai', async (ctx) => {
     const prompt = ctx.session?.gameData?.lastPrompt;
     if (!prompt) return ctx.answerCbQuery('❌ Прошлый запрос не найден. Создай игру заново.', { show_alert: true });
 
-    await ctx.editMessageText('✨ Призываю мощности Gemini 1.5 Flash... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
+    await ctx.editMessageText('✨ Призываю мощности Gemini 2.5 Pro... \n\nПерезапускаю генерацию по твоему прошлому запросу в фоновом режиме. Жди обновления сообщения! ⏳');
     const msgId = ctx.callbackQuery.message.message_id;
     const chatId = ctx.chat.id;
 
@@ -305,7 +301,6 @@ bot.action('regen_ai', async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
-    // ВЕТКА ИИ-ГЕНЕРАЦИИ (Асинхронная)
     if (ctx.session?.step === 'awaiting_ai_prompt') {
         const prompt = ctx.message.text;
         const chatId = ctx.chat.id;
@@ -313,13 +308,12 @@ bot.on('text', async (ctx) => {
         ctx.session.step = null;
         ctx.session.gameData.lastPrompt = prompt; 
         
-        const msg = await ctx.reply('✨ Призываю мощности Gemini 1.5 Flash... \n\nПроцесс запущен в фоновом режиме. База эталонов объемная, поэтому генерация может занять 1-3 минуты. Просто подожди, я обновлю это сообщение! ⏳');
+        const msg = await ctx.reply('✨ Призываю мощности Gemini 2.5 Pro... \n\nПроцесс запущен в фоновом режиме. Генерация может занять время. Просто подожди, я обновлю это сообщение! ⏳');
         
         handleAIGeneration(chatId, msg.message_id, prompt, ctx);
         return;
     }
 
-    // ВЕТКА СТАНДАРТНЫХ ШАБЛОНОВ
     if (ctx.session?.step === 'awaiting_name') {
         ctx.session.gameData.gameName = ctx.message.text;
         ctx.session.step = 'awaiting_bg_choice';

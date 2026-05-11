@@ -81,10 +81,11 @@ async function generateAIGame(userPrompt, maxRetries = 5) {
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 СТРОГИЕ ПРАВИЛА:
 1) Используй только HTML, CSS и Vanilla JS. Без сторонних библиотек и БЕЗ ЧУЖИХ SDK.
-2) МОБИЛЬНОЕ УПРАВЛЕНИЕ ОНЛАЙН: Размер Canvas должен быть адаптивным. ОБЯЗАТЕЛЬНО реализуй наэкранные полупрозрачные HTML-кнопки поверх Canvas для управления с мобильных.
-3) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
-4) Вместо картинок рисуй примитивы или эмодзи.
-5) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
+2) МОБИЛЬНОЕ УПРАВЛЕНИЕ (TOUCH EVENTS): Размер Canvas должен быть на весь экран. Управление должно осуществляться ИСКЛЮЧИТЕЛЬНО через тапы и свайпы по самому Canvas (используй touchstart, touchmove, touchend). 
+3) КАТЕГОРИЧЕСКИ ЗАПРЕЩАЕТСЯ создавать наэкранные HTML-кнопки (div, button и т.д.) для управления. Только считывание жестов: свайпы для перемещения, тапы для прыжка/стрельбы/действия.
+4) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
+5) Вместо картинок рисуй примитивы или эмодзи.
+6) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА:
 ${referenceCode}
@@ -168,9 +169,8 @@ function getMainMenuKeyboard() {
 bot.start(async (ctx) => {
     ctx.session = { gameData: {}, step: null }; 
     const userId = ctx.from.id;
-    const refId = ctx.payload; // То, что идет после /start (например /start 12345)
+    const refId = ctx.payload; 
     
-    // Проверка реферальной системы
     if (!usersDb[userId]) {
         usersDb[userId] = { balance: 100, referrals: 0, referredBy: null };
         if (refId && refId != userId && usersDb[refId]) {
@@ -260,13 +260,11 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const userId = ctx.from.id;
     const user = getUser(userId);
     
-    // Списываем токены
     user.balance -= COST_PER_GAME;
     saveDb();
 
     generateAIGame(prompt).then(async (gameCode) => {
         if (!gameCode) {
-            // Возвращаем токены в случае сбоя Гугла
             user.balance += COST_PER_GAME;
             saveDb();
             return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google перегружены. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
@@ -324,7 +322,6 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// ... ОСТАВШАЯСЯ ЛОГИКА ФОТОГРАФИЙ И ШАБЛОНОВ (без изменений) ...
 bot.action('bg_choice_standard', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
         ctx.session.gameData.customBgFile = null;

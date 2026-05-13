@@ -108,7 +108,7 @@ ${referenceCode}
                 const response = await axios.post(url, { 
                     contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
                     generationConfig: {
-                        temperature: 0.2, // Понижаем температуру для строгой логики
+                        temperature: 0.7, // Понижаем температуру для строгой логики
                         topK: 40,
                         topP: 0.95,
                         maxOutputTokens: 8192 // Снимаем лимиты длины ответа

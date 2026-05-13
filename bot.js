@@ -62,7 +62,7 @@ async function checkImageSafety(imageUrl) {
 }
 
 // === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
-async function generateAIGame(userPrompt, maxRetries = 5) {
+async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
 
@@ -77,12 +77,21 @@ async function generateAIGame(userPrompt, maxRetries = 5) {
             }
         }
 
+        // Динамические правила управления
+        let controlsPrompt = "";
+        if (platform === 'mobile') {
+            controlsPrompt = `2) УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: Размер Canvas адаптивный. Управление ИСКЛЮЧИТЕЛЬНО через тапы и свайпы (touchstart, touchmove, touchend). 
+3) КАТЕГОРИЧЕСКИ ЗАПРЕЩАЕТСЯ создавать наэкранные HTML-кнопки. Только считывание жестов по самому Canvas.`;
+        } else {
+            controlsPrompt = `2) УПРАВЛЕНИЕ ДЛЯ ПК: Используй стандартное управление со стационарной клавиатуры (Стрелочки, WASD, Пробел) или клики мышью.
+3) Адаптируй игру под десктоп. Никаких touch-событий свайпов делать не нужно.`;
+        }
+
         const marker = String.fromCharCode(96, 96, 96);
         const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 СТРОГИЕ ПРАВИЛА:
 1) Используй только HTML, CSS и Vanilla JS. Без сторонних библиотек и БЕЗ ЧУЖИХ SDK.
-2) МОБИЛЬНОЕ УПРАВЛЕНИЕ (TOUCH EVENTS): Размер Canvas должен быть на весь экран. Управление должно осуществляться ИСКЛЮЧИТЕЛЬНО через тапы и свайпы по самому Canvas (используй touchstart, touchmove, touchend). 
-3) КАТЕГОРИЧЕСКИ ЗАПРЕЩАЕТСЯ создавать наэкранные HTML-кнопки (div, button и т.д.) для управления. Только считывание жестов: свайпы для перемещения, тапы для прыжка/стрельбы/действия.
+${controlsPrompt}
 4) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
 5) Вместо картинок рисуй примитивы или эмодзи.
 6) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
@@ -96,7 +105,16 @@ ${referenceCode}
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                const response = await axios.post(url, { contents: [{ role: "user", parts: [{ text: fullPrompt }] }] }, { headers: { 'Content-Type': 'application/json' } });
+                const response = await axios.post(url, { 
+                    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+                    generationConfig: {
+                        temperature: 0.2, // Понижаем температуру для строгой логики
+                        topK: 40,
+                        topP: 0.95,
+                        maxOutputTokens: 8192 // Снимаем лимиты длины ответа
+                    }
+                }, { headers: { 'Content-Type': 'application/json' } });
+                
                 let code = response.data.candidates[0].content.parts[0].text;
                 code = code.replace(new RegExp(marker + 'html', 'gi'), '').replace(new RegExp(marker, 'g'), '');
                 return code.trim();
@@ -259,15 +277,17 @@ bot.action(/biome_(.+)/, async (ctx) => {
 async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const userId = ctx.from.id;
     const user = getUser(userId);
+    const platform = ctx.session.gameData.platform || 'pc'; // Извлекаем платформу из сессии
     
     user.balance -= COST_PER_GAME;
     saveDb();
 
-    generateAIGame(prompt).then(async (gameCode) => {
+    // Передаем платформу в генератор
+    generateAIGame(prompt, platform).then(async (gameCode) => {
         if (!gameCode) {
             user.balance += COST_PER_GAME;
             saveDb();
-            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google перегружены. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
+            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google перегружены или не хватило токенов. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
         }
 
         const gameId = `ai_${Date.now()}`;

@@ -95,7 +95,7 @@ ${controlsPrompt}
 4) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
 5) Вместо картинок рисуй примитивы или эмодзи.
 6) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
-7) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО делать экраны загрузки (loading screens) и использовать setTimeout для старта. Игра должна начинаться МОМЕНТАЛЬНО при открытии файла. Сразу запускай gameLoop().
+7) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО делать HTML-экраны загрузки (loading screens). Игра должна запускаться моментально. В конце скрипта обязательно должен быть вызов функции старта игры.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА:
 ${referenceCode}
@@ -106,13 +106,20 @@ ${referenceCode}
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
+                // ВЗЛОМ ЦЕНЗУРЫ И СНЯТИЕ ЛИМИТОВ ЗДЕСЬ
                 const response = await axios.post(url, { 
                     contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+                    safetySettings: [
+                        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                    ],
                     generationConfig: {
-                        temperature: 0.7, // Понижаем температуру для строгой логики
+                        temperature: 0.7, // Оптимальная креативность для написания логики
                         topK: 40,
                         topP: 0.95,
-                        maxOutputTokens: 8192 // Снимаем лимиты длины ответа
+                        maxOutputTokens: 8192 // Защита от обрыва кода
                     }
                 }, { headers: { 'Content-Type': 'application/json' } });
                 
@@ -278,12 +285,11 @@ bot.action(/biome_(.+)/, async (ctx) => {
 async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const userId = ctx.from.id;
     const user = getUser(userId);
-    const platform = ctx.session.gameData.platform || 'pc'; // Извлекаем платформу из сессии
+    const platform = ctx.session.gameData.platform || 'pc'; 
     
     user.balance -= COST_PER_GAME;
     saveDb();
 
-    // Передаем платформу в генератор
     generateAIGame(prompt, platform).then(async (gameCode) => {
         if (!gameCode) {
             user.balance += COST_PER_GAME;

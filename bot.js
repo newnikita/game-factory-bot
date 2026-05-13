@@ -61,7 +61,7 @@ async function checkImageSafety(imageUrl) {
     } catch (e) { return true; }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С АЛГОРИТМОМ СКЛЕЙКИ) ===
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
@@ -77,7 +77,6 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
             }
         }
 
-        // Динамические правила управления
         let controlsPrompt = "";
         if (platform === 'mobile') {
             controlsPrompt = `2) УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: Размер Canvas адаптивный. Управление ИСКЛЮЧИТЕЛЬНО через тапы и свайпы (touchstart, touchmove, touchend). 
@@ -95,7 +94,8 @@ ${controlsPrompt}
 4) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
 5) Вместо картинок рисуй примитивы или эмодзи.
 6) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
-7) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО делать HTML-экраны загрузки (loading screens). Игра должна запускаться моментально. В конце скрипта обязательно должен быть вызов функции старта игры.
+7) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО делать HTML-экраны загрузки. В конце скрипта обязательно вызови функцию старта игры.
+8) БЕЗ КОММЕНТАРИЕВ. Категорически запрещено писать комментарии в коде. Никаких // или /* */. Пиши код максимально сжато, только чистая логика.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА:
 ${referenceCode}
@@ -104,39 +104,60 @@ ${referenceCode}
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                // ВЗЛОМ ЦЕНЗУРЫ И СНЯТИЕ ЛИМИТОВ ЗДЕСЬ
-                const response = await axios.post(url, { 
-                    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-                    safetySettings: [
-                        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-                    ],
-                    generationConfig: {
-                        temperature: 0.7, // Оптимальная креативность для написания логики
-                        topK: 40,
-                        topP: 0.95,
-                        maxOutputTokens: 8192 // Защита от обрыва кода
+        let fullCode = "";
+        let history = [{ role: "user", parts: [{ text: fullPrompt }] }];
+        let isFinished = false;
+
+        for (let chunk = 0; chunk < 3; chunk++) {
+            let attemptSuccess = false;
+            
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    const response = await axios.post(url, { 
+                        contents: history,
+                        safetySettings: [
+                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                        ],
+                        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 8192 }
+                    }, { headers: { 'Content-Type': 'application/json' } });
+                    
+                    const candidate = response.data.candidates[0];
+                    const chunkText = candidate.content.parts[0].text;
+                    fullCode += chunkText;
+
+                    if (candidate.finishReason === 'MAX_TOKENS') {
+                        history.push({ role: "model", parts: [{ text: chunkText }] });
+                        history.push({ role: "user", parts: [{ text: "Код оборвался по лимиту токенов. Продолжи писать код СТРОГО с того символа, на котором ты остановился. Не пиши никаких вступлений, маркеров кода или приветствий, просто продолжай синтаксис." }] });
+                        attemptSuccess = true;
+                        console.log(`[🤖 ИИ] Код оборвался. Запрашиваю кусок ${chunk + 2}...`);
+                        break; 
+                    } else {
+                        isFinished = true;
+                        attemptSuccess = true;
+                        break; 
                     }
-                }, { headers: { 'Content-Type': 'application/json' } });
-                
-                let code = response.data.candidates[0].content.parts[0].text;
-                code = code.replace(new RegExp(marker + 'html', 'gi'), '').replace(new RegExp(marker, 'g'), '');
-                return code.trim();
-            } catch (apiError) {
-                if (apiError.response && (apiError.response.status === 503 || apiError.response.status === 429)) {
-                    const waitTime = Math.min(10000 * Math.pow(2, attempt - 1), 60000);
-                    if (attempt === maxRetries) throw apiError; 
-                    await new Promise(resolve => setTimeout(resolve, waitTime));
-                    continue; 
+                } catch (apiError) {
+                    if (apiError.response && (apiError.response.status === 503 || apiError.response.status === 429)) {
+                        const waitTime = Math.min(10000 * Math.pow(2, attempt - 1), 60000);
+                        if (attempt === maxRetries) throw apiError; 
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                        continue; 
+                    }
+                    throw apiError;
                 }
-                throw apiError;
             }
+            if (isFinished || !attemptSuccess) break;
         }
-    } catch(e) { return null; }
+
+        let finalCode = fullCode.replace(new RegExp(marker + 'html', 'gi'), '').replace(new RegExp(marker, 'g'), '');
+        return finalCode.trim();
+    } catch(e) { 
+        console.error("Критическая ошибка генерации:", e);
+        return null; 
+    }
 }
 
 // === 🌐 УМНЫЙ СЕРВЕР ПРЕДПРОСМОТРА ===
@@ -188,7 +209,7 @@ function getMainMenuKeyboard() {
         [Markup.button.callback('🎮 Создать игру', 'start_creation')],
         [Markup.button.callback('👤 Мой профиль / Баланс', 'show_profile')],
         [Markup.button.callback('👥 Пригласить друга', 'show_referral')],
-        [Markup.button.url('🌐 Наше сообщество', 'https://t.me/your_community_link')] // ЗАМЕНИ НА СВОЮ ССЫЛКУ!
+        [Markup.button.url('🌐 Наше сообщество', 'https://t.me/your_community_link')] 
     ]);
 }
 

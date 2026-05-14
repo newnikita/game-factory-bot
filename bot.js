@@ -57,7 +57,7 @@ async function checkImageSafety(imageUrl) {
     } catch (e) { return true; }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С АЛГОРИТМОМ СКЛЕЙКИ) ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С АБСОЛЮТНОЙ ЗАЩИТОЙ ОТ ОБРЫВОВ) ===
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
@@ -76,28 +76,28 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
         let controlsPrompt = "";
         if (platform === 'mobile') {
             controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ МОБИЛЬНЫХ ТЕЛЕФОНОВ: Используй ИСКЛЮЧИТЕЛЬНО touch-события (touchstart, touchmove, touchend). 
-▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать мышь (mousedown, mousemove) или клавиатуру (keydown).
-▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать наэкранные HTML-кнопки (<button>, <div>). Весь UI и кнопки должны быть нарисованы внутри <canvas> через ctx.fillRect и ctx.fillText, а нажатия должны считываться по координатам касания внутри canvas!
-▶ ВАЖНО: Обязательно используй e.preventDefault() в слушателях touch-событий с { passive: false }, чтобы не было прокрутки экрана.`;
+▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать мышь (mousedown, mousemove) или клавиатуру.
+▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать наэкранные HTML-кнопки (<button>). Весь UI рисуй внутри <canvas> через ctx.fillRect.
+▶ ВАЖНО: Используй e.preventDefault() в слушателях touch-событий с { passive: false }, чтобы не было прокрутки экрана.`;
         } else {
-            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление с клавиатуры (Стрелочки, WASD, Пробел) или клики мышью.
+            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление с клавиатуры или клики мышью.
 ▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать touch-события. Никакой адаптации под телефоны.`;
         }
 
         const marker = String.fromCharCode(96, 96, 96);
-        const fullPrompt = `Ты — профессиональный senior-разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ сложную игру со всей логикой в ОДНОМ файле index.html по идее пользователя. Не сокращай логику игры!
+        const fullPrompt = `Ты — профессиональный разработчик Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
 АБСОЛЮТНЫЕ ЗАПРЕТЫ (ЕСЛИ НАРУШИШЬ - ИГРА СЛОМАЕТСЯ):
-1. ЗАПРЕЩЕНО делать HTML-экраны загрузки (<div id="loading">). Игра должна запускаться МГНОВЕННО при открытии (сразу вызывай gameLoop() в конце скрипта).
-2. ЗАПРЕЩЕНО использовать сторонние SDK (Yandex SDK и т.д.). Только голый Vanilla JS и локальный localStorage для сохранений.
-3. ЗАПРЕЩЕНО использовать внешние ссылки на картинки. Рисуй всё примитивами Canvas или Эмодзи. Фоном делай сплошной цвет HEX.
-4. ЗАПРЕЩЕНО писать комментарии в коде (// или /*). Только чистый, сжатый рабочий код.
-5. ЗАПРЕЩЕНО переназначать константы (Например: const arr = []; arr = arr.filter() -> ЭТО ФАТАЛЬНАЯ ОШИБКА! Всегда используй let arr = [] для массивов, которые фильтруются).
+1. ЗАПРЕЩЕНО делать HTML-экраны загрузки. Игра должна запускаться МГНОВЕННО при открытии. Сразу вызывай gameLoop().
+2. ЗАПРЕЩЕНО использовать внешние ссылки на картинки. Рисуй всё примитивами Canvas, Эмодзи или HEX-цветами.
+3. ЗАПРЕЩЕНО писать комментарии (// или /*). Только чистый код.
+4. ПИШИ МАКСИМАЛЬНО ПРОСТУЮ ЛОГИКУ (MVP). Категорически запрещено добавлять: переводы (i18n), звуки/музыку (AudioContext), главное меню, настройки и сохранения (localStorage). Только голый игровой процесс!
+5. ВЫДАВАЙ ТОЛЬКО КОД. Начинай с <!DOCTYPE html> и заканчивай </html>.
 
 ПРАВИЛА УПРАВЛЕНИЯ:
 ${controlsPrompt}
 
-Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА:
+Ниже приведены примеры идеального кода:
 ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
@@ -108,7 +108,7 @@ ${referenceCode}
         let history = [{ role: "user", parts: [{ text: fullPrompt }] }];
         let isFinished = false;
 
-        for (let chunk = 0; chunk < 3; chunk++) {
+        for (let chunk = 0; chunk < 4; chunk++) {
             let attemptSuccess = false;
             
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -128,11 +128,14 @@ ${referenceCode}
                     const chunkText = candidate.content.parts[0].text;
                     fullCode += chunkText;
 
-                    if (candidate.finishReason === 'MAX_TOKENS') {
+                    let cleanCheck = fullCode.replace(new RegExp(marker + 'html', 'gi'), '').replace(new RegExp(marker, 'g'), '').trim();
+
+                    // РАДАР: Если код не закончился тегом </html>, заставляем дописать
+                    if (!cleanCheck.includes('</html>') && chunk < 3) {
                         history.push({ role: "model", parts: [{ text: chunkText }] });
-                        history.push({ role: "user", parts: [{ text: "Код оборвался по лимиту токенов. Продолжи писать код СТРОГО с того символа, на котором ты остановился. Не пиши никаких вступлений, маркеров кода или приветствий, просто продолжай синтаксис." }] });
+                        history.push({ role: "user", parts: [{ text: "Код оборвался. Продолжи писать СТРОГО с того символа, на котором ты остановился. Не пиши ничего кроме продолжения кода." }] });
                         attemptSuccess = true;
-                        console.log(`[🤖 ИИ] Код оборвался на куске ${chunk + 1}. Срабатывает алгоритм склейки...`);
+                        console.log(`[🤖 ИИ] Код не завершен (нет </html>). Склеиваем кусок ${chunk + 2}...`);
                         break; 
                     } else {
                         isFinished = true;

@@ -32,15 +32,12 @@ function getUser(id) {
     return usersDb[id];
 }
 
-// Стоимость генерации и награды
 const COST_PER_GAME = 25;
 const REWARD_PER_REF = 100;
 
-// Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
-// === 📊 БАЗА ДАННЫХ БИОМОВ (СМАЙЛЫ И ИКОНКИ) ===
 const styles = {
     'silent_stars': { name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop', font: '"Courier New", monospace', shadow: '0 0 15px rgba(224, 224, 255, 0.5)', life: '💠', score: '☄️', b_wide: '🌌', b_triple: '✨', b_fire: '🌠', b_lightning: '🌩️' }, 
     'credo_fantasy': { name: 'Темное Фэнтези', bg: '#110000', block: '#8B0000', img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop', font: '"Palatino Linotype", "Book Antiqua", serif', shadow: '0 0 20px rgba(139, 0, 0, 0.8)', life: '🩸', score: '💀', b_wide: '📜', b_triple: '🔮', b_fire: '🔥', b_lightning: '🗡️' }, 
@@ -49,7 +46,6 @@ const styles = {
     'wasteland': { name: 'Ржавая Пустошь', bg: '#2B1D14', block: '#D2691E', img: 'https://images.unsplash.com/photo-1508361001413-7a9dca21d08a?q=80&w=1080&auto=format&fit=crop', font: '"Impact", charcoal, sans-serif', shadow: '4px 4px 0px rgba(0, 0, 0, 0.8)', life: '⚙️', score: '🔩', b_wide: '🛡️', b_triple: '☢️', b_fire: '🔥', b_lightning: '⚡' }
 };
 
-// === 🕵️‍♂️ НЕЙРОСЕТЬ-МОДЕРАТОР SIGHTENGINE ===
 async function checkImageSafety(imageUrl) {
     try {
         if (!process.env.SIGHT_USER || !process.env.SIGHT_SECRET) return true; 
@@ -77,29 +73,29 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
             }
         }
 
-        // ЖЕСТКОЕ РАЗДЕЛЕНИЕ ПРАВИЛ УПРАВЛЕНИЯ
         let controlsPrompt = "";
         if (platform === 'mobile') {
-            controlsPrompt = `2) УПРАВЛЕНИЕ СТРОГО ДЛЯ МОБИЛЬНЫХ ТЕЛЕФОНОВ: Используй ИСКЛЮЧИТЕЛЬНО touch-события (touchstart, touchmove, touchend). 
-3) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать мышь (mousedown, mousemove) или клавиатуру (keydown). Не пиши код для ПК.
-4) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать HTML-кнопки (div, button). Управление только жестами по самому <canvas>.
-5) ВАЖНО: Обязательно используй e.preventDefault() в слушателях с параметром { passive: false }, чтобы предотвратить прокрутку экрана. Координаты касания бери только из e.touches[0].clientX и clientY.`;
+            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ МОБИЛЬНЫХ ТЕЛЕФОНОВ: Используй ИСКЛЮЧИТЕЛЬНО touch-события (touchstart, touchmove, touchend). 
+▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать мышь (mousedown, mousemove) или клавиатуру (keydown).
+▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать наэкранные HTML-кнопки (<button>, <div>). Весь UI и кнопки должны быть нарисованы внутри <canvas> через ctx.fillRect и ctx.fillText, а нажатия должны считываться по координатам касания внутри canvas!
+▶ ВАЖНО: Обязательно используй e.preventDefault() в слушателях touch-событий с { passive: false }, чтобы не было прокрутки экрана.`;
         } else {
-            controlsPrompt = `2) УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление со стационарной клавиатуры (Стрелочки, WASD, Пробел) или клики мышью (mousedown, mousemove).
-3) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать touch-события. Никакой адаптации под свайпы для телефонов не нужно.`;
+            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление с клавиатуры (Стрелочки, WASD, Пробел) или клики мышью.
+▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать touch-события. Никакой адаптации под телефоны.`;
         }
 
         const marker = String.fromCharCode(96, 96, 96);
-        const fullPrompt = `Ты — профессиональный разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
-СТРОГИЕ ПРАВИЛА:
-1) Используй только HTML, CSS и Vanilla JS. Без сторонних библиотек и БЕЗ ЧУЖИХ SDK.
+        const fullPrompt = `Ты — профессиональный senior-разработчик HTML5/Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ сложную игру со всей логикой в ОДНОМ файле index.html по идее пользователя. Не сокращай логику игры!
+
+АБСОЛЮТНЫЕ ЗАПРЕТЫ (ЕСЛИ НАРУШИШЬ - ИГРА СЛОМАЕТСЯ):
+1. ЗАПРЕЩЕНО делать HTML-экраны загрузки (<div id="loading">). Игра должна запускаться МГНОВЕННО при открытии (сразу вызывай gameLoop() в конце скрипта).
+2. ЗАПРЕЩЕНО использовать сторонние SDK (Yandex SDK и т.д.). Только голый Vanilla JS и локальный localStorage для сохранений.
+3. ЗАПРЕЩЕНО использовать внешние ссылки на картинки. Рисуй всё примитивами Canvas или Эмодзи. Фоном делай сплошной цвет HEX.
+4. ЗАПРЕЩЕНО писать комментарии в коде (// или /*). Только чистый, сжатый рабочий код.
+5. ЗАПРЕЩЕНО переназначать константы (Например: const arr = []; arr = arr.filter() -> ЭТО ФАТАЛЬНАЯ ОШИБКА! Всегда используй let arr = [] для массивов, которые фильтруются).
+
+ПРАВИЛА УПРАВЛЕНИЯ:
 ${controlsPrompt}
-6) Включи requestAnimationFrame, плавное управление, логику победы/поражения.
-7) Вместо картинок рисуй примитивы или эмодзи.
-8) ВЫДАВАЙ ТОЛЬКО КОД (БЕЗ ${marker}html). Начинай строго с <!DOCTYPE html>.
-9) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО делать HTML-экраны загрузки. В конце скрипта обязательно вызови функцию старта игры.
-10) БЕЗ КОММЕНТАРИЕВ. Категорически запрещено писать комментарии в коде. Никаких // или /* */. Пиши код максимально сжато, только чистая логика.
-11) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать внешние ссылки на изображения (imgur и т.д.). Для фонов используй только сплошные цвета (HEX) или процедурные CSS-градиенты.
 
 Ниже приведены примеры МОЕГО ИДЕАЛЬНОГО КОДА:
 ${referenceCode}
@@ -136,7 +132,7 @@ ${referenceCode}
                         history.push({ role: "model", parts: [{ text: chunkText }] });
                         history.push({ role: "user", parts: [{ text: "Код оборвался по лимиту токенов. Продолжи писать код СТРОГО с того символа, на котором ты остановился. Не пиши никаких вступлений, маркеров кода или приветствий, просто продолжай синтаксис." }] });
                         attemptSuccess = true;
-                        console.log(`[🤖 ИИ] Код оборвался. Запрашиваю кусок ${chunk + 2}...`);
+                        console.log(`[🤖 ИИ] Код оборвался на куске ${chunk + 1}. Срабатывает алгоритм склейки...`);
                         break; 
                     } else {
                         isFinished = true;
@@ -168,7 +164,7 @@ ${referenceCode}
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('Фабрка Игр: Статус OK'));
+app.get('/', (req, res) => res.send('Фабрика Игр: Статус OK'));
 app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
 
 const uploadsDir = path.join(__dirname, 'uploads');

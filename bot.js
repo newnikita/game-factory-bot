@@ -16,6 +16,9 @@ process.on('unhandledRejection', (err) => console.error('❌ Ошибка сет
 const dbPath = path.join(__dirname, 'users.json');
 let usersDb = {};
 
+// 👑 РЕЖИМ БОГА: ВПИШИ СЮДА СВОЙ TELEGRAM ID (БЕЗ КАВЫЧЕК)
+const ADMIN_ID = 123456789; 
+
 if (fs.existsSync(dbPath)) {
     usersDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
 }
@@ -29,6 +32,15 @@ function getUser(id) {
         usersDb[id] = { balance: 100, referrals: 0, referredBy: null };
         saveDb();
     }
+    
+    // Бесконечные токены для Создателя
+    if (id == ADMIN_ID || (process.env.ADMIN_ID && id == process.env.ADMIN_ID)) {
+        if (usersDb[id].balance < 1000000) {
+            usersDb[id].balance = 1000000;
+            saveDb();
+        }
+    }
+    
     return usersDb[id];
 }
 
@@ -130,7 +142,6 @@ ${referenceCode}
 
                     let cleanCheck = fullCode.replace(new RegExp(marker + 'html', 'gi'), '').replace(new RegExp(marker, 'g'), '').trim();
 
-                    // РАДАР: Если код не закончился тегом </html>, заставляем дописать
                     if (!cleanCheck.includes('</html>') && chunk < 3) {
                         history.push({ role: "model", parts: [{ text: chunkText }] });
                         history.push({ role: "user", parts: [{ text: "Код оборвался. Продолжи писать СТРОГО с того символа, на котором ты остановился. Не пиши ничего кроме продолжения кода." }] });
@@ -221,20 +232,20 @@ bot.start(async (ctx) => {
     const userId = ctx.from.id;
     const refId = ctx.payload; 
     
-    if (!usersDb[userId]) {
-        usersDb[userId] = { balance: 100, referrals: 0, referredBy: null };
-        if (refId && refId != userId && usersDb[refId]) {
-            usersDb[userId].referredBy = refId;
-            usersDb[refId].balance += REWARD_PER_REF;
-            usersDb[refId].referrals += 1;
-            try {
-                await bot.telegram.sendMessage(refId, `🎉 По твоей ссылке зарегистрировался новый демиург!\nТебе начислено +${REWARD_PER_REF} 🪙 токенов.`);
-            } catch (e) {}
-        }
+    const isNewUser = !usersDb[userId];
+    const user = getUser(userId);
+    
+    if (isNewUser && refId && refId != userId && usersDb[refId]) {
+        user.referredBy = refId;
+        usersDb[refId].balance += REWARD_PER_REF;
+        usersDb[refId].referrals += 1;
         saveDb();
+        try {
+            await bot.telegram.sendMessage(refId, `🎉 По твоей ссылке зарегистрировался новый демиург!\nТебе начислено +${REWARD_PER_REF} 🪙 токенов.`);
+        } catch (e) {}
     }
 
-    const text = `🌌 Добро пожаловать на Фабрику Игр!\n\nЯ — нейросеть, которая превращает твои безумные идеи в рабочие браузерные игры за пару секунд.\n\nКаждая генерация стоит ${COST_PER_GAME} 🪙. На твоем стартовом счету 100 🪙!`;
+    const text = `🌌 Добро пожаловать на Фабрику Игр!\n\nЯ — нейросеть, которая превращает твои безумные идеи в рабочие браузерные игры за пару секунд.\n\nКаждая генерация стоит ${COST_PER_GAME} 🪙. На твоем счету ${user.balance} 🪙!`;
     return ctx.reply(text, getMainMenuKeyboard());
 });
 
@@ -249,7 +260,8 @@ bot.action('main_menu', async (ctx) => {
 
 bot.action('show_profile', async (ctx) => {
     const user = getUser(ctx.from.id);
-    const text = `👤 **Твой профиль**\n\n🆔 ID: \`${ctx.from.id}\`\n🪙 Баланс: **${user.balance} токенов**\n🕹️ Хватит на генераций: **${Math.floor(user.balance / COST_PER_GAME)}**\n👥 Приглашено друзей: **${user.referrals}**\n\n*(Система пополнения баланса скоро будет добавлена!)*`;
+    let balanceText = user.balance >= 1000000 ? `**БЕСКОНЕЧНОСТЬ (Режим Бога) 👑**` : `**${user.balance} токенов**`;
+    const text = `👤 **Твой профиль**\n\n🆔 ID: \`${ctx.from.id}\`\n🪙 Баланс: ${balanceText}\n🕹️ Хватит на генераций: **${Math.floor(user.balance / COST_PER_GAME)}**\n👥 Приглашено друзей: **${user.referrals}**\n\n*(Система пополнения баланса скоро будет добавлена!)*`;
     await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Назад', 'main_menu')]]) });
 });
 

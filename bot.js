@@ -17,7 +17,7 @@ const dbPath = path.join(__dirname, 'users.json');
 let usersDb = {};
 
 // 👑 РЕЖИМ БОГА: ВПИШИ СЮДА СВОЙ TELEGRAM ID (БЕЗ КАВЫЧЕК)
-const ADMIN_ID = 123456789; 
+const ADMIN_ID = 6430160880; 
 
 if (fs.existsSync(dbPath)) {
     usersDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));

@@ -289,6 +289,7 @@ bot.action(/platform_(.+)/, async (ctx) => {
         [Markup.button.callback('🧩 Тетрис', 'engine_tetris')],
         [Markup.button.callback('✨ ИИ-Генератор (Beta)', 'engine_ai')],
         [Markup.button.callback('⬅️ Назад', 'main_menu')]
+        [Markup.button.callback('🚀 Платформер', 'engine_platformer')]
     ]));
 });
 

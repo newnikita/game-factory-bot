@@ -16,8 +16,8 @@ process.on('unhandledRejection', (err) => console.error('❌ Ошибка сет
 const dbPath = path.join(__dirname, 'users.json');
 let usersDb = {};
 
-// 👑 РЕЖИМ БОГА: ВПИШИ СЮДА СВОЙ TELEGRAM ID (БЕЗ КАВЫЧЕК)
-const ADMIN_ID = 6430160880; 
+// 👑 РЕЖИМ БОГА: ТВОЙ TELEGRAM ID
+const ADMIN_ID = 123456789; 
 
 if (fs.existsSync(dbPath)) {
     usersDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
@@ -50,6 +50,13 @@ const REWARD_PER_REF = 100;
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
+// === 🧠 ВОССТАНОВЛЕНИЕ ПАМЯТИ (ЗАЩИТА ОТ АМНЕЗИИ СЕССИЙ) ===
+bot.use((ctx, next) => {
+    if (!ctx.session) ctx.session = {};
+    if (!ctx.session.gameData) ctx.session.gameData = {};
+    return next();
+});
+
 const styles = {
     'silent_stars': { name: 'Немые Звезды', bg: '#050510', block: '#E0E0FF', img: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=1080&auto=format&fit=crop', font: '"Courier New", monospace', shadow: '0 0 15px rgba(224, 224, 255, 0.5)', life: '💠', score: '☄️', b_wide: '🌌', b_triple: '✨', b_fire: '🌠', b_lightning: '🌩️' }, 
     'credo_fantasy': { name: 'Темное Фэнтези', bg: '#110000', block: '#8B0000', img: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop', font: '"Palatino Linotype", "Book Antiqua", serif', shadow: '0 0 20px rgba(139, 0, 0, 0.8)', life: '🩸', score: '💀', b_wide: '📜', b_triple: '🔮', b_fire: '🔥', b_lightning: '🗡️' }, 
@@ -69,7 +76,7 @@ async function checkImageSafety(imageUrl) {
     } catch (e) { return true; }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С АБСОЛЮТНОЙ ЗАЩИТОЙ ОТ ОБРЫВОВ) ===
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
@@ -228,7 +235,8 @@ function getMainMenuKeyboard() {
 }
 
 bot.start(async (ctx) => {
-    ctx.session = { gameData: {}, step: null }; 
+    ctx.session.gameData = {}; 
+    ctx.session.step = null;
     const userId = ctx.from.id;
     const refId = ctx.payload; 
     
@@ -250,7 +258,8 @@ bot.start(async (ctx) => {
 });
 
 bot.action('main_menu', async (ctx) => {
-    ctx.session = { gameData: {}, step: null }; 
+    ctx.session.gameData = {}; 
+    ctx.session.step = null;
     try {
         await ctx.editMessageText('🌌 Главное меню Фабрики Игр:', getMainMenuKeyboard());
     } catch(e) {
@@ -287,9 +296,9 @@ bot.action(/platform_(.+)/, async (ctx) => {
         [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble')], 
         [Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')], 
         [Markup.button.callback('🧩 Тетрис', 'engine_tetris')],
-        [Markup.button.callback('✨ ИИ-Генератор (Beta)', 'engine_ai')],
+        [Markup.button.callback('🚀 Платформер', 'engine_platformer')],
+        [Markup.button.callback('✨ ИИ-Генератор', 'engine_ai')],
         [Markup.button.callback('⬅️ Назад', 'main_menu')]
-        [Markup.button.callback('🚀 Платформер', 'engine_platformer')]
     ]));
 });
 

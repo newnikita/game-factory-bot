@@ -76,20 +76,39 @@ async function checkImageSafety(imageUrl) {
     } catch (e) { return true; }
 }
 
-// === 🧠 ГЕНЕРАТОР ИГР GEMINI ===
+// === 🧠 УМНЫЙ РОУТЕР ДВИЖКОВ ===
+function selectReferenceEngine(prompt) {
+    const text = prompt.toLowerCase();
+    
+    // Словари ключевых слов для каждого движка
+    const platformerWords = ['прыг', 'скач', 'платформ', 'беж', 'паркур', 'гравитац', 'вверх', 'уворачива', 'вниз'];
+    // breaker.html отлично подходит для топ-даун игр, защиты башен и ферм
+    const breakerWords = ['мяч', 'отбива', 'защит', 'башн', 'ферм', 'выращива', 'собира', 'стреля', 'пушк', 'строй'];
+    
+    // Проверяем совпадения
+    if (platformerWords.some(word => text.includes(word))) return 'platformer.html';
+    if (breakerWords.some(word => text.includes(word))) return 'breaker.html';
+    
+    // Если ИИ не понял, что хочет юзер — отдаем базовый универсальный движок
+    return 'breaker.html'; 
+}
+
+// === 🧠 ГЕНЕРАТОР ИГР GEMINI (С РОУТЕРОМ И АБСОЛЮТНОЙ ЗАЩИТОЙ ОТ ОБРЫВОВ) ===
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
 
-        let referenceCode = "";
-        const referencesDir = path.join(__dirname, 'references');
+        // 1. БОТ ПОНИМАЕТ НАМЕРЕНИЕ И ВЫБИРАЕТ ИДЕАЛЬНЫЙ ШАБЛОН
+        const selectedFile = selectReferenceEngine(userPrompt);
+        console.log(`[🤖 Роутер] Для запроса выбрана база: ${selectedFile}`);
         
-        if (fs.existsSync(referencesDir)) {
-            const files = fs.readdirSync(referencesDir).filter(file => file.endsWith('.html'));
-            for (const file of files) {
-                referenceCode += `\n\n=== ЭТАЛОН КОДА: ${file} ===\n`;
-                referenceCode += fs.readFileSync(path.join(referencesDir, file), 'utf8');
-            }
+        let referenceCode = `\n\n=== ЭТАЛОН КОДА: ${selectedFile} ===\n`;
+        const refPath = path.join(__dirname, 'references', selectedFile);
+        
+        if (fs.existsSync(refPath)) {
+            referenceCode += fs.readFileSync(refPath, 'utf8');
+        } else {
+            console.error(`❌ Файл ${selectedFile} не найден в папке references!`);
         }
 
         let controlsPrompt = "";
@@ -116,7 +135,7 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
 ПРАВИЛА УПРАВЛЕНИЯ:
 ${controlsPrompt}
 
-Ниже приведены примеры идеального кода:
+Ниже приведен идеальный эталон кода, от которого ты должен отталкиваться в плане архитектуры и физики:
 ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;

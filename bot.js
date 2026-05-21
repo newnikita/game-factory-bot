@@ -82,11 +82,15 @@ function selectReferenceEngine(prompt) {
     
     // Словари ключевых слов для каждого движка
     const platformerWords = ['прыг', 'скач', 'платформ', 'беж', 'паркур', 'гравитац', 'вверх', 'уворачива', 'вниз'];
-    const breakerWords = ['мяч', 'отбива', 'защит', 'башн', 'ферм', 'выращива', 'собира', 'стреля', 'пушк', 'строй'];
+    const shooterWords = ['шутер', 'стреля', 'выживан', 'оружие', 'пул', 'зомб', 'арена', 'отстрел', 'убива', 'враг'];
+    const breakerWords = ['мяч', 'отбива', 'защит', 'башн', 'ферм', 'выращива', 'собира', 'пушк', 'строй'];
     
+    // Проверяем совпадения
+    if (shooterWords.some(word => text.includes(word))) return 'shooter.html';
     if (platformerWords.some(word => text.includes(word))) return 'platformer.html';
     if (breakerWords.some(word => text.includes(word))) return 'breaker.html';
     
+    // Базовый движок по умолчанию
     return 'breaker.html'; 
 }
 
@@ -312,6 +316,7 @@ bot.action(/platform_(.+)/, async (ctx) => {
         [Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')], 
         [Markup.button.callback('🧩 Тетрис', 'engine_tetris')],
         [Markup.button.callback('🚀 Платформер', 'engine_platformer')],
+        [Markup.button.callback('🔫 Выживание / Шутер', 'engine_shooter')],
         [Markup.button.callback('✨ ИИ-Генератор', 'engine_ai')],
         [Markup.button.callback('⬅️ Назад', 'main_menu')]
     ]));

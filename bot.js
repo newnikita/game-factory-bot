@@ -206,18 +206,16 @@ try {
 const gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
 if (!gameCode) { user.balance += COST_PER_GAME; saveDb(); return await bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]])); }
 const bgMatch = gameCode.match(//i);
-const bgKeyword = bgMatch ? bgMatch[1].trim() : 'epic gaming';
 let customBgUrl = '';
 if (process.env.UNSPLASH_ACCESS_KEY) {
 try {
-const unRes = await axios.get(`https://api.unsplash.com/photos/random?query=${encodeURIComponent(bgKeyword)}&orientation=landscape&client_id=${process.env.UNSPLASH_ACCESS_KEY}`);
+const unRes = await axios.get(`https://api.unsplash.com/photos/random?query=${encodeURIComponent(bgMatch ? bgMatch[1].trim() : 'epic gaming')}&orientation=landscape&client_id=${process.env.UNSPLASH_ACCESS_KEY}`);
 if (unRes.data?.urls?.regular) {
 const fileName = `bg_ai_${Date.now()}.jpg`;
-const filePath = path.join(uploadsDir, fileName);
-const writer = fs.createWriteStream(filePath);
+const writer = fs.createWriteStream(path.join(uploadsDir, fileName));
 const imgStream = await axios({ url: unRes.data.urls.regular, method: 'GET', responseType: 'stream' });
 imgStream.data.pipe(writer);
-await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+await new Promise((res, rej) => { writer.on('finish', res); writer.on('error', rej); });
 customBgUrl = `/uploads/${fileName}`;
 }
 } catch (e) {}
@@ -244,8 +242,7 @@ if (ctx.session?.step === 'awaiting_ai_prompt') {
 ctx.session.step = null; ctx.session.gameData.lastPrompt = ctx.message.text;
 const msg = await ctx.reply('✨ Призываю мощности Gemini... Пишу код... ⚡');
 handleAIGeneration(ctx.chat.id, msg.message_id, ctx.message.text, ctx);
-}
-else if (ctx.session?.step === 'awaiting_name') {
+} else if (ctx.session?.step === 'awaiting_name') {
 ctx.session.gameData.gameName = ctx.message.text; ctx.session.step = 'awaiting_bg_choice';
 await ctx.reply(`Добавим на задний фон свою фотографию?`, Markup.inlineKeyboard([[Markup.button.callback('🏞 Оставить как есть', 'bg_choice_standard')], [Markup.button.callback('🖼 Добавить свою', 'bg_choice_custom')]]));
 }

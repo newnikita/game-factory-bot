@@ -382,37 +382,28 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         let gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
         if (!gameCode) throw new Error("Empty game code");
 
-        let bgKeyword = 'epic gaming';
-        const bgMatch = gameCode.match(//i);
-        if (bgMatch && bgMatch[1]) {
-            bgKeyword = bgMatch[1].trim();
-        }
-
+        // БЕЗОПАСНОЕ извлечение тега без IF
+        let bgKeyword = (gameCode.match(//i) || [null, 'epic gaming'])[1].trim();
         let customBgUrl = '';
-        if (process.env.UNSPLASH_ACCESS_KEY) {
-            try {
-                const query = encodeURIComponent(bgKeyword);
-                const unUrl = `https://api.unsplash.com/photos/random?query=${query}&orientation=landscape&client_id=${process.env.UNSPLASH_ACCESS_KEY}`;
-                
-                const unRes = await axios.get(unUrl);
-                
-                if (unRes.data && unRes.data.urls && unRes.data.urls.regular) {
-                    const fileName = `bg_ai_${Date.now()}.jpg`;
-                    const filePath = path.join(uploadsDir, fileName);
-                    const writer = fs.createWriteStream(filePath);
-                    
-                    const imgStream = await axios({ url: unRes.data.urls.regular, method: 'GET', responseType: 'stream' });
-                    imgStream.data.pipe(writer);
-                    
-                    await new Promise((res, rej) => { 
-                        writer.on('finish', res); 
-                        writer.on('error', rej); 
-                    });
-                    customBgUrl = `/uploads/${fileName}`;
-                }
-            } catch (e) {
-                console.error("Unsplash error:", e.message);
-            }
+
+        try {
+            const query = encodeURIComponent(bgKeyword);
+            const apiKey = process.env.UNSPLASH_ACCESS_KEY || '';
+            const unUrl = `https://api.unsplash.com/photos/random?query=${query}&orientation=landscape&client_id=${apiKey}`;
+            const unRes = await axios.get(unUrl);
+            
+            const imgUrl = (unRes.data && unRes.data.urls) ? unRes.data.urls.regular : null;
+            const fileName = `bg_ai_${Date.now()}.jpg`;
+            const filePath = path.join(uploadsDir, fileName);
+            const writer = fs.createWriteStream(filePath);
+            
+            const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream' });
+            imgStream.data.pipe(writer);
+            await new Promise((res, rej) => { writer.on('finish', res); writer.on('error', rej); });
+            
+            customBgUrl = `/uploads/${fileName}`;
+        } catch (e) {
+            console.log("Unsplash error skipped");
         }
 
         gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);

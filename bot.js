@@ -71,8 +71,7 @@ async function checkImageSafety(imageUrl) {
         const response = await axios.get('https://api.sightengine.com/1.0/check.json', {
             params: { 'url': imageUrl, 'models': 'nudity-2.0', 'api_user': process.env.SIGHT_USER, 'api_secret': process.env.SIGHT_SECRET }
         });
-        if (response.data.status === 'success' && response.data.nudity.none < 0.8) return false; 
-        return true;
+        return !(response.data.status === 'success' && response.data.nudity.none < 0.8);
     } catch (e) { return true; }
 }
 
@@ -80,17 +79,14 @@ async function checkImageSafety(imageUrl) {
 function selectReferenceEngine(prompt) {
     const text = prompt.toLowerCase();
     
-    // Словари ключевых слов для каждого движка
     const platformerWords = ['прыг', 'скач', 'платформ', 'беж', 'паркур', 'гравитац', 'вверх', 'уворачива', 'вниз'];
     const shooterWords = ['шутер', 'стреля', 'выживан', 'оружие', 'пул', 'зомб', 'арена', 'отстрел', 'убива', 'враг'];
     const breakerWords = ['мяч', 'отбива', 'защит', 'башн', 'ферм', 'выращива', 'собира', 'пушк', 'строй'];
     
-    // Проверяем совпадения
     if (shooterWords.some(word => text.includes(word))) return 'shooter.html';
     if (platformerWords.some(word => text.includes(word))) return 'platformer.html';
     if (breakerWords.some(word => text.includes(word))) return 'breaker.html';
     
-    // Базовый движок по умолчанию
     return 'breaker.html'; 
 }
 
@@ -111,31 +107,23 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
             console.error(`❌ Файл ${selectedFile} не найден в папке references!`);
         }
 
-        let controlsPrompt = "";
-        if (platform === 'mobile') {
-            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ МОБИЛЬНЫХ ТЕЛЕФОНОВ: Используй ИСКЛЮЧИТЕЛЬНО touch-события (touchstart, touchmove, touchend). 
-▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать мышь (mousedown, mousemove) или клавиатуру.
-▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО создавать наэкранные HTML-кнопки (<button>). Весь UI рисуй внутри <canvas> через ctx.fillRect.
-▶ ВАЖНО: Используй e.preventDefault() в слушателях touch-событий с { passive: false }, чтобы не было прокрутки экрана.`;
-        } else {
-            controlsPrompt = `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление с клавиатуры или клики мышью.
-▶ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать touch-события. Никакой адаптации под телефоны.`;
-        }
+        let controlsPrompt = platform === 'mobile' 
+            ? `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ МОБИЛЬНЫХ ТЕЛЕФОНОВ: Используй ИСКЛЮЧИТЕЛЬНО touch-события (touchstart, touchmove, touchend).\n▶ ЗАПРЕЩЕНО использовать мышь или клавиатуру.\n▶ ЗАПРЕЩЕНО создавать наэкранные HTML-кнопки (<button>). Весь UI рисуй внутри <canvas> через ctx.fillRect.\n▶ Используй e.preventDefault() в слушателях touch-событий с { passive: false }, чтобы не было прокрутки экрана.`
+            : `▶ УПРАВЛЕНИЕ СТРОГО ДЛЯ ПК: Используй стандартное управление с клавиатуры или клики мышью.\n▶ ЗАПРЕЩЕНО использовать touch-события. Никакой адаптации под телефоны.`;
 
         const marker = String.fromCharCode(96, 96, 96);
         const fullPrompt = `Ты — профессиональный разработчик Canvas игр. Твоя задача: написать ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле index.html по идее пользователя.
 
-АБСОЛЮТНЫЕ ЗАПРЕТЫ (ЕСЛИ НАРУШИШЬ - ИГРА СЛОМАЕТСЯ):
-1. ЗАПРЕЩЕНО делать HTML-экраны загрузки. Игра должна запускаться МГНОВЕННО при открытии. Сразу вызывай gameLoop().
-2. ЗАПРЕЩЕНО использовать внешние ссылки на картинки. Для сложных персонажей (например, рыцарь или монстр) используй пиксель-арт: создавай двумерный массив из 0 и 1 (или других цифр для разных цветов, сетка 8x8 или 16x16) и отрисовывай его через ctx.fillRect нужными цветами, либо используй комбинации подходящих Эмодзи.
-3. ЗАПРЕЩЕНО писать комментарии (// или /*). Только чистый код.
-4. ПИШИ МАКСИМАЛЬНО ПРОСТУЮ ЛОГИКУ (MVP). Категорически запрещено добавлять: переводы (i18n), звуки/музыку (AudioContext), главное меню, настройки и сохранения (localStorage). Только голый игровой процесс!
-5. ВЫДАВАЙ ТОЛЬКО КОД. Начинай с <!DOCTYPE html> и заканчивай </html>.
-
-ПРАВИЛА УПРАВЛЕНИЯ:
+АБСОЛЮТНЫЕ ЗАПРЕТЫ И ПРАВИЛА:
+1. ЗАПРЕЩЕНО делать HTML-экраны загрузки. Игра запускается МГНОВЕННО.
+2. Для сложных персонажей используй пиксель-арт (двумерный массив из 0 и цифр для цветов) и отрисовывай через ctx.fillRect, либо Эмодзи. Никаких внешних ссылок на спрайты.
+3. ПИШИ МАКСИМАЛЬНО ПРОСТУЮ ЛОГИКУ (MVP). Без аудио, локализаций и сложного меню.
+4. ВЫДАВАЙ ТОЛЬКО КОД. Начинай с <!DOCTYPE html> и заканчивай </html>. Без комментариев //.
+5. ОБЯЗАТЕЛЬНО добавь CSS-свойство background к тегу body или главному контейнеру в таком формате: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;
+6. В самом конце кода, ПЕРЕД закрывающим тегом </html>, напиши HTML-комментарий с 1-2 английскими словами для поиска фона на Unsplash. Формат: ПРАВИЛА УПРАВЛЕНИЯ:
 ${controlsPrompt}
 
-Ниже приведен идеальный эталон кода, от которого ты должен отталкиваться в плане архитектуры и физики:
+Ниже приведен эталон кода, от которого ты должен отталкиваться в плане архитектуры и физики:
 ${referenceCode}
 
 Идея для новой игры: ${userPrompt}`;
@@ -148,7 +136,6 @@ ${referenceCode}
 
         for (let chunk = 0; chunk < 4; chunk++) {
             let attemptSuccess = false;
-            
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
                     const response = await axios.post(url, { 
@@ -254,10 +241,8 @@ function getMainMenuKeyboard() {
 }
 
 bot.start(async (ctx) => {
-    ctx.session.gameData = {}; 
-    ctx.session.step = null;
-    const userId = ctx.from.id;
-    const refId = ctx.payload; 
+    ctx.session.gameData = {}; ctx.session.step = null;
+    const userId = ctx.from.id; const refId = ctx.payload; 
     
     const isNewUser = !usersDb[userId];
     const user = getUser(userId);
@@ -267,9 +252,7 @@ bot.start(async (ctx) => {
         usersDb[refId].balance += REWARD_PER_REF;
         usersDb[refId].referrals += 1;
         saveDb();
-        try {
-            await bot.telegram.sendMessage(refId, `🎉 По твоей ссылке зарегистрировался новый демиург!\nТебе начислено +${REWARD_PER_REF} 🪙 токенов.`);
-        } catch (e) {}
+        try { await bot.telegram.sendMessage(refId, `🎉 По твоей ссылке зарегистрировался новый демиург!\nТебе начислено +${REWARD_PER_REF} 🪙 токенов.`); } catch (e) {}
     }
 
     const text = `🌌 Добро пожаловать на Фабрику Игр!\n\nЯ — нейросеть, которая превращает твои безумные идеи в рабочие браузерные игры за пару секунд.\n\nКаждая генерация стоит ${COST_PER_GAME} 🪙. На твоем счету ${user.balance} 🪙!`;
@@ -277,13 +260,9 @@ bot.start(async (ctx) => {
 });
 
 bot.action('main_menu', async (ctx) => {
-    ctx.session.gameData = {}; 
-    ctx.session.step = null;
-    try {
-        await ctx.editMessageText('🌌 Главное меню Фабрики Игр:', getMainMenuKeyboard());
-    } catch(e) {
-        await ctx.reply('🌌 Главное меню Фабрики Игр:', getMainMenuKeyboard());
-    }
+    ctx.session.gameData = {}; ctx.session.step = null;
+    try { await ctx.editMessageText('🌌 Главное меню Фабрики Игр:', getMainMenuKeyboard()); } 
+    catch(e) { await ctx.reply('🌌 Главное меню Фабрики Игр:', getMainMenuKeyboard()); }
 });
 
 bot.action('show_profile', async (ctx) => {
@@ -353,15 +332,41 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const user = getUser(userId);
     const platform = ctx.session.gameData.platform || 'pc'; 
     
-    user.balance -= COST_PER_GAME;
-    saveDb();
+    user.balance -= COST_PER_GAME; saveDb();
 
     generateAIGame(prompt, platform).then(async (gameCode) => {
         if (!gameCode) {
-            user.balance += COST_PER_GAME;
-            saveDb();
-            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Сервера Google перегружены или не хватило токенов. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
+            user.balance += COST_PER_GAME; saveDb();
+            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
         }
+
+        // === 🎨 МАГИЯ UNSPLASH ===
+        let bgKeyword = 'epic gaming'; 
+        const bgMatch = gameCode.match(//i);
+        if (bgMatch) bgKeyword = bgMatch[1].trim();
+
+        let customBgUrl = '';
+        if (process.env.UNSPLASH_ACCESS_KEY) {
+            try {
+                const unRes = await axios.get(`https://api.unsplash.com/photos/random?query=${encodeURIComponent(bgKeyword)}&orientation=landscape&client_id=${process.env.UNSPLASH_ACCESS_KEY}`);
+                if (unRes.data && unRes.data.urls && unRes.data.urls.regular) {
+                    const imgUrl = unRes.data.urls.regular;
+                    const fileName = `bg_ai_${Date.now()}.jpg`;
+                    const filePath = path.join(uploadsDir, fileName);
+                    
+                    const writer = fs.createWriteStream(filePath);
+                    const imgStream = await axios({url: imgUrl, method: 'GET', responseType: 'stream'});
+                    imgStream.data.pipe(writer);
+                    
+                    await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+                    customBgUrl = `/uploads/${fileName}`;
+                    console.log(`[🎨 Unsplash] Загружен фон по тегу: ${bgKeyword}`);
+                }
+            } catch (e) { console.log("[🎨 Unsplash] Ошибка API:", e.message); }
+        }
+
+        // Заменяем плейсхолдер на реальную картинку
+        gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
 
         const gameId = `ai_${Date.now()}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
@@ -376,8 +381,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             [Markup.button.callback('🏠 В главное меню', 'main_menu')]
         ]));
     }).catch(err => {
-        user.balance += COST_PER_GAME;
-        saveDb();
+        user.balance += COST_PER_GAME; saveDb();
         bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации. Токены не списаны.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
     });
 }
@@ -387,9 +391,7 @@ bot.action('regen_ai', async (ctx) => {
     if (!prompt) return ctx.answerCbQuery('❌ Прошлый запрос не найден. Создай игру заново.', { show_alert: true });
 
     const user = getUser(ctx.from.id);
-    if (user.balance < COST_PER_GAME) {
-        return ctx.answerCbQuery('❌ Недостаточно токенов для перегенерации!', { show_alert: true });
-    }
+    if (user.balance < COST_PER_GAME) return ctx.answerCbQuery('❌ Недостаточно токенов для перегенерации!', { show_alert: true });
 
     await ctx.editMessageText('✨ Призываю мощности Gemini... \n\nПерезапускаю генерацию по твоему прошлому запросу. Жди обновления сообщения! ⚡');
     handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, prompt, ctx);
@@ -397,11 +399,8 @@ bot.action('regen_ai', async (ctx) => {
 
 bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        const prompt = ctx.message.text;
-        const chatId = ctx.chat.id;
-        
-        ctx.session.step = null;
-        ctx.session.gameData.lastPrompt = prompt; 
+        const prompt = ctx.message.text; const chatId = ctx.chat.id;
+        ctx.session.step = null; ctx.session.gameData.lastPrompt = prompt; 
         
         const msg = await ctx.reply('✨ Призываю мощности Gemini... \n\nПроцесс запущен в фоновом режиме. Пишу код... ⚡');
         handleAIGeneration(chatId, msg.message_id, prompt, ctx);
@@ -417,8 +416,7 @@ bot.on('text', async (ctx) => {
 
 bot.action('bg_choice_standard', async (ctx) => {
     if (ctx.session?.step === 'awaiting_bg_choice') {
-        ctx.session.gameData.customBgFile = null;
-        ctx.session.step = null;
+        ctx.session.gameData.customBgFile = null; ctx.session.step = null;
         await ctx.editMessageText('✅ Оставляем стандартный фон. Запускаю сборку...');
         finishGameGeneration(ctx);
     }
@@ -436,22 +434,18 @@ bot.on('photo', async (ctx) => {
         const msg = await ctx.reply('⏳ Проверяю картинку нейросетью и применяю к игре...');
         try {
             const photo = ctx.message.photo.pop();
-            const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-            const url = fileLink.href;
+            const url = (await ctx.telegram.getFileLink(photo.file_id)).href;
 
-            const isSafe = await checkImageSafety(url);
-            if (!isSafe) return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Ого-го! Мой сканер заметил что-то неприличное. Давай выберем картинку поскромнее!');
+            if (!(await checkImageSafety(url))) return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Ого-го! Мой сканер заметил что-то неприличное. Давай выберем картинку поскромнее!');
 
             const fileName = `bg_${Date.now()}.jpg`;
             const filePath = path.join(uploadsDir, fileName);
-            const response = await axios({ url, method: 'GET', responseType: 'stream' });
-            
             const writer = fs.createWriteStream(filePath);
+            const response = await axios({ url, method: 'GET', responseType: 'stream' });
             response.data.pipe(writer);
 
             writer.on('finish', () => {
-                ctx.session.gameData.customBgFile = fileName;
-                ctx.session.step = null;
+                ctx.session.gameData.customBgFile = fileName; ctx.session.step = null;
                 ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id);
                 finishGameGeneration(ctx);
             });
@@ -473,6 +467,7 @@ async function finishGameGeneration(ctx) {
     ]));
 }
 
+// === 📦 ОБНОВЛЕННЫЙ АРХИВАТОР ДЛЯ ИИ-ИГР (С АВТО-ФОНАМИ) ===
 bot.action(/dl_ai_(.+)/, async (ctx) => {
     const gameId = ctx.match[1]; 
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
@@ -481,6 +476,9 @@ bot.action(/dl_ai_(.+)/, async (ctx) => {
     if (!fs.existsSync(gamePath)) return ctx.answerCbQuery('❌ Файл игры не найден!', { show_alert: true });
 
     try {
+        let html = fs.readFileSync(gamePath, 'utf8');
+        let bgMatch = html.match(/\/uploads\/(bg_ai_\d+\.jpg)/); // Ищем ссылку на скачанный фон
+
         const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', { zlib: { level: 9 } });
         output.on('close', async () => {
@@ -488,7 +486,21 @@ bot.action(/dl_ai_(.+)/, async (ctx) => {
             fs.unlinkSync(zipPath); 
         });
         archive.pipe(output);
-        archive.file(gamePath, { name: 'index.html' });
+        
+        if (bgMatch) {
+            const bgFileName = bgMatch[1];
+            const bgPath = path.join(uploadsDir, bgFileName);
+            if (fs.existsSync(bgPath)) {
+                archive.file(bgPath, { name: bgFileName }); // Кладем картинку в корень архива
+                let localHtml = html.replace(/\/uploads\//g, ''); // Удаляем папку /uploads/ из пути в коде
+                archive.append(localHtml, { name: 'index.html' });
+            } else {
+                archive.append(html, { name: 'index.html' });
+            }
+        } else {
+            archive.append(html, { name: 'index.html' });
+        }
+        
         archive.finalize();
     } catch (e) { ctx.reply('❌ Ошибка сборки архива.'); }
 });

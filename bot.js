@@ -324,26 +324,33 @@ bot.action(/engine_(?!ai)(.+)/, async (ctx) => {
 bot.action(/biome_(.+)/, async (ctx) => {
     ctx.session.gameData.biome = ctx.match[1];
     ctx.session.step = 'awaiting_name';
-    await ctx.editMessageText('Шаблон применен! 🎨\nТеперь придумай и напиши мне название для твоей игры:');
+    await ctx.editMessageText('Шаблон применен! 🎨\n精度 Придумай и напиши мне название для твоей игры:');
 });
 
+// === 🛠️ УЛЬТИМАТИВНЫЙ ОБРАБОТЧИК ГЕНЕРАЦИИ (БЕЗ СИНТАКСИЧЕСКИХ КОЛЛИЗИЙ) ===
 async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const userId = ctx.from.id;
     const user = getUser(userId);
     const platform = ctx.session.gameData.platform || 'pc'; 
     
-    user.balance -= COST_PER_GAME; saveDb();
+    user.balance -= COST_PER_GAME; 
+    saveDb();
 
-    generateAIGame(prompt, platform).then(async (gameCode) => {
+    try {
+        const gameCode = await generateAIGame(prompt, platform);
         if (!gameCode) {
-            user.balance += COST_PER_GAME; saveDb();
-            return bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
+            user.balance += COST_PER_GAME; 
+            saveDb();
+            return await bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Токены возвращены на баланс.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
         }
 
         // === 🎨 МАГИЯ UNSPLASH ===
         let bgKeyword = 'epic gaming'; 
         const bgMatch = gameCode.match(//i);
-        if (bgMatch) bgKeyword = bgMatch[1].trim();
+        
+        if (bgMatch) {
+            bgKeyword = bgMatch[1].trim();
+        }
 
         let customBgUrl = '';
         if (process.env.UNSPLASH_ACCESS_KEY) {
@@ -355,35 +362,43 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
                     const filePath = path.join(uploadsDir, fileName);
                     
                     const writer = fs.createWriteStream(filePath);
-                    const imgStream = await axios({url: imgUrl, method: 'GET', responseType: 'stream'});
+                    const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream' });
                     imgStream.data.pipe(writer);
                     
-                    await new Promise((resolve, reject) => { writer.on('finish', resolve); writer.on('error', reject); });
+                    await new Promise((resolve, reject) => { 
+                        writer.on('finish', resolve); 
+                        writer.on('error', reject); 
+                    });
                     customBgUrl = `/uploads/${fileName}`;
                     console.log(`[🎨 Unsplash] Загружен фон по тегу: ${bgKeyword}`);
                 }
-            } catch (e) { console.log("[🎨 Unsplash] Ошибка API:", e.message); }
+            } catch (e) { 
+                console.log("[🎨 Unsplash] Ошибка API:", e.message); 
+            }
         }
 
-        // Заменяем плейсхолдер на реальную картинку
-        gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
+        // Подставляем картинку в код
+        const updatedGameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
 
         const gameId = `ai_${Date.now()}`;
-        fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
+        fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), updatedGameCode);
         
         const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
         
-        await bot.telegram.editMessageText(chatId, msgId, null, `✅ Твоя игра успешно создана!\n💰 Списано: -${COST_PER_GAME} 🪙\n💳 Остаток: ${user.balance} 🪙`, Markup.inlineKeyboard([
+        return await bot.telegram.editMessageText(chatId, msgId, null, `✅ Твоя игра успешно создана!\n💰 Списано: -${COST_PER_GAME} 🪙\n💳 Остаток: ${user.balance} 🪙`, Markup.inlineKeyboard([
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
             [Markup.button.callback('📦 Скачать Архив', `dl_ai_${gameId}`)],
             [Markup.button.callback('🔁 Перегенерировать (тот же запрос)', 'regen_ai')],
             [Markup.button.callback('📝 Новая игра (другой запрос)', 'engine_ai')],
             [Markup.button.callback('🏠 В главное меню', 'main_menu')]
         ]));
-    }).catch(err => {
-        user.balance += COST_PER_GAME; saveDb();
-        bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации. Токены не списаны.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
-    });
+
+    } catch (err) {
+        console.error("Критический сбой handleAIGeneration:", err);
+        user.balance += COST_PER_GAME; 
+        saveDb();
+        return await bot.telegram.editMessageText(chatId, msgId, null, '❌ Критическая ошибка при генерации. Токены не списаны.', Markup.inlineKeyboard([[Markup.button.callback('🔄 Попробовать снова', 'regen_ai')], [Markup.button.callback('🏠 Главное меню', 'main_menu')]]));
+    }
 }
 
 bot.action('regen_ai', async (ctx) => {
@@ -477,22 +492,24 @@ bot.action(/dl_ai_(.+)/, async (ctx) => {
 
     try {
         let html = fs.readFileSync(gamePath, 'utf8');
-        let bgMatch = html.match(/\/uploads\/(bg_ai_\d+\.jpg)/); // Ищем ссылку на скачанный фон
+        let bgMatch = html.match(/\/uploads\/(bg_ai_\d+\.jpg)/); 
 
         const output = fs.createWriteStream(zipPath);
         const archive = archiver('zip', { zlib: { level: 9 } });
+        
         output.on('close', async () => {
             await ctx.replyWithDocument({ source: zipPath, filename: `ai_generated_game.zip` });
             fs.unlinkSync(zipPath); 
         });
+        
         archive.pipe(output);
         
         if (bgMatch) {
             const bgFileName = bgMatch[1];
             const bgPath = path.join(uploadsDir, bgFileName);
             if (fs.existsSync(bgPath)) {
-                archive.file(bgPath, { name: bgFileName }); // Кладем картинку в корень архива
-                let localHtml = html.replace(/\/uploads\//g, ''); // Удаляем папку /uploads/ из пути в коде
+                archive.file(bgPath, { name: bgFileName }); 
+                let localHtml = html.replace(/\/uploads\//g, ''); 
                 archive.append(localHtml, { name: 'index.html' });
             } else {
                 archive.append(html, { name: 'index.html' });

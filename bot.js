@@ -136,7 +136,7 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
             "4. ВЫДАВАЙ ТОЛЬКО КОД. Без комментариев.",
             "5. ОБЯЗАТЕЛЬНО добавь CSS-свойство background к тегу body:",
             "background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            "6. Перед </html> напиши: (1-2 англ слова для фона).",
+            "6. Перед </html> напиши тег: [BG: 1-2 англ слова для фона].",
             "ПРАВИЛА УПРАВЛЕНИЯ: " + controlsPrompt,
             "Эталон кода для физики и архитектуры:",
             referenceCode,
@@ -382,8 +382,10 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         let gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
         if (!gameCode) throw new Error("Empty game code");
 
-        // БЕЗОПАСНОЕ извлечение тега без IF
-        let bgKeyword = (gameCode.match(//i) || [null, 'epic gaming'])[1].trim();
+        // Безопасное извлечение тега: ищем маркер [BG: слово] или HTML-комментарий
+        const bgMatch = gameCode.match(/(?:|\])/i);
+        let bgKeyword = (bgMatch && bgMatch[1]) ? bgMatch[1].trim() : 'dark fantasy';
+        
         let customBgUrl = '';
 
         try {
@@ -393,15 +395,17 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             const unRes = await axios.get(unUrl);
             
             const imgUrl = (unRes.data && unRes.data.urls) ? unRes.data.urls.regular : null;
-            const fileName = `bg_ai_${Date.now()}.jpg`;
-            const filePath = path.join(uploadsDir, fileName);
-            const writer = fs.createWriteStream(filePath);
-            
-            const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream' });
-            imgStream.data.pipe(writer);
-            await new Promise((res, rej) => { writer.on('finish', res); writer.on('error', rej); });
-            
-            customBgUrl = `/uploads/${fileName}`;
+            if (imgUrl) {
+                const fileName = `bg_ai_${Date.now()}.jpg`;
+                const filePath = path.join(uploadsDir, fileName);
+                const writer = fs.createWriteStream(filePath);
+                
+                const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream' });
+                imgStream.data.pipe(writer);
+                await new Promise((res, rej) => { writer.on('finish', res); writer.on('error', rej); });
+                
+                customBgUrl = `/uploads/${fileName}`;
+            }
         } catch (e) {
             console.log("Unsplash error skipped");
         }
@@ -423,6 +427,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         await bot.telegram.editMessageText(chatId, msgId, null, msg, Markup.inlineKeyboard(kb));
         
     } catch (err) {
+        console.error(err);
         user.balance += COST_PER_GAME; 
         saveDb();
         const kb = [

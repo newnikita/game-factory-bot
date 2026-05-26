@@ -378,7 +378,6 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     user.balance -= COST_PER_GAME; 
     saveDb();
 
-    // Прогресс-бар для визуала генерации
     const progressStates = [
         { percent: 15, text: 'Проектирование игровой архитектуры...', bar: '██░░░░░░░░' },
         { percent: 35, text: 'Генерация логики и физики...', bar: '████░░░░░░' },
@@ -403,17 +402,17 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         let gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
         if (!gameCode) throw new Error("Empty game code");
 
-        // Безопасное извлечение ключевого слова
-        let bgKeyword = 'fantasy landscape'; // Дефолтное значение
+        // Вытаскиваем ключевое слово
+        let bgKeyword = 'fantasy landscape';
         const bgMatch = gameCode.match(/\[BG:\s*([^\]]+)\]/i);
         if (bgMatch && bgMatch[1]) {
             bgKeyword = bgMatch[1].trim();
         }
 
-        // ВАЖНО: Удаляем текстовый тег из финального HTML, чтобы он не ломал Flexbox
+        // Очищаем код от тега, чтобы он не ломал Flexbox
         gameCode = gameCode.replace(/\[BG:\s*([^\]]+)\]/i, '').trim();
         
-        // Надежный фолбэк на случай, если Unsplash упадёт (чтобы экран не был белым)
+        // Дефолтный фон на случай сбоя Unsplash 
         let customBgUrl = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop'; 
 
         try {
@@ -436,10 +435,18 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             }
         } catch (e) {
             console.error("Unsplash skipped:", e.message);
-            // Если упало, customBgUrl останется дефолтным рабочим URL
         }
 
+        // Стандартная замена плейсхолдера
         gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
+        
+        // ЖЕЛЕЗОБЕТОННАЯ СТРАХОВКА:
+        // Если ИИ удалил плейсхолдер и написал пустые кавычки, ссылка не вставится.
+        // Проверяем: если итоговой ссылки нет в коде — насильно инжектим стиль перед закрытием head.
+        if (!gameCode.includes(customBgUrl)) {
+            const forcedStyle = `\n<style>\n  body { background: url('${customBgUrl}') center/cover no-repeat !important; }\n</style>\n</head>`;
+            gameCode = gameCode.replace('</head>', forcedStyle);
+        }
         
         const gameId = `ai_${Date.now()}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);

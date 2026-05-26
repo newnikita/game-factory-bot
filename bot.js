@@ -377,16 +377,44 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     const user = getUser(ctx.from.id);
     user.balance -= COST_PER_GAME; 
     saveDb();
+
+    // Прогресс-бар для визуала генерации
+    const progressStates = [
+        { percent: 15, text: 'Проектирование игровой архитектуры...', bar: '██░░░░░░░░' },
+        { percent: 35, text: 'Генерация логики и физики...', bar: '████░░░░░░' },
+        { percent: 65, text: 'Отрисовка графических элементов...', bar: '███████░░░' },
+        { percent: 85, text: 'Сборка Canvas и интерфейса...', bar: '████████░░' },
+        { percent: 95, text: 'Подбор атмосферного фона...', bar: '█████████░' }
+    ];
+
+    let stepIndex = 0;
+    const progressInterval = setInterval(async () => {
+        if (stepIndex < progressStates.length) {
+            const state = progressStates[stepIndex];
+            const text = `⚒️ **Гримуар кода в работе...**\n\n\`[${state.bar}]\` **${state.percent}%**\n⏳ _${state.text}_`;
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'Markdown' });
+            } catch (e) {}
+            stepIndex++;
+        }
+    }, 3500);
     
     try {
         let gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
         if (!gameCode) throw new Error("Empty game code");
 
-        // Безопасное извлечение тега: ищем маркер [BG: слово] или HTML-комментарий
-        const bgMatch = gameCode.match(/(?:|\])/i);
-        let bgKeyword = (bgMatch && bgMatch[1]) ? bgMatch[1].trim() : 'dark fantasy';
+        // Безопасное извлечение ключевого слова
+        let bgKeyword = 'fantasy landscape'; // Дефолтное значение
+        const bgMatch = gameCode.match(/\[BG:\s*([^\]]+)\]/i);
+        if (bgMatch && bgMatch[1]) {
+            bgKeyword = bgMatch[1].trim();
+        }
+
+        // ВАЖНО: Удаляем текстовый тег из финального HTML, чтобы он не ломал Flexbox
+        gameCode = gameCode.replace(/\[BG:\s*([^\]]+)\]/i, '').trim();
         
-        let customBgUrl = '';
+        // Надежный фолбэк на случай, если Unsplash упадёт (чтобы экран не был белым)
+        let customBgUrl = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop'; 
 
         try {
             const query = encodeURIComponent(bgKeyword);
@@ -407,7 +435,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
                 customBgUrl = `/uploads/${fileName}`;
             }
         } catch (e) {
-            console.log("Unsplash error skipped");
+            console.error("Unsplash skipped:", e.message);
+            // Если упало, customBgUrl останется дефолтным рабочим URL
         }
 
         gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
@@ -415,6 +444,12 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         const gameId = `ai_${Date.now()}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
         
+        clearInterval(progressInterval);
+        
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, `⚒️ **Гримуар кода в работе...**\n\n\`[██████████]\` **100%**\n✅ _Финальная компиляция..._`, { parse_mode: 'Markdown' });
+        } catch(e) {}
+
         const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
@@ -423,10 +458,11 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
         
-        const msg = `✅ Игра создана!\n💳 Остаток: ${user.balance} 🪙`;
+        const msg = `✅ Проект успешно собран!\n💳 Остаток: ${user.balance} 🪙`;
         await bot.telegram.editMessageText(chatId, msgId, null, msg, Markup.inlineKeyboard(kb));
         
     } catch (err) {
+        clearInterval(progressInterval);
         console.error(err);
         user.balance += COST_PER_GAME; 
         saveDb();
@@ -434,7 +470,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             [Markup.button.callback('🔄 Повторить', 'regen_ai')], 
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
-        await bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации.', Markup.inlineKeyboard(kb));
+        await bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Магия прервалась.', Markup.inlineKeyboard(kb));
     }
 }
 
@@ -443,7 +479,7 @@ bot.action('regen_ai', async (ctx) => {
     if (!p) return ctx.answerCbQuery('❌ Запрос не найден.', { show_alert: true });
     if (getUser(ctx.from.id).balance < COST_PER_GAME) return ctx.answerCbQuery('❌ Мало токенов!', { show_alert: true });
     
-    await ctx.editMessageText('✨ Призываю Gemini... Перезапускаю!');
+    await ctx.editMessageText('⚒️ **Гримуар кода в работе...**\n\n`[░░░░░░░░░░]` **0%**\n⏳ _Запуск нейронных потоков..._', { parse_mode: 'Markdown' });
     handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, p, ctx);
 });
 
@@ -451,7 +487,7 @@ bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_ai_prompt') {
         ctx.session.step = null; 
         ctx.session.gameData.lastPrompt = ctx.message.text;
-        const msg = await ctx.reply('✨ Призываю Gemini... Пишу код... ⚡');
+        const msg = await ctx.reply('⚒️ **Гримуар кода в работе...**\n\n`[░░░░░░░░░░]` **0%**\n⏳ _Запуск нейронных потоков..._', { parse_mode: 'Markdown' });
         handleAIGeneration(ctx.chat.id, msg.message_id, ctx.message.text, ctx);
     } else if (ctx.session?.step === 'awaiting_name') {
         ctx.session.gameData.gameName = ctx.message.text; 

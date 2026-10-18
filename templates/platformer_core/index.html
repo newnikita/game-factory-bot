@@ -16,23 +16,32 @@
             background-image: url('{{BG_IMAGE}}'); background-size: cover; background-position: center;
             box-shadow: {{SHADOW}}; overflow: hidden;
         }
-        canvas { display: block; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.4); }
-        
-        #ui { position: absolute; top: 15px; left: 15px; font-size: 24px; font-weight: bold; text-shadow: 2px 2px 0 #000; pointer-events: none; z-index: 5;}
-        
+        canvas { display: block; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.35); }
+
+        #ui {
+            position: absolute; top: 15px; left: 15px; font-size: 20px; font-weight: bold;
+            background: rgba(0, 0, 0, 0.55); border: 2px solid {{BLOCK_COLOR}};
+            border-radius: 12px; padding: 8px 14px; text-shadow: 2px 2px 0 #000;
+            box-shadow: {{SHADOW}}; pointer-events: none; z-index: 5;
+        }
+
         .overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
             background: rgba(0, 0, 0, 0.8); z-index: 10; text-align: center;
         }
         .hidden { display: none !important; }
-        
-        h1 { font-size: 36px; margin-bottom: 10px; text-shadow: 2px 2px 0 {{BLOCK_COLOR}}; }
-        h2 { font-size: 24px; margin-bottom: 20px; color: #ffca28; }
+
+        h1 { font-size: 36px; margin-bottom: 10px; text-shadow: 2px 2px 0 {{BLOCK_COLOR}}, {{SHADOW}}; }
+        h2 { font-size: 24px; margin-bottom: 20px; color: #ffca28; text-shadow: 2px 2px 0 #000; }
+        .hint { font-size: 15px; color: #bbbbbb; margin: -6px 0 22px; text-shadow: 1px 1px 0 #000; }
         button {
             background: {{BLOCK_COLOR}}; color: white; border: 3px solid white; padding: 15px 30px;
             font-size: 20px; font-weight: bold; border-radius: 15px; cursor: pointer; text-transform: uppercase;
+            text-shadow: 1px 1px 0 rgba(0,0,0,0.45); box-shadow: {{SHADOW}};
+            transition: filter 0.15s ease, transform 0.1s ease;
         }
+        button:hover { filter: brightness(1.15); }
         button:active { transform: scale(0.95); }
     </style>
 </head>
@@ -40,9 +49,10 @@
 
 <div id="game-container">
     <div id="ui">Высота: <span id="score">0</span></div>
-    
+
     <div id="menu" class="overlay">
         <h1>{{GAME_TITLE}}</h1>
+        <p class="hint">Левая/правая половина экрана или стрелки — движение.<br>Прыжок автоматический!</p>
         <button id="start-btn">Играть</button>
     </div>
 
@@ -58,7 +68,7 @@
 <script>
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
-    
+
     let width = canvas.width = canvas.parentElement.clientWidth;
     let height = canvas.height = canvas.parentElement.clientHeight;
 
@@ -83,27 +93,137 @@
         touchStartX: null
     };
 
+    // --- ЗВУК (WebAudio, без файлов) ---
+    let audioCtx = null;
+    function initAudio() {
+        if (audioCtx) return;
+        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+    }
+    function blip(freq, dur, type, vol, slide) {
+        if (!audioCtx) return;
+        try {
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.type = type || 'square';
+            o.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), audioCtx.currentTime + dur);
+            g.gain.setValueAtTime(vol || 0.14, audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+            o.connect(g); g.connect(audioCtx.destination);
+            o.start(); o.stop(audioCtx.currentTime + dur);
+        } catch (e) {}
+    }
+    const sfxJump = () => blip(420, 0.12, 'square', 0.12, 320);
+    const sfxLand = () => blip(150, 0.09, 'triangle', 0.2, -50);
+    const sfxDie = () => blip(320, 0.55, 'sawtooth', 0.16, -270);
+    const sfxMilestone = () => { blip(660, 0.1, 'square', 0.12); setTimeout(() => blip(880, 0.14, 'square', 0.12), 90); };
+
+    // --- ЭФФЕКТЫ: тряска, вспышка, попапы, частицы, звёзды ---
+    let shake = 0, flash = 0;
+    let popups = [], particles = [], bgStars = [];
+    let worldDelta = 0, timeT = 0;
+
+    function addShake(a) { shake = Math.min(30, shake + a); }
+    function addFlash(v) { flash = Math.min(0.5, flash + v); }
+    function addPopup(x, y, text, color) { popups.push({ x, y, text, color: color || '#ffffff', life: 1 }); }
+
+    function spawnParticles(x, y, color, count, spread, grav) {
+        for (let i = 0; i < count; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const sp = (0.5 + Math.random()) * (spread || 3);
+            particles.push({
+                x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1,
+                r: Math.random() * 3 + 1.5, color, life: 0.5 + Math.random() * 0.4,
+                grav: grav === undefined ? 0.12 : grav
+            });
+        }
+    }
+
+    function initStars() {
+        bgStars = [];
+        for (let i = 0; i < 42; i++) {
+            bgStars.push({
+                x: Math.random() * width, y: Math.random() * height,
+                r: Math.random() * 1.8 + 0.6, ph: Math.random() * Math.PI * 2,
+                sp: 0.4 + Math.random() * 0.8
+            });
+        }
+    }
+
+    function updateFx(f) {
+        worldDelta = 0;
+        for (let i = popups.length - 1; i >= 0; i--) {
+            popups[i].life -= 0.022 * f;
+            popups[i].y -= 0.7 * f;
+            if (popups[i].life <= 0) popups.splice(i, 1);
+        }
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx * f; p.y += p.vy * f;
+            p.vy += p.grav * f;
+            p.life -= 0.026 * f;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+        shake *= Math.pow(0.86, f); if (shake < 0.3) shake = 0;
+        flash = Math.max(0, flash - 0.045 * f);
+    }
+
+    function drawStars() {
+        for (const s of bgStars) {
+            const tw = 0.35 + 0.65 * Math.abs(Math.sin(timeT * 0.0016 * s.sp + s.ph));
+            ctx.globalAlpha = tw * 0.8;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    function updateStars(f) {
+        for (const s of bgStars) {
+            s.y += (0.15 * s.sp + worldDelta * 0.3) * f;
+            if (s.y > height + 3) { s.y = -3; s.x = Math.random() * width; }
+        }
+    }
+
     const player = {
         x: width / 2, y: height - 150, lastY: height - 150,
-        vx: 0, vy: 0, radius: 15,
+        vx: 0, vy: 0, radius: 15, squash: 0,
+        ghosts: [],
         draw() {
-            ctx.fillStyle = '{{BLOCK_COLOR}}';
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            // Декоративный элемент (лицо/иконка)
+            const speedStretch = Math.min(0.3, Math.abs(this.vy) / 45 + Math.abs(this.vx) / 40);
+            const sq = this.squash;
+            const sy = 1 + speedStretch - sq;
+            const sx = 1 - speedStretch * 0.55 + sq * 0.75;
+
+            // шлейф
+            for (const g of this.ghosts) {
+                ctx.globalAlpha = g.life * 0.3;
+                ctx.fillStyle = '{{BLOCK_COLOR}}';
+                ctx.beginPath(); ctx.arc(g.x, g.y, this.radius * (0.6 + g.life * 0.4), 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.scale(sx, sy);
+            ctx.shadowColor = '{{BLOCK_COLOR}}';
+            ctx.shadowBlur = 16;
+            const grad = ctx.createRadialGradient(-4, -5, 2, 0, 0, this.radius + 3);
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(0.45, '#f2f2ff');
+            grad.addColorStop(1, '{{BLOCK_COLOR}}');
+            ctx.fillStyle = grad;
+            ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
             ctx.fillStyle = 'white';
-            ctx.font = '16px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('{{LIFE_ICON}}', this.x, this.y);
+            ctx.font = '15px {{FONT_FAMILY}}'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('{{LIFE_ICON}}', 0, 1);
+            ctx.restore();
         },
-        update() {
+        update(f) {
             if (state.mode === 'FALLING') {
-                this.vy += CONFIG.gravity; this.y += this.vy;
+                this.vy += CONFIG.gravity * f; this.y += this.vy * f;
                 if (this.y > height + 100) triggerGameOver();
                 return;
             }
@@ -112,60 +232,100 @@
 
             // Движение по X
             if (state.inputDirection !== 0) {
-                this.vx += state.inputDirection * CONFIG.accel;
+                this.vx += state.inputDirection * CONFIG.accel * f;
                 if (this.vx > CONFIG.maxSpeedX) this.vx = CONFIG.maxSpeedX;
                 if (this.vx < -CONFIG.maxSpeedX) this.vx = -CONFIG.maxSpeedX;
             } else {
-                this.vx *= CONFIG.friction;
+                this.vx *= Math.pow(CONFIG.friction, f);
             }
-            this.x += this.vx;
+            this.x += this.vx * f;
 
             // Телепорт через края экрана
             if (this.x < -this.radius) this.x = width + this.radius;
             if (this.x > width + this.radius) this.x = -this.radius;
 
             // Гравитация
-            this.vy += CONFIG.gravity;
-            this.y += this.vy;
+            this.vy += CONFIG.gravity * f;
+            this.y += this.vy * f;
 
             // Скроллинг камеры вверх (двигаем всё вниз)
             if (this.y < height / 2) {
                 const delta = (height / 2) - this.y;
                 this.y = height / 2;
                 state.score += delta;
+                worldDelta = delta;
                 state.platforms.forEach(p => p.y += delta);
                 document.getElementById('score').innerText = Math.floor(state.score / 10);
+            }
+
+            // Пройденные рубежи
+            if (state.score >= nextMilestone) {
+                nextMilestone += 500;
+                addPopup(this.x, this.y - 30, '+50', '#ffca28');
+                addFlash(0.12); addShake(3);
+                sfxMilestone();
+            }
+
+            // Шлейф при быстром движении
+            if (Math.abs(this.vy) > 8 || Math.abs(this.vx) > 3.4) {
+                this.ghosts.unshift({ x: this.x, y: this.y, life: 1 });
+                if (this.ghosts.length > 7) this.ghosts.pop();
+            }
+            for (let i = this.ghosts.length - 1; i >= 0; i--) {
+                this.ghosts[i].life -= 0.055 * f;
+                if (this.ghosts[i].life <= 0) this.ghosts.splice(i, 1);
             }
 
             // Проигрыш при падении
             if (this.y > height + this.radius) {
                 state.mode = 'FALLING';
-                this.vy = -5; // Небольшой подскок перед падением
+                this.vy = -5;
+                addShake(12); addFlash(0.3);
+                spawnParticles(this.x, height - 60, '#ff6b6b', 16, 4.5);
+                sfxDie();
             }
         },
         jump() {
             this.vy = CONFIG.jumpForce;
+            this.squash = -0.18;
+            spawnParticles(this.x, this.y + this.radius, '{{BLOCK_COLOR}}', 7, 2.6);
+            sfxJump();
         }
     };
+
+    let nextMilestone = 500;
 
     class Platform {
         constructor(x, y) {
             this.x = x; this.y = y;
             this.w = CONFIG.platWidth;
             this.h = CONFIG.platHeight;
+            this.tint = Math.random();
         }
         draw() {
-            ctx.fillStyle = 'white';
+            ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
+            const grad = ctx.createLinearGradient(this.x, this.y, this.x, this.y + this.h);
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(0.3, this.tint > 0.5 ? '#e8e8f8' : '#dcdcec');
+            grad.addColorStop(1, '#b9b9d4');
+            ctx.fillStyle = grad;
             ctx.beginPath();
             ctx.roundRect(this.x, this.y, this.w, this.h, 5);
             ctx.fill();
+            ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+            // акцентная кромка сверху
+            ctx.fillStyle = '{{BLOCK_COLOR}}';
+            ctx.shadowColor = '{{BLOCK_COLOR}}'; ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.roundRect(this.x + 4, this.y, this.w - 8, 3.5, 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
         }
     }
 
     // --- ГЕНЕРАЦИЯ МИРА ---
     function spawnInitialWorld() {
         state.platforms = [];
-        // Стартовая платформа точно под игроком
         state.platforms.push(new Platform(width / 2 - CONFIG.platWidth / 2, height - 40));
         let cy = height - 100;
         while (cy > 0) {
@@ -179,9 +339,7 @@
     }
 
     function updateWorldMap() {
-        // Удаляем старые платформы
         state.platforms = state.platforms.filter(p => p.y < height + 40);
-        // Добавляем новые сверху
         let highestY = state.platforms.length > 0 ? Math.min(...state.platforms.map(p => p.y)) : height;
         while (highestY > 0) {
             let gap = Math.random() * (CONFIG.platGapMax - CONFIG.platGapMin) + CONFIG.platGapMin;
@@ -192,18 +350,21 @@
 
     function resolveCollisions() {
         if (state.mode !== 'PLAYING') return;
-        // Проверка коллизий ТОЛЬКО при падении вниз (vy > 0)
         if (player.vy > 0) {
             const playerBottom = player.y + player.radius;
             const playerPrevBottom = player.lastY + player.radius;
-            
+
             for (let p of state.platforms) {
-                if (player.x + player.radius > p.x && 
-                    player.x - player.radius < p.x + p.w && 
-                    playerBottom >= p.y && 
+                if (player.x + player.radius > p.x &&
+                    player.x - player.radius < p.x + p.w &&
+                    playerBottom >= p.y &&
                     playerPrevBottom <= p.y + p.h) {
-                    
+
                     player.y = p.y - player.radius;
+                    player.squash = 0.32;
+                    addShake(2);
+                    spawnParticles(player.x, player.y + player.radius, '#ffffff', 9, 2.8, 0.16);
+                    sfxLand();
                     player.jump();
                     break;
                 }
@@ -213,13 +374,19 @@
 
     // --- УПРАВЛЕНИЕ СТАТУСАМИ ---
     function startGame() {
+        initAudio();
         state.mode = 'PLAYING';
         state.score = 0;
         state.inputDirection = 0;
+        nextMilestone = 500;
+        popups.length = 0; particles.length = 0;
+        shake = 0; flash = 0;
         player.x = width / 2;
         player.y = height - 150;
         player.vx = 0;
         player.vy = 0;
+        player.squash = 0;
+        player.ghosts.length = 0;
         document.getElementById('score').innerText = '0';
         document.getElementById('menu').classList.add('hidden');
         document.getElementById('game-over').classList.add('hidden');
@@ -248,7 +415,6 @@
         if ((e.code === 'ArrowRight' || e.code === 'KeyD') && state.inputDirection === 1) state.inputDirection = 0;
     });
 
-    // Touch управление (нажатие на левую/правую половину экрана)
     canvas.addEventListener('touchstart', (e) => {
         if (state.mode !== 'PLAYING') return;
         const touchX = e.touches[0].clientX;
@@ -256,7 +422,7 @@
         const xRel = touchX - rect.left;
         state.inputDirection = xRel < width / 2 ? -1 : 1;
     }, { passive: true });
-    
+
     canvas.addEventListener('touchmove', (e) => {
         if (state.mode !== 'PLAYING') return;
         const touchX = e.touches[0].clientX;
@@ -274,25 +440,73 @@
         height = canvas.height = canvas.parentElement.clientHeight;
     });
 
-    // --- ИГРОВОЙ ЦИКЛ ---
-    function gameLoop() {
-        requestAnimationFrame(gameLoop);
-        ctx.clearRect(0, 0, width, height);
-
-        if (state.mode === 'PLAYING' || state.mode === 'FALLING') {
-            player.update();
-            updateWorldMap();
-            resolveCollisions();
+    // --- ОТРИСОВКА FX ---
+    function drawFx() {
+        for (const p of particles) {
+            ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 2));
+            ctx.fillStyle = p.color;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
         }
+        ctx.globalAlpha = 1;
 
-        // Отрисовка
-        state.platforms.forEach(p => p.draw());
-        if (state.mode !== 'MENU') {
-            player.draw();
+        ctx.font = 'bold 22px {{FONT_FAMILY}}';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        for (const p of popups) {
+            ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.6));
+            ctx.fillStyle = p.color;
+            ctx.shadowColor = '#000000'; ctx.shadowBlur = 6;
+            ctx.fillText(p.text, p.x, p.y);
+        }
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+
+        if (flash > 0.005) {
+            ctx.fillStyle = 'rgba(255,255,255,' + (flash * 0.7).toFixed(3) + ')';
+            ctx.fillRect(-30, -30, width + 60, height + 60);
         }
     }
 
-    gameLoop();
+    // --- ИГРОВОЙ ЦИКЛ ---
+    let lastT = performance.now();
+    function gameLoop(now) {
+        requestAnimationFrame(gameLoop);
+        const dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
+        lastT = now;
+        const f = dt * 60;
+        timeT = now;
+
+        ctx.clearRect(0, 0, width, height);
+
+        // фон: виньетка поверх BG_IMAGE
+        const vg = ctx.createLinearGradient(0, 0, 0, height);
+        vg.addColorStop(0, 'rgba(0,0,0,0.35)');
+        vg.addColorStop(0.4, 'rgba(0,0,0,0)');
+        vg.addColorStop(1, 'rgba(0,0,0,0.35)');
+        ctx.fillStyle = vg;
+        ctx.fillRect(0, 0, width, height);
+
+        updateStars(f);
+        drawStars();
+
+        if (state.mode === 'PLAYING' || state.mode === 'FALLING') {
+            player.update(f);
+            updateWorldMap();
+            resolveCollisions();
+        } else if (state.mode === 'MENU') {
+            player.x = width / 2;
+            player.y = height - 55 + Math.sin(now / 420) * 4;
+        }
+
+        updateFx(f);
+
+        state.platforms.forEach(p => p.draw());
+        if (state.mode !== 'GAMEOVER') player.draw();
+        drawFx();
+    }
+
+    spawnInitialWorld();
+    initStars();
+    gameLoop(performance.now());
 </script>
 </body>
 </html>

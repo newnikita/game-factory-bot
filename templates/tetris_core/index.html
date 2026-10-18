@@ -4,9 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Тетрис</title>
-    
-    <script src="/sdk.js"></script>
-    
+
     <style>
         /* === ВНЕШНИЙ ФОН И КАРТИНКА === */
         html, body {
@@ -25,20 +23,6 @@
             touch-action: none; overscroll-behavior: none;
             user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
         }
-
-        /* ЭКРАН ЗАГРУЗКИ */
-        #loadingScreen {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background-color: #000000; z-index: 9999;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            color: #ffffff; font-size: 1.5rem; font-weight: bold; letter-spacing: 2px;
-        }
-        .loader {
-            border: 6px solid rgba(255, 255, 255, 0.2); border-top: 6px solid #ffffff;
-            border-radius: 50%; width: 60px; height: 60px;
-            animation: spin 1s linear infinite; margin-bottom: 20px;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         #app {
             position: absolute;
@@ -163,11 +147,6 @@
 </head>
 <body oncontextmenu="return false;">
 
-    <div id="loadingScreen">
-        <div class="loader"></div>
-        <div id="loadingText">Загрузка...</div>
-    </div>
-
     <button id="btnPauseGame" onclick="forcePauseGame()">⏸ Пауза</button>
     <button id="btnMute" onclick="toggleMute()">🔊 Звук ВКЛ</button>
 
@@ -260,111 +239,26 @@
             if(e.cancelable) e.preventDefault();
         }, {passive: false});
 
-        let ysdk = null;
-        let lb = null;
-        let currentLang = localStorage.getItem('magic_runes_lang') || 'ru'; 
+        let currentLang = 'ru';
 
-        function initSDK() {
-            if (typeof YaGames !== 'undefined') {
-                YaGames.init().then(_ysdk => {
-                    ysdk = _ysdk;
-                    if (ysdk.environment && ysdk.environment.i18n) {
-                        let envLang = ysdk.environment.i18n.lang;
-                        currentLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
-                    }
-                    applyTranslations(); 
-                    document.getElementById('loadingText').textContent = currentLang === 'ru' ? 'Загрузка...' : 'Loading...';
-                    
-                    Promise.all([
-                        loadAudioFile('music/menu.mp3', 'menu'),
-                        loadAudioFile('music/game.mp3', 'game')
-                    ]).then(() => {
-                        if (ysdk.features && ysdk.features.LoadingAPI) {
-                            ysdk.features.LoadingAPI.ready(); 
-                        }
-                        hideLoadingAndStart();
-                        showAd(); 
-                    });
-                    ysdk.getLeaderboards().then(_lb => lb = _lb).catch(e => console.warn('LB Error:', e));
-                }).catch(e => {
-                    console.warn('Yandex SDK Init Error:', e);
-                    fallbackInit();
-                });
-            } else {
-                loadAudioFile('music/menu.mp3', 'menu');
-                loadAudioFile('music/game.mp3', 'game');
-                fallbackInit();
-            }
-        }
-
-        function hideLoadingAndStart() {
-            const ls = document.getElementById('loadingScreen');
-            if (ls) ls.style.display = 'none';
-            resizeApp(); 
-            initField(); 
+        function boot() {
+            applyTranslations();
+            resizeApp();
+            initField();
             draw();
             showMainMenuUI();
         }
 
-        function fallbackInit() {
-            applyTranslations();
-            hideLoadingAndStart();
-        }
-        
-        function showAd(onCloseCallback) {
-            if (ysdk && ysdk.adv) {
-                try {
-                    pauseAllAudio();
-                    ysdk.adv.showFullscreenAdv({
-                        callbacks: {
-                            onClose: function() { resumeAudioContext(); if (onCloseCallback) onCloseCallback(); },
-                            onError: function() { resumeAudioContext(); if (onCloseCallback) onCloseCallback(); }
-                        }
-                    });
-                } catch(e) {
-                    resumeAudioContext();
-                    if (onCloseCallback) onCloseCallback();
-                }
-            } else {
-                if (onCloseCallback) onCloseCallback();
-            }
-        }
+        function showAd(onCloseCallback) { if (onCloseCallback) onCloseCallback(); }
+        function showRewardedAd(onSuccessCallback) { if (onSuccessCallback) onSuccessCallback(); }
 
-        function showRewardedAd(onSuccessCallback) {
-            if (ysdk && ysdk.adv) {
-                try {
-                    pauseAllAudio();
-                    let isRewarded = false;
-                    ysdk.adv.showRewardedVideo({
-                        callbacks: {
-                            onOpen: () => {},
-                            onRewarded: () => { isRewarded = true; },
-                            onClose: () => { if (isRewarded && onSuccessCallback) onSuccessCallback(); resumeAudioContext(); },
-                            onError: (e) => { resumeAudioContext(); }
-                        }
-                    });
-                } catch (e) {
-                    resumeAudioContext();
-                }
-            } else {
-                if (onSuccessCallback) onSuccessCallback(); 
-            }
-        }
+        let localScores = [];
 
         function saveScore(newScore) {
             if (newScore <= 0) return;
-            
-            let localScores = JSON.parse(localStorage.getItem('magic_runes_scores') || '[]');
             localScores.push(newScore);
             localScores.sort((a,b) => b-a);
             localScores = localScores.slice(0, 10);
-            localStorage.setItem('magic_runes_scores', JSON.stringify(localScores));
-
-            if (ysdk && lb) {
-                ysdk.isAvailableMethod('leaderboards.setLeaderboardScore').then(status => {
-                    if (status) lb.setLeaderboardScore('leaderboard', newScore).catch(e => console.warn('Global LB save error', e));
-                });
-            }
         }
 
         function openLeaderboard() { hideAllMenus(); document.getElementById('leaderboardScreen').classList.remove('hidden'); showLocalLB(); }
@@ -374,7 +268,6 @@
             document.getElementById('btnTabLocal').style.background = 'rgba(255, 255, 255, 0.3)';
             document.getElementById('btnTabGlobal').style.background = 'rgba(255, 255, 255, 0.1)';
             const content = document.getElementById('lbContent');
-            let localScores = JSON.parse(localStorage.getItem('magic_runes_scores') || '[]');
             if (localScores.length === 0) {
                 content.innerHTML = `<div style="text-align:center; padding:20px; color:#cccccc;">${translations[currentLang].lbEmpty}</div>`; return;
             }
@@ -386,78 +279,108 @@
             document.getElementById('btnTabLocal').style.background = 'rgba(255, 255, 255, 0.1)';
             document.getElementById('btnTabGlobal').style.background = 'rgba(255, 255, 255, 0.3)';
             const content = document.getElementById('lbContent');
-            content.innerHTML = `<div style="text-align:center; padding:20px; color:#cccccc;">${translations[currentLang].lbLoading}</div>`;
-            if (lb) {
-                lb.getLeaderboardEntries('leaderboard', { quantityTop: 10, includeUser: true })
-                  .then(res => {
-                      content.innerHTML = '';
-                      res.entries.forEach(entry => {
-                          let name = entry.player.publicName || translations[currentLang].lbAnon;
-                          let isUser = entry.rank === res.userRank;
-                          content.innerHTML += `<div class="lb-row ${isUser ? 'player' : ''}"><span>#${entry.rank} ${name}</span><span>${entry.score}</span></div>`;
-                      });
-                  }).catch(err => { content.innerHTML = `<div style="text-align:center; padding:20px; color:#ff4444;">${translations[currentLang].lbError}</div>`; });
-            } else {
-                content.innerHTML = `<div style="text-align:center; padding:20px; color:#ff4444;">${translations[currentLang].lbError}</div>`;
-            }
+            content.innerHTML = `<div style="text-align:center; padding:20px; color:#ff4444;">${translations[currentLang].lbError}</div>`;
         }
 
         let audioCtx = null;
-        try {
-            const AC = window.AudioContext || window.webkitAudioContext;
-            audioCtx = new AC();
-        } catch(e) {
-            console.warn("Web Audio API недоступен");
-        }
-        
-        let audioBuffers = { menu: null, game: null };
-        let activeSources = { menu: null, game: null };
+        let padOscs = [];
         let isMuted = false;
         let currentTrack = 'menu';
-        let audioContextUnlocked = false; 
+        let audioContextUnlocked = false;
 
-        async function loadAudioFile(url, key) {
-            if (!audioCtx) return false;
-            try {
-                const response = await fetch(url);
-                const arrayBuffer = await response.arrayBuffer();
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                audioBuffers[key] = audioBuffer;
-                return true;
-            } catch (e) { 
-                return false;
+        const PAD_PRESETS = {
+            menu: [196.00, 246.94, 293.66],
+            game: [174.61, 220.00, 261.63]
+        };
+
+        function ensureAudio() {
+            if (!audioCtx) {
+                try {
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (AC) audioCtx = new AC();
+                } catch(e) { audioCtx = null; }
             }
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+            return audioCtx;
+        }
+
+        function stopPad() {
+            padOscs.forEach(o => { try { o.stop(); } catch(e){} try { o.disconnect(); } catch(e){} });
+            padOscs = [];
         }
 
         function playMusic(key) {
-            if (isMuted || document.hidden || !audioCtx) return;
             currentTrack = key;
-            try { if (activeSources.menu) activeSources.menu.stop(); } catch(e){}
-            activeSources.menu = null;
-            try { if (activeSources.game) activeSources.game.stop(); } catch(e){}
-            activeSources.game = null;
-            if (audioCtx.state === 'suspended') audioCtx.resume();
-            if (audioBuffers[key]) {
-                try {
-                    let source = audioCtx.createBufferSource();
-                    source.buffer = audioBuffers[key];
-                    source.loop = true;
-                    let gainNode = audioCtx.createGain();
-                    gainNode.gain.value = 0.5; 
-                    source.connect(gainNode);
-                    gainNode.connect(audioCtx.destination);
-                    source.start(0);
-                    activeSources[key] = source;
-                } catch(e) {}
-            }
+            if (isMuted || document.hidden) return;
+            const ac = ensureAudio();
+            if (!ac) return;
+            stopPad();
+            try {
+                const master = ac.createGain();
+                master.gain.value = 0.045;
+                const lfo = ac.createOscillator();
+                const lfoGain = ac.createGain();
+                lfo.frequency.value = 0.12;
+                lfoGain.gain.value = 0.02;
+                lfo.connect(lfoGain);
+                const freqs = PAD_PRESETS[key] || PAD_PRESETS.menu;
+                freqs.forEach((f, i) => {
+                    const osc = ac.createOscillator();
+                    osc.type = i === 0 ? 'triangle' : 'sine';
+                    osc.frequency.value = f;
+                    osc.detune.value = (i - 1) * 4;
+                    lfoGain.connect(osc.frequency);
+                    osc.connect(master);
+                    osc.start();
+                    padOscs.push(osc);
+                });
+                master.connect(ac.destination);
+                lfo.start();
+                padOscs.push(lfo);
+            } catch(e) {}
         }
 
-        function pauseAllAudio() { if (audioCtx && audioCtx.state === 'running') audioCtx.suspend(); }
+        function blip(freq, dur, type, vol, slide) {
+            const ac = ensureAudio();
+            if (!ac || isMuted) return;
+            try {
+                const osc = ac.createOscillator();
+                const gain = ac.createGain();
+                osc.type = type || 'square';
+                osc.frequency.setValueAtTime(freq, ac.currentTime);
+                if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
+                gain.gain.setValueAtTime(vol || 0.12, ac.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+                osc.connect(gain);
+                gain.connect(ac.destination);
+                osc.start();
+                osc.stop(ac.currentTime + dur + 0.02);
+            } catch(e) {}
+        }
+
+        function sfxRotate() { blip(560, 0.07, 'square', 0.07, 160); }
+        function sfxLock() { blip(170, 0.1, 'triangle', 0.16, -70); }
+        function sfxLine(n) {
+            for (let i = 0; i < n; i++) setTimeout(() => blip(440 * Math.pow(1.25, i), 0.1, 'square', 0.1), i * 60);
+        }
+        function sfxTetris() {
+            [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => setTimeout(() => blip(f, 0.22, 'triangle', 0.14), i * 70));
+            blip(90, 0.4, 'sawtooth', 0.18, -50);
+        }
+        function sfxOver() {
+            [440, 349.23, 293.66, 220].forEach((f, i) => setTimeout(() => blip(f, 0.3, 'sawtooth', 0.12, -40), i * 150));
+        }
+        function sfxRevive() {
+            [330, 440, 550, 660].forEach((f, i) => setTimeout(() => blip(f, 0.14, 'triangle', 0.1), i * 60));
+        }
+        function sfxClick() { blip(700, 0.05, 'square', 0.06, -150); }
+
+        function pauseAllAudio() { stopPad(); if (audioCtx && audioCtx.state === 'running') audioCtx.suspend().catch(() => {}); }
         function resumeAudioContext() {
             if (audioCtx && !isMuted && !document.hidden && audioCtx.state === 'suspended') {
-                audioCtx.resume();
-                if (!activeSources[currentTrack] && audioBuffers[currentTrack]) playMusic(currentTrack);
+                audioCtx.resume().catch(() => {});
             }
+            if (!padOscs.length && !isMuted && !document.hidden && audioContextUnlocked) playMusic(currentTrack);
         }
 
         function toggleMute() {
@@ -467,8 +390,8 @@
         }
 
         function initAudioOnFirstTouch() {
-            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-            if (!isMuted && !document.hidden && !activeSources.menu && !activeSources.game) {
+            ensureAudio();
+            if (!isMuted && !document.hidden && !padOscs.length) {
                 playMusic(gameState === 'PLAYING' ? 'game' : 'menu');
             }
             audioContextUnlocked = true; 
@@ -522,7 +445,6 @@
 
         function toggleLanguage() {
             currentLang = currentLang === 'ru' ? 'en' : 'ru';
-            localStorage.setItem('magic_runes_lang', currentLang);
             applyTranslations();
         }
 
@@ -539,6 +461,29 @@
 
         const ROWS = 20; const COLS = 10; const BLOCK_SIZE = 30;
         let playField = []; let score = 0; let animationId; let gameState = 'MENU'; let particles = [];
+        let shake = 0; let flash = 0; let flashColor = '255,255,255'; let popups = [];
+
+        function addShake(m) { shake = Math.min(30, Math.max(shake, m)); }
+        function addFlash(a, color) { flash = Math.max(flash, a); if (color) flashColor = color; }
+        function addPopup(text, x, y, color, size) { popups.push({ text, x, y, color: color || '#fff', size: size || 18, life: 1.0, vy: -0.6 }); }
+
+        function drawOverlayFx() {
+            if (flash > 0.01) {
+                ctx.fillStyle = `rgba(${flashColor},${Math.min(0.85, flash).toFixed(3)})`;
+                ctx.fillRect(-30, -30, canvas.width + 60, canvas.height + 60);
+            }
+            popups.forEach(p => {
+                ctx.save();
+                ctx.globalAlpha = Math.min(1, p.life * 2);
+                ctx.font = `bold ${p.size}px Arial, sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 4;
+                ctx.strokeText(p.text, p.x, p.y);
+                ctx.fillStyle = p.color;
+                ctx.fillText(p.text, p.x, p.y);
+                ctx.restore();
+            });
+        }
         
         /* === МУТАЦИЯ: ЦВЕТ БЛОКОВ === */
         const themeColor = '{{BLOCK_COLOR}}';
@@ -565,8 +510,8 @@
                 this.gravity = 0.08; this.size = Math.random() * 4 + 2; this.color = colorTheme.base; this.life = 1.0;
                 this.angle = Math.random() * Math.PI * 2; this.spin = (Math.random() - 0.5) * 0.05;
             }
-            update() { this.vy += this.gravity; this.x += this.vx; this.y += this.vy; this.life -= 0.005; this.angle += this.spin; }
-            draw(ctx) { ctx.save(); ctx.globalAlpha = this.life; ctx.translate(this.x, this.y); ctx.rotate(this.angle); ctx.fillStyle = this.color; ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size); ctx.restore(); }
+            update(f = 1) { this.vy += this.gravity * f; this.x += this.vx * f; this.y += this.vy * f; this.life -= 0.005 * f; this.angle += this.spin * f; }
+            draw(ctx) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = this.life; ctx.translate(this.x, this.y); ctx.rotate(this.angle); ctx.fillStyle = this.color; ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size); ctx.restore(); }
         }
 
         let currentPiece; let nextPiece; let dropCounter = 0; let dropInterval = 1000; let lastTime = 0;
@@ -596,7 +541,7 @@
         function initField() { playField = Array.from({ length: ROWS }, () => Array(COLS).fill(0)); particles = []; }
         function getRandomTetromino() {
             const index = Math.floor(Math.random() * (tetrominoes.length - 1)) + 1;
-            return { matrix: tetrominoes[index], x: Math.floor(COLS / 2) - Math.floor(tetrominoes[index][0].length / 2), y: 0, colorId: index };
+            return { matrix: tetrominoes[index], x: Math.floor(COLS / 2) - Math.floor(tetrominoes[index][0].length / 2), y: 0, colorId: index, trailArr: [] };
         }
         function drawNextPiece() {
             nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
@@ -628,6 +573,7 @@
                     }
                 }
             }
+            addShake(1.2); sfxLock();
             let linesCleared = 0;
             for (let row = ROWS - 1; row >= 0; row--) {
                 if (playField[row].every(cell => cell !== 0)) {
@@ -638,14 +584,28 @@
                     playField.splice(row, 1); playField.unshift(Array(COLS).fill(0)); linesCleared++; row++; 
                 }
             }
-            if (linesCleared > 0) { const points = [0, 100, 300, 500, 800]; score += points[linesCleared]; scoreElement.textContent = score; }
+            if (linesCleared > 0) {
+                const points = [0, 100, 300, 500, 800]; score += points[linesCleared]; scoreElement.textContent = score;
+                addShake(linesCleared === 4 ? 14 : 3 + linesCleared * 2.5);
+                addFlash(linesCleared === 4 ? 0.4 : 0.1 + linesCleared * 0.05);
+                addPopup('+' + points[linesCleared], canvas.width / 2, canvas.height / 2, linesCleared === 4 ? '#ffdd57' : '#ffffff', linesCleared === 4 ? 30 : 22);
+                if (linesCleared === 4) sfxTetris(); else sfxLine(linesCleared);
+            }
             currentPiece = nextPiece; nextPiece = getRandomTetromino(); drawNextPiece();
         }
 
-        function actionLeft() { if (gameState !== 'PLAYING') return; currentPiece.x--; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x++; }
-        function actionRight() { if (gameState !== 'PLAYING') return; currentPiece.x++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x--; }
+        function recordTrail() {
+            if (!currentPiece) return;
+            const cells = [];
+            for (let r = 0; r < currentPiece.matrix.length; r++) for (let c = 0; c < currentPiece.matrix[r].length; c++) if (currentPiece.matrix[r][c]) cells.push({ x: currentPiece.x + c, y: currentPiece.y + r });
+            if (cells.length) currentPiece.trailArr = (currentPiece.trailArr || []).concat([cells]).slice(-6);
+        }
+
+        function actionLeft() { if (gameState !== 'PLAYING') return; currentPiece.trailArr = []; currentPiece.x--; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x++; }
+        function actionRight() { if (gameState !== 'PLAYING') return; currentPiece.trailArr = []; currentPiece.x++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) currentPiece.x--; }
         function actionDown() {
             if (gameState !== 'PLAYING') return;
+            recordTrail();
             currentPiece.y++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) { currentPiece.y--; placePiece(); } dropCounter = 0;
         }
         function actionRotate() {
@@ -656,6 +616,8 @@
                 if (offset > rotated[0].length) { currentPiece.x = prevX; return; }
             }
             currentPiece.matrix = rotated;
+            currentPiece.trailArr = [];
+            sfxRotate();
         }
 
         document.addEventListener('keydown', event => {
@@ -717,6 +679,7 @@
                 currentPiece = getRandomTetromino(); nextPiece = getRandomTetromino(); drawNextPiece();
                 gameState = 'PLAYING'; hideAllMenus(); playMusic('game');
                 lastTime = performance.now(); dropCounter = 0;
+                addFlash(0.15);
                 if (!animationId) update();
                 document.getElementById('btnRevive').style.display = 'inline-block';
             });
@@ -730,6 +693,7 @@
                 gameState = 'PLAYING'; hideAllMenus();
                 currentPiece = getRandomTetromino(); nextPiece = getRandomTetromino(); drawNextPiece();
                 playMusic('game'); lastTime = performance.now(); dropCounter = 0;
+                addFlash(0.3, '120,255,160'); sfxRevive();
                 document.getElementById('btnRevive').style.display = 'none';
             });
         }
@@ -743,24 +707,34 @@
         function triggerGameOver() { 
             gameState = 'GAMEOVER'; finalScoreElement.textContent = score; 
             hideAllMenus(); gameOverMenu.classList.remove('hidden'); 
-            playMusic('menu'); saveScore(score); 
+            playMusic('menu'); saveScore(score);
+            addShake(16); addFlash(0.35, '255,80,80'); sfxOver();
         }
 
         function update(time = 0) {
             animationId = requestAnimationFrame(update);
             const deltaTime = time - lastTime; lastTime = time;
+            const f = Math.min(3, Math.max(0.2, deltaTime / 16.667));
             if (gameState === 'PLAYING') {
                 dropCounter += deltaTime; const currentDropInterval = Math.max(80, dropInterval - (score * 0.5));
                 if (dropCounter > currentDropInterval) {
+                    recordTrail();
                     currentPiece.y++; if (!isValidMove(currentPiece.matrix, currentPiece.x, currentPiece.y)) { currentPiece.y--; placePiece(); }
                     dropCounter = 0;
                 }
             }
-            particles.forEach(p => p.update()); particles = particles.filter(p => p.life > 0); draw();
+            particles.forEach(p => p.update(f)); particles = particles.filter(p => p.life > 0);
+            popups.forEach(p => { p.y += p.vy * f; p.life -= 0.02 * f; });
+            popups = popups.filter(p => p.life > 0);
+            shake *= Math.pow(0.85, f); if (shake < 0.3) shake = 0;
+            flash *= Math.pow(0.88, f); if (flash < 0.01) flash = 0;
+            const sx = shake > 0 ? (Math.random() - 0.5) * 2 * shake : 0;
+            const sy = shake > 0 ? (Math.random() - 0.5) * 2 * shake : 0;
+            ctx.save(); ctx.translate(sx, sy); draw(); ctx.restore();
         }
 
         function draw() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.clearRect(-30, -30, canvas.width + 60, canvas.height + 60);
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'; ctx.lineWidth = 1;
             for(let i = 0; i < COLS; i++) { ctx.beginPath(); ctx.moveTo(i * BLOCK_SIZE, 0); ctx.lineTo(i * BLOCK_SIZE, canvas.height); ctx.stroke(); }
             for(let j = 0; j < ROWS; j++) { ctx.beginPath(); ctx.moveTo(0, j * BLOCK_SIZE); ctx.lineTo(canvas.width, j * BLOCK_SIZE); ctx.stroke(); }
@@ -768,9 +742,23 @@
             if (gameState === 'PLAYING' && currentPiece) {
                 const ghostY = getGhostY();
                 for (let row = 0; row < currentPiece.matrix.length; row++) for (let col = 0; col < currentPiece.matrix[row].length; col++) if (currentPiece.matrix[row][col]) drawBlock(ctx, currentPiece.x + col, ghostY + row, currentPiece.colorId, BLOCK_SIZE, true);
+                if (currentPiece.trailArr && currentPiece.trailArr.length) {
+                    const trailFade = currentPiece.trailArr;
+                    ctx.save();
+                    ctx.fillStyle = themeColor;
+                    trailFade.forEach((cells, idx) => {
+                        ctx.globalAlpha = 0.1 * (idx + 1) / trailFade.length;
+                        cells.forEach(p => ctx.fillRect(p.x * BLOCK_SIZE + 3, p.y * BLOCK_SIZE + 3, BLOCK_SIZE - 6, BLOCK_SIZE - 6));
+                    });
+                    ctx.restore();
+                }
+                ctx.save();
+                ctx.shadowColor = themeColor; ctx.shadowBlur = 14;
                 for (let row = 0; row < currentPiece.matrix.length; row++) for (let col = 0; col < currentPiece.matrix[row].length; col++) if (currentPiece.matrix[row][col]) drawBlock(ctx, currentPiece.x + col, currentPiece.y + row, currentPiece.colorId, BLOCK_SIZE, false);
+                ctx.restore();
             }
             particles.forEach(p => p.draw(ctx));
+            drawOverlayFx();
         }
 
         function resizeApp() {
@@ -786,7 +774,7 @@
 
         window.addEventListener('resize', resizeApp);
         
-        initSDK(); 
+        boot(); 
     </script>
 </body>
 </html>

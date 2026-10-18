@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Бабл Шутер</title>
-    
-    <link rel="preload" href="/sdk.js" as="script">
-    <script src="/sdk.js"></script>
 
     <style>
         /* === ВНЕШНИЙ ФОН И КАРТИНКА === */
@@ -118,29 +115,6 @@
 </head>
 <body oncontextmenu="return false;">
 
-<div id="loadingScreen" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 999999; display: flex; justify-content: center; align-items: center; color: #fff; font-size: 24px; font-weight: bold; text-transform: uppercase;">
-    <span id="loadingText"></span>
-</div>
-
-<script>
-    let initialLang = 'ru'; 
-    try {
-        const urlParams = new URLSearchParams(window.location.search);
-        let envLang = urlParams.get('lang'); 
-        
-        if (envLang) {
-            initialLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
-        } else {
-            initialLang = localStorage.getItem('bs_lang') || 'ru';
-        }
-        localStorage.setItem('bs_lang', initialLang); 
-    } catch(e) {
-        console.warn("URL Parse Error", e);
-    }
-    
-    document.getElementById('loadingText').innerText = initialLang === 'ru' ? 'Загрузка...' : 'Loading...';
-</script>
-
 <div class="game-container"><canvas id="gameCanvas"></canvas></div>
 
 <button id="musicToggleBtn" onclick="toggleMusic(event)">🔊</button>
@@ -167,7 +141,6 @@
         <h1 id="uiMainTitle" style="font-size: 50px; margin-bottom: 25px; text-align: center;">Бабл Шутер</h1>
         <button id="btnPlay" onclick="showLevelSelection()">▶ ИГРАТЬ</button>
         <button id="btnLeaderboard" onclick="showLeaderboard()">🏆 РЕКОРДЫ</button>
-        <button id="btnMoreGames" onclick="openDeveloperProfile()">🎮 ДРУГИЕ ИГРЫ</button>
         <button id="btnLang" onclick="toggleLanguage()">🌐 EN</button>
     </div>
 </div>
@@ -262,78 +235,22 @@ document.addEventListener('touchstart', function(e) {
     }
 }, { passive: false });
 
-let ysdk = null;
-let currentLang = localStorage.getItem('bs_lang') || 'ru'; 
+let currentLang = 'ru';
+try {
+    const p = new URLSearchParams(window.location.search).get('lang');
+    if (p) currentLang = (p === 'ru' || ['be', 'kk', 'uk', 'uz'].includes(p)) ? 'ru' : 'en';
+} catch (e) {}
 let isAdShowing = false;
-let developerURL = null; 
-
-function removeLoadingScreen() {
-    document.getElementById('loadingScreen').style.display = 'none';
-    showMainMenu();
-    if (ysdk && ysdk.features && ysdk.features.LoadingAPI) {
-        ysdk.features.LoadingAPI.ready();
-    }
-}
-
-function initSDK() {
-    if (typeof YaGames !== 'undefined') {
-        YaGames.init().then(_ysdk => {
-            ysdk = _ysdk;
-            if (ysdk.environment && ysdk.environment.i18n) {
-                let envLang = ysdk.environment.i18n.lang;
-                currentLang = ['ru', 'be', 'kk', 'uk', 'uz'].includes(envLang) ? 'ru' : 'en';
-                localStorage.setItem('bs_lang', currentLang); 
-            }
-            if (ysdk.features && ysdk.features.GamesAPI) {
-                ysdk.features.GamesAPI.getAllGames().then(data => {
-                    if (data && data.developerURL) developerURL = data.developerURL; 
-                }).catch(e => console.warn("GamesAPI error:", e));
-            }
-            applyLang(); 
-            requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
-        }).catch(e => { 
-            applyLang();
-            requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
-        });
-    } else {
-        applyLang();
-        requestAnimationFrame(() => requestAnimationFrame(removeLoadingScreen));
-    }
-}
 
 let isTransitioning = false;
 
 function transitionWithAd(callback) {
-    if (isTransitioning) return; 
-    if (ysdk && ysdk.adv) {
-        isTransitioning = true;
-        ysdk.adv.showFullscreenAdv({
-            callbacks: {
-                onOpen: function() { isAdShowing = true; pauseAllAudio(); },
-                onClose: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); },
-                onError: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); },
-                onOffline: function() { isAdShowing = false; isTransitioning = false; resumeAudioContext(); if (callback) callback(); }
-            }
-        });
-    } else {
-        if (callback) callback();
-    }
+    if (isTransitioning) return;
+    if (callback) callback();
 }
 
 function showRewardedAd(onSuccessCallback) {
-    if (ysdk && ysdk.adv) {
-        let isRewarded = false;
-        ysdk.adv.showRewardedVideo({
-            callbacks: {
-                onOpen: () => { isAdShowing = true; pauseAllAudio(); },
-                onRewarded: () => { isRewarded = true; },
-                onClose: () => { isAdShowing = false; if (isRewarded && onSuccessCallback) onSuccessCallback(); resumeAudioContext(); },
-                onError: (e) => { isAdShowing = false; resumeAudioContext(); }
-            }
-        });
-    } else { 
-        if (onSuccessCallback) onSuccessCallback(); 
-    }
+    if (onSuccessCallback) onSuccessCallback();
 }
 
 function nextLevelAction() { transitionWithAd(() => { if (currentLevel !== 'endless' && currentLevel < 9) startLevel(currentLevel + 1); else showLevelSelection(); }); }
@@ -342,46 +259,85 @@ function exitToLevelSelect() { transitionWithAd(() => { showLevelSelection(); })
 function exitToMenuAction() { transitionWithAd(() => { showMainMenu(); }); }
 function backToMenuNoAd() { showMainMenu(); } 
 
-const AudioContext = window.AudioContext || window.webkitAudioContext;
-let audioCtx = new AudioContext();
-let buffers = { menu: null, game: null }; let activeSources = { menu: null, game: null }; let isMusicMuted = false; let currentTrack = 'menu';
+let audioCtx = null; let isMusicMuted = false; let currentTrack = 'menu'; let activePad = null;
 
-async function loadAudioFile(url, key) {
-    try { const response = await fetch(url); const arrayBuffer = await response.arrayBuffer(); const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer); buffers[key] = audioBuffer; } catch (e) {}
+function ensureAudio() {
+    if (audioCtx) return audioCtx;
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audioCtx = null; }
+    return audioCtx;
 }
+function blip(freq, dur, type, vol, slide) {
+    const ac = ensureAudio(); if (!ac) return;
+    try {
+        const o = ac.createOscillator(); const g = ac.createGain();
+        o.type = type || 'square';
+        o.frequency.setValueAtTime(freq, ac.currentTime);
+        if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), ac.currentTime + dur);
+        g.gain.setValueAtTime(vol || 0.12, ac.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+        o.connect(g); g.connect(ac.destination);
+        o.start(); o.stop(ac.currentTime + dur);
+    } catch (e) {}
+}
+const sfxShoot = () => blip(700, 0.09, 'square', 0.1, -350);
+const sfxSnap = () => blip(240, 0.08, 'triangle', 0.16, -60);
+const sfxPop = (n) => { const base = 480 + Math.min(8, n || 3) * 60; blip(base, 0.1, 'square', 0.12, 150); };
+const sfxBoom = () => { blip(200, 0.3, 'sawtooth', 0.16, -150); blip(80, 0.35, 'triangle', 0.18, -40); };
+const sfxZap = () => { blip(1200, 0.16, 'sawtooth', 0.1, -900); blip(600, 0.2, 'square', 0.08, -400); };
+const sfxCoin = () => { blip(880, 0.08, 'square', 0.1); setTimeout(() => blip(1320, 0.12, 'square', 0.1), 70); };
+const sfxEquip = () => blip(560, 0.1, 'triangle', 0.12, 240);
+const sfxVictory = () => { [523, 659, 784, 1047].forEach((fq, i) => setTimeout(() => blip(fq, 0.16, 'square', 0.13), i * 130)); };
+const sfxOver = () => { [440, 330, 262, 196].forEach((fq, i) => setTimeout(() => blip(fq, 0.22, 'sawtooth', 0.13), i * 160)); };
+const sfxThud = () => blip(120, 0.12, 'triangle', 0.18, -50);
 
-loadAudioFile('music/music1.mp3', 'menu'); loadAudioFile('music/music2.mp3', 'game');
+const PAD_PRESETS = { menu: [220, 261.63, 329.63], game: [196, 246.94, 293.66] };
 
 function playAudioTrack(key) {
-    currentTrack = key; if (isMusicMuted || document.hidden || isAdShowing) return;
-    if (activeSources.menu) { activeSources.menu.stop(); activeSources.menu = null; }
-    if (activeSources.game) { activeSources.game.stop(); activeSources.game = null; }
-    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
-    if (buffers[key]) {
-        let source = audioCtx.createBufferSource(); source.buffer = buffers[key]; source.loop = true;
-        let gainNode = audioCtx.createGain(); gainNode.gain.value = key === 'menu' ? 0.5 : 0.4;
-        source.connect(gainNode); gainNode.connect(audioCtx.destination); source.start(0); activeSources[key] = source;
-    }
+    currentTrack = key;
+    if (isMusicMuted || document.hidden || isAdShowing) return;
+    const ac = ensureAudio(); if (!ac) return;
+    if (ac.state === 'suspended') { try { ac.resume(); } catch (e) {} }
+    if (activePad) { try { activePad.stop(); } catch (e) {} activePad = null; }
+    try {
+        const master = ac.createGain(); master.gain.value = 0.045;
+        const lfo = ac.createOscillator(); const lfoGain = ac.createGain();
+        lfo.frequency.value = 0.12; lfoGain.gain.value = 0.02;
+        lfo.connect(lfoGain); lfoGain.connect(master.gain);
+        const oscs = (PAD_PRESETS[key] || PAD_PRESETS.menu).map(freq => {
+            const o = ac.createOscillator(); o.type = 'triangle'; o.frequency.value = freq;
+            const g = ac.createGain(); g.gain.value = 1;
+            o.connect(g); g.connect(master); o.start();
+            return o;
+        });
+        master.connect(ac.destination);
+        lfo.start();
+        activePad = { stop() { try { lfo.stop(); oscs.forEach(o => o.stop()); } catch (e) {} try { master.disconnect(); } catch (e) {} } };
+    } catch (e) {}
 }
 
-function pauseAllAudio() { if (audioCtx.state === 'running') { audioCtx.suspend(); } }
-function resumeAudioContext() { if (!isMusicMuted && !document.hidden && !isAdShowing && audioCtx.state === 'suspended') { audioCtx.resume(); if (!activeSources[currentTrack] && buffers[currentTrack]) { playAudioTrack(currentTrack); } } }
+function pauseAllAudio() { if (audioCtx && audioCtx.state === 'running') { try { audioCtx.suspend(); } catch (e) {} } }
+function resumeAudioContext() {
+    if (isMusicMuted || document.hidden || isAdShowing) return;
+    const ac = ensureAudio(); if (!ac) return;
+    if (ac.state === 'suspended') { try { ac.resume(); } catch (e) {} }
+    if (!activePad) playAudioTrack(currentTrack);
+}
 function playMenuMusic() { playAudioTrack('menu'); } function playGameMusic() { playAudioTrack('game'); }
 
 function toggleMusic(e) {
     if (e) e.stopPropagation(); isMusicMuted = !isMusicMuted; const btn = document.getElementById('musicToggleBtn');
-    if (isMusicMuted) { btn.innerText = '🔇'; pauseAllAudio(); } else { btn.innerText = '🔊'; resumeAudioContext(); }
+    if (isMusicMuted) { btn.innerText = '🔇'; pauseAllAudio(); if (activePad) { try { activePad.stop(); } catch (err) {} activePad = null; } }
+    else { btn.innerText = '🔊'; resumeAudioContext(); }
 }
 
 function initAudioOnFirstTouch() {
-    if (audioCtx.state === 'suspended') { audioCtx.resume(); }
-    if (!isMusicMuted && !document.hidden && !isAdShowing && !activeSources.menu && !activeSources.game) { if (inMainMenu || inLevelSelect || isVictory || isGameOver) playMenuMusic(); else playGameMusic(); }
+    ensureAudio();
+    if (audioCtx && audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (e) {} }
+    if (!isMusicMuted && !activePad) { if (inMainMenu || inLevelSelect || isVictory || isGameOver) playMenuMusic(); else playGameMusic(); }
     ['click', 'touchstart', 'keydown'].forEach(evt => document.removeEventListener(evt, initAudioOnFirstTouch, true));
 }
 ['click', 'touchstart', 'keydown'].forEach(evt => document.addEventListener(evt, initAudioOnFirstTouch, true));
 document.addEventListener("visibilitychange", function() { if (document.hidden) { pauseAllAudio(); } else { resumeAudioContext(); } });
-
-function openDeveloperProfile() { if (developerURL) window.open(developerURL, '_blank'); }
 
 const i18n = {
     ru: {
@@ -432,7 +388,7 @@ const i18n = {
     }
 };
 
-function toggleLanguage() { currentLang = currentLang === 'ru' ? 'en' : 'ru'; localStorage.setItem('bs_lang', currentLang); applyLang(); }
+function toggleLanguage() { currentLang = currentLang === 'ru' ? 'en' : 'ru'; applyLang(); }
 
 function applyLang() {
     let l = i18n[currentLang];
@@ -441,7 +397,6 @@ function applyLang() {
     document.getElementById('uiCoinsStr').innerText = l.coins; document.getElementById('btnPause').innerText = l.pauseBtn;
     document.getElementById('btnShop').innerText = l.shopBtn; document.getElementById('btnPlay').innerText = l.playBtn;
     document.getElementById('btnLeaderboard').innerText = l.lbBtn; document.getElementById('uiLbTitle').innerText = l.lbTitle;
-    document.getElementById('btnMoreGames').innerText = l.moreGamesBtn; 
     document.getElementById('uiWorldMap').innerText = l.worldMap; document.getElementById('btnBackLevels').innerText = l.backBtn;
     document.getElementById('btnLbBack').innerText = l.backBtn; document.getElementById('uiVicTitle').innerText = l.victory; 
     document.getElementById('uiVicScoreStr').innerText = l.score; document.getElementById('uiVicCoinsStr').innerText = l.earned; 
@@ -457,10 +412,7 @@ function applyLang() {
     document.getElementById('uiPauseTitle').innerText = l.pauseTitle; document.getElementById('btnResume').innerText = l.resumeBtn;
     document.getElementById('btnPauseShop').innerText = l.shopBtn; document.getElementById('btnPauseMenu').innerText = l.mainMenuBtn; 
     document.getElementById('btnLang').innerText = l.langBtn; document.getElementById('uiLvl1Str').innerText = l.lvl; document.getElementById('uiLvl2Str').innerText = l.lvl;
-    
-    if(document.getElementById('loadingText')) {
-        document.getElementById('loadingText').innerText = currentLang === 'ru' ? 'Загрузка...' : 'Loading...';
-    }
+
     updateUI(); updateShopUI(); if (inLevelSelect) showLevelSelection();
 }
 
@@ -473,13 +425,16 @@ const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getCont
 let grid = []; let particles = []; let bullet = null; let nextBulletType = 'normal'; let nextBubbleColor = null; let angle = -Math.PI / 2; let score = 0; let globalDropOffset = 0; let gridOffsetPhase = 0; let predictedCell = null; let inMainMenu = true; let isPaused = false; let inShop = false; let isGameOver = false; let isVictory = false; let inLevelSelect = false; let isReloading = false; let recoilOffset = 0; 
 let currentLevel = 1; let unlockedLevel = 1; let combosMade = 0; let bombsBlown = 0; let sessionCoins = 0; let coins = 0; let upgradeAim = 0; let upgradeDrop = 0; let fireballs = 0; let lightnings = 0; let bestEndlessScore = 0;
 
-try { coins = parseInt(localStorage.getItem('bs_coins')) || 0; upgradeAim = parseInt(localStorage.getItem('bs_aim')) || 0; upgradeDrop = parseInt(localStorage.getItem('bs_drop')) || 0; unlockedLevel = parseInt(localStorage.getItem('bs_unlock')) || 1; fireballs = parseInt(localStorage.getItem('bs_fire')) || 0; lightnings = parseInt(localStorage.getItem('bs_light')) || 0; bestEndlessScore = parseInt(localStorage.getItem('bs_best_endless')) || 0; } catch (e) {}
-function saveProgress() { try { localStorage.setItem('bs_coins', coins); localStorage.setItem('bs_aim', upgradeAim); localStorage.setItem('bs_drop', upgradeDrop); localStorage.setItem('bs_unlock', unlockedLevel); localStorage.setItem('bs_fire', fireballs); localStorage.setItem('bs_light', lightnings); localStorage.setItem('bs_best_endless', bestEndlessScore); } catch (e) {} updateUI(); }
+let shake = 0; let flash = 0; let flashHue = '255,255,255'; let popups = [];
+function addShake(a) { shake = Math.min(28, shake + a); }
+function addFlash(v, hue) { flash = Math.min(0.5, flash + v); flashHue = hue || '255,255,255'; }
+function addPopup(x, y, text, color) { popups.push({ x: x, y: y, text: text, color: color || '#fff', life: 1 }); }
+function saveProgress() { updateUI(); }
 
 function getAimLength() { return 200 + upgradeAim * 150; } function getDropPixels() { return Math.max(0.5, 3 - upgradeDrop * 0.5); }
 function hideAllOverlays() { document.querySelectorAll('.overlay').forEach(o => o.style.display = 'none'); }
 
-function showMainMenu() { document.getElementById('loadingScreen').style.display = 'none'; hideAllOverlays(); inMainMenu = true; inLevelSelect = false; document.getElementById('mainMenuScreen').style.display = 'flex'; document.getElementById('topUI').style.display = 'none'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; generateFairGrid(1); draw(); playMenuMusic(); }
+function showMainMenu() { hideAllOverlays(); inMainMenu = true; inLevelSelect = false; document.getElementById('mainMenuScreen').style.display = 'flex'; document.getElementById('topUI').style.display = 'none'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; generateFairGrid(1); draw(); playMenuMusic(); }
 
 function showLeaderboard() {
     hideAllOverlays(); document.getElementById('leaderboardScreen').style.display = 'flex'; let l = i18n[currentLang];
@@ -500,7 +455,7 @@ function showLevelSelection() {
 
 function startLevel(lvl) { hideAllOverlays(); inLevelSelect = false; isPaused = false; isGameOver = false; isVictory = false; isReloading = false; document.getElementById('topUI').style.display = 'block'; document.getElementById('controls').style.display = 'flex'; document.getElementById('boosterUI').style.display = 'flex'; currentLevel = lvl; score = 0; sessionCoins = 0; combosMade = 0; bombsBlown = 0; globalDropOffset = 0; particles = []; generateFairGrid(lvl); nextBulletType = Math.random() < getBombChance(currentLevel) ? 'bomb' : 'normal'; nextBubbleColor = getRandomColor(); createNewBullet(); updateUI(); playGameMusic(); }
 
-function showVictoryScreen() { isVictory = true; document.getElementById('vicScore').innerText = score; document.getElementById('vicCoins').innerText = sessionCoins; document.getElementById('btnNextLevel').style.display = (currentLevel !== 'endless' && currentLevel < 9) ? 'inline-block' : 'none'; document.getElementById('victoryScreen').style.display = 'flex'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; document.getElementById('topUI').style.display = 'none'; fireballs++; lightnings++; saveProgress(); for(let i=0; i<50; i++) particles.push({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT/2, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, color: getRandomColor(), size: Math.random() * 8 + 4, life: 60 + Math.random() * 40 }); playMenuMusic(); }
+function showVictoryScreen() { isVictory = true; addFlash(0.3); addShake(8); sfxVictory(); document.getElementById('vicScore').innerText = score; document.getElementById('vicCoins').innerText = sessionCoins; document.getElementById('btnNextLevel').style.display = (currentLevel !== 'endless' && currentLevel < 9) ? 'inline-block' : 'none'; document.getElementById('victoryScreen').style.display = 'flex'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; document.getElementById('topUI').style.display = 'none'; fireballs++; lightnings++; saveProgress(); for(let i=0; i<50; i++) particles.push({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT/2, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, color: getRandomColor(), size: Math.random() * 8 + 4, life: 60 + Math.random() * 40 }); playMenuMusic(); }
 
 function checkVictoryCondition() {
     if (isGameOver || isVictory || currentLevel === 'endless') return; let won = false;
@@ -511,15 +466,15 @@ function checkVictoryCondition() {
 function togglePause() { if (isGameOver || isVictory || inShop || inMainMenu || inLevelSelect) return; isPaused = !isPaused; document.getElementById('pauseScreen').style.display = isPaused ? 'flex' : 'none'; }
 function openShop() { inShop = true; hideAllOverlays(); document.getElementById('shopScreen').style.display = 'flex'; updateShopUI(); }
 function closeShop() { inShop = false; hideAllOverlays(); if (isGameOver) document.getElementById('gameOverScreen').style.display = 'flex'; else if (isVictory) document.getElementById('victoryScreen').style.display = 'flex'; else if (inMainMenu) showMainMenu(); else if (inLevelSelect) showLevelSelection(); else if (isPaused) document.getElementById('pauseScreen').style.display = 'flex'; }
-function watchAdForBoosters() { showRewardedAd(() => { fireballs++; lightnings++; saveProgress(); updateShopUI(); }); }
+function watchAdForBoosters() { showRewardedAd(() => { fireballs++; lightnings++; sfxCoin(); saveProgress(); updateShopUI(); }); }
 function continueGameAd() { showRewardedAd(() => { isGameOver = false; for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active) { let pos = getGridPos(r, c); if (pos.y > CANVAS_HEIGHT - 450) { createDustExplosion(pos.x, pos.y, grid[r][c].type === 'bomb' ? '#ff2222' : grid[r][c].color); grid[r][c] = null; } } } } cleanFloatingBubbles(); document.getElementById('gameOverScreen').style.display = 'none'; document.getElementById('controls').style.display = 'flex'; document.getElementById('boosterUI').style.display = 'flex'; document.getElementById('topUI').style.display = 'block'; bullet.moving = false; createNewBullet(); }); }
 
-function useFireball() { if (!bullet.moving && fireballs > 0 && bullet.type !== 'fireball' && !isPaused && !isGameOver && !isVictory) { fireballs--; bullet.type = 'fireball'; saveProgress(); } }
-function useLightning() { if (!bullet.moving && lightnings > 0 && bullet.type !== 'lightning' && !isPaused && !isGameOver && !isVictory) { lightnings--; bullet.type = 'lightning'; saveProgress(); } }
-function buyAim() { let c = 100 + upgradeAim * 100; if (coins >= c && upgradeAim < 5) { coins -= c; upgradeAim++; saveProgress(); updateShopUI(); } }
-function buyDrop() { let c = 150 + upgradeDrop * 150; if (coins >= c && upgradeDrop < 5) { coins -= c; upgradeDrop++; saveProgress(); updateShopUI(); } }
-function buyFire() { if (coins >= 50) { coins -= 50; fireballs++; saveProgress(); updateShopUI(); } }
-function buyLight() { if (coins >= 75) { coins -= 75; lightnings++; saveProgress(); updateShopUI(); } }
+function useFireball() { if (!bullet.moving && fireballs > 0 && bullet.type !== 'fireball' && !isPaused && !isGameOver && !isVictory) { fireballs--; bullet.type = 'fireball'; sfxEquip(); saveProgress(); } }
+function useLightning() { if (!bullet.moving && lightnings > 0 && bullet.type !== 'lightning' && !isPaused && !isGameOver && !isVictory) { lightnings--; bullet.type = 'lightning'; sfxEquip(); saveProgress(); } }
+function buyAim() { let c = 100 + upgradeAim * 100; if (coins >= c && upgradeAim < 5) { coins -= c; upgradeAim++; sfxCoin(); saveProgress(); updateShopUI(); } }
+function buyDrop() { let c = 150 + upgradeDrop * 150; if (coins >= c && upgradeDrop < 5) { coins -= c; upgradeDrop++; sfxCoin(); saveProgress(); updateShopUI(); } }
+function buyFire() { if (coins >= 50) { coins -= 50; fireballs++; sfxCoin(); saveProgress(); updateShopUI(); } }
+function buyLight() { if (coins >= 75) { coins -= 75; lightnings++; sfxCoin(); saveProgress(); updateShopUI(); } }
 
 function updateShopUI() { let l = i18n[currentLang]; document.getElementById('shopCoinsCount').innerText = coins; document.getElementById('btnBuyFire').disabled = (coins < 50); document.getElementById('btnBuyLight').disabled = (coins < 75); document.getElementById('btnBuyFire').innerText = `${l.buy} 50`; document.getElementById('btnBuyLight').innerText = `${l.buy} 75`; document.getElementById('lvlAim').innerText = upgradeAim; let cA = 100 + upgradeAim * 100; let bA = document.getElementById('btnAim'); if (upgradeAim >= 5) { bA.innerText = l.max; bA.disabled = true; } else { bA.innerText = `${l.buy} ${cA}`; bA.disabled = (coins < cA); } document.getElementById('lvlDrop').innerText = upgradeDrop; let cD = 150 + upgradeDrop * 150; let bD = document.getElementById('btnDrop'); if (upgradeDrop >= 5) { bD.innerText = l.max; bD.disabled = true; } else { bD.innerText = `${l.buy} ${cD}`; bD.disabled = (coins < cD); } }
 function updateUI() { let l = i18n[currentLang]; document.getElementById('score').innerText = score; document.getElementById('coins').innerText = coins; document.getElementById('uiFireCount').innerText = fireballs; document.getElementById('uiLightCount').innerText = lightnings; let gt = ""; if (currentLevel === 'endless') { document.getElementById('uiLevelDisplay').innerText = "♾️"; document.getElementById('uiLvlStr').style.display = 'none'; gt = `🏆 ${l.bestScore} ${bestEndlessScore}`; } else { document.getElementById('uiLevelDisplay').innerText = currentLevel; document.getElementById('uiLvlStr').style.display = 'inline'; if (currentLevel === 1) gt = `${l.goalCombo} ${combosMade} / 10`; else if (currentLevel === 2) gt = `${l.goalBombs} ${bombsBlown} / 5`; else if (currentLevel === 3) gt = `${l.goalScoreF} ${score} / 1000`; else if (currentLevel === 4) gt = `${l.goalCombo} ${combosMade} / 20`; else if (currentLevel === 5) gt = `${l.goalScoreM} ${score} / 1500`; else if (currentLevel === 6) gt = `${l.goalBombs} ${bombsBlown} / 10`; else if (currentLevel === 7) gt = `${l.goalScoreF} ${score} / 2500`; else if (currentLevel === 8) gt = `${l.goalCombo} ${combosMade} / 30`; else if (currentLevel === 9) gt = `${l.goalScoreC} ${score} / 5000`; } document.getElementById('goalText').innerText = gt; }
@@ -530,17 +485,18 @@ function getRandomColor() { return CONFIG.colors[Math.floor(Math.random() * CONF
 function createNewBullet() { if (isGameOver || isVictory) return; bullet = { x: CANNON_X, y: CANNON_Y, color: nextBubbleColor, dx: 0, dy: 0, moving: false, type: nextBulletType }; nextBulletType = Math.random() < getBombChance(currentLevel) ? 'bomb' : 'normal'; nextBubbleColor = getRandomColor(); isReloading = true; setTimeout(() => { isReloading = false; }, 350); }
 function getGridPos(r, c) { let isOdd = (r + gridOffsetPhase) % 2 !== 0; let shiftX = isOdd ? CONFIG.radius : 0; let x = c * DIAMETER + CONFIG.radius + shiftX; let y = r * ROW_HEIGHT + CONFIG.radius + globalDropOffset; return {x, y}; }
 
-function endBulletTurn() { bullet.moving = false; cleanFloatingBubbles(); globalDropOffset += getDropPixels(); if (globalDropOffset >= ROW_HEIGHT) { globalDropOffset -= ROW_HEIGHT; grid.unshift(createRow(currentLevel, true)); gridOffsetPhase = 1 - gridOffsetPhase; } updateUI(); checkGameOver(); checkVictoryCondition(); if (!isGameOver && !isVictory) createNewBullet(); }
+function endBulletTurn() { bullet.moving = false; cleanFloatingBubbles(); globalDropOffset += getDropPixels(); if (globalDropOffset >= ROW_HEIGHT) { globalDropOffset -= ROW_HEIGHT; grid.unshift(createRow(currentLevel, true)); gridOffsetPhase = 1 - gridOffsetPhase; addShake(3); sfxThud(); } updateUI(); checkGameOver(); checkVictoryCondition(); if (!isGameOver && !isVictory) createNewBullet(); }
 
-function update() {
-    for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.5; p.life--; p.size *= 0.95; if (p.life <= 0) particles.splice(i, 1); }
+function update(f) {
+    for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx * f; p.y += p.vy * f; p.vy += 0.5 * f; p.life -= f; p.size *= Math.pow(0.95, f); if (p.life <= 0) particles.splice(i, 1); }
+    for (let i = popups.length - 1; i >= 0; i--) { popups[i].life -= 0.02 * f; popups[i].y -= 0.7 * f; if (popups[i].life <= 0) popups.splice(i, 1); }
     if (isVictory || isGameOver) return; 
-    if (recoilOffset > 0) { recoilOffset -= 2; if (recoilOffset < 0) recoilOffset = 0; }
+    if (recoilOffset > 0) { recoilOffset -= 2 * f; if (recoilOffset < 0) recoilOffset = 0; }
     if (!bullet.moving) { bullet.x = CANNON_X + Math.cos(angle) * (BARREL_LENGTH - recoilOffset); bullet.y = CANNON_Y + Math.sin(angle) * (BARREL_LENGTH - recoilOffset); predictedCell = (bullet.type === 'normal' || bullet.type === 'bomb') ? calculateLanding(bullet.x, bullet.y) : null; } else { predictedCell = null; }
     if (bullet && bullet.moving) {
-        bullet.x += bullet.dx; bullet.y += bullet.dy; if (bullet.x < CONFIG.radius) { bullet.x = CONFIG.radius; bullet.dx = -bullet.dx; } else if (bullet.x > CANVAS_WIDTH - CONFIG.radius) { bullet.x = CANVAS_WIDTH - CANVAS_WIDTH; bullet.dx = -bullet.dx; }
+        if (!bullet.trail) bullet.trail = []; bullet.trail.push({ x: bullet.x, y: bullet.y }); if (bullet.trail.length > 9) bullet.trail.shift(); const bf = Math.min(f, 1.5); bullet.x += bullet.dx * bf; bullet.y += bullet.dy * bf; if (bullet.x < CONFIG.radius) { bullet.x = CONFIG.radius; bullet.dx = -bullet.dx; } else if (bullet.x > CANVAS_WIDTH - CONFIG.radius) { bullet.x = CANVAS_WIDTH - CANVAS_WIDTH; bullet.dx = -bullet.dx; }
         if (bullet.type === 'fireball') { if (bullet.y < CONFIG.radius + globalDropOffset) { endBulletTurn(); return; } for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && Math.hypot(bullet.x - getGridPos(r, c).x, bullet.y - getGridPos(r, c).y) < DIAMETER + 5) { createDustExplosion(getGridPos(r, c).x, getGridPos(r, c).y, '#ff8c00'); grid[r][c] = null; score += 15; } } } } 
-        else if (bullet.type === 'lightning') { if (bullet.y < CONFIG.radius + globalDropOffset) { endBulletTurn(); return; } let hitTarget = null; for (let r = 0; r < grid.length; r++) { if (hitTarget) break; for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && Math.hypot(bullet.x - getGridPos(r,c).x, bullet.y - getGridPos(r,c).y) < COLLISION_DIST) { hitTarget = b; break; } } } if (hitTarget) { let tType = hitTarget.type; let tColor = hitTarget.color; let destroyed = 0; for(let r=0; r<grid.length; r++) { for(let c=0; c<CONFIG.cols; c++) { let b = grid[r][c]; if(b && b.active && ((tType === 'bomb' && b.type === 'bomb') || (tType === 'normal' && b.type === 'normal' && b.color === tColor))) { createDustExplosion(getGridPos(r,c).x, getGridPos(r,c).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[r][c] = null; destroyed++; } } } score += destroyed * 15; canvas.style.transform = "translate(5px, 5px)"; setTimeout(() => canvas.style.transform = "none", 50); endBulletTurn(); return; } } 
+        else if (bullet.type === 'lightning') { if (bullet.y < CONFIG.radius + globalDropOffset) { endBulletTurn(); return; } let hitTarget = null; for (let r = 0; r < grid.length; r++) { if (hitTarget) break; for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && Math.hypot(bullet.x - getGridPos(r,c).x, bullet.y - getGridPos(r,c).y) < COLLISION_DIST) { hitTarget = b; break; } } } if (hitTarget) { let tType = hitTarget.type; let tColor = hitTarget.color; let destroyed = 0; for(let r=0; r<grid.length; r++) { for(let c=0; c<CONFIG.cols; c++) { let b = grid[r][c]; if(b && b.active && ((tType === 'bomb' && b.type === 'bomb') || (tType === 'normal' && b.type === 'normal' && b.color === tColor))) { createDustExplosion(getGridPos(r,c).x, getGridPos(r,c).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[r][c] = null; destroyed++; } } } score += destroyed * 15; addShake(9); addFlash(0.18, '120,220,255'); sfxZap(); addPopup(CANNON_X, CANVAS_HEIGHT / 2, destroyed + ' ⚡', '#7effff'); endBulletTurn(); return; } } 
         else { if (bullet.y < CONFIG.radius + globalDropOffset) { snapBubble(); return; } for (let r = 0; r < grid.length; r++) { if (Math.abs((r * ROW_HEIGHT + globalDropOffset) - bullet.y) > DIAMETER * 2) continue; for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active && Math.hypot(bullet.x - getGridPos(r,c).x, bullet.y - getGridPos(r,c).y) < COLLISION_DIST) { snapBubble(); return; } } } }
     }
 }
@@ -548,15 +504,15 @@ function update() {
 function calculateLanding(startX, startY) { let bestDist = Infinity; let bestCell = null; for (let r = 0; r < grid.length + 2; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active) continue; let dist = Math.hypot(startX - getGridPos(r, c).x, startY - getGridPos(r, c).y); if (dist < bestDist) { bestDist = dist; bestCell = {r, c}; } } } return bestCell; }
 
 function snapBubble() {
-    bullet.moving = false; let cell = calculateLanding(bullet.x, bullet.y); if (!cell) cell = {r:0, c:0}; let {r, c} = cell; while (grid.length <= r) grid.push(new Array(CONFIG.cols).fill(null)); grid[r][c] = { color: bullet.color, active: true, type: bullet.type };
-    if (bullet.type === 'bomb') { let p1 = getGridPos(r, c); let bombsToDetonate = [{r,c}]; for (let rr = Math.max(0, r-2); rr <= Math.min(grid.length-1, r+2); rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { let b = grid[rr][cc]; if (b && b.active && b.type === 'bomb' && !(rr === r && cc === c) && Math.hypot(p1.x - getGridPos(rr,cc).x, p1.y - getGridPos(rr,cc).y) < CONNECT_DIST) bombsToDetonate.push({r: rr, c: cc}); } } let destroyed = new Set(); for (let bomb of bombsToDetonate) { let bPos = getGridPos(bomb.r, bomb.c); for (let rr = 0; rr < grid.length; rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { if (grid[rr][cc] && grid[rr][cc].active && Math.hypot(bPos.x - getGridPos(rr,cc).x, bPos.y - getGridPos(rr,cc).y) < DIAMETER * 2.5) { destroyed.add(rr + "," + cc); } } } } let bombsFoundInBlast = 0; destroyed.forEach(key => { let [rr, cc] = key.split(',').map(Number); let b = grid[rr][cc]; if (b.type === 'bomb') bombsFoundInBlast++; createDustExplosion(getGridPos(rr, cc).x, getGridPos(rr, cc).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[rr][cc] = null; score += 15; }); bombsBlown += bombsFoundInBlast; canvas.style.transform = "translate(5px, 5px)"; setTimeout(() => canvas.style.transform = "none", 50); } else { let cluster = findPhysicalCluster(r, c, bullet.color); if (cluster.length >= 3) { cluster.forEach(m => { createDustExplosion(getGridPos(m.r, m.c).x, getGridPos(m.r, m.c).y, grid[m.r][m.c].color); grid[m.r][m.c] = null; }); score += cluster.length * 10; coins += 10; sessionCoins += 10; combosMade++; saveProgress(); } } endBulletTurn();
+    bullet.moving = false; sfxSnap(); let cell = calculateLanding(bullet.x, bullet.y); if (!cell) cell = {r:0, c:0}; let {r, c} = cell; while (grid.length <= r) grid.push(new Array(CONFIG.cols).fill(null)); grid[r][c] = { color: bullet.color, active: true, type: bullet.type };
+    if (bullet.type === 'bomb') { let p1 = getGridPos(r, c); let bombsToDetonate = [{r,c}]; for (let rr = Math.max(0, r-2); rr <= Math.min(grid.length-1, r+2); rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { let b = grid[rr][cc]; if (b && b.active && b.type === 'bomb' && !(rr === r && cc === c) && Math.hypot(p1.x - getGridPos(rr,cc).x, p1.y - getGridPos(rr,cc).y) < CONNECT_DIST) bombsToDetonate.push({r: rr, c: cc}); } } let destroyed = new Set(); for (let bomb of bombsToDetonate) { let bPos = getGridPos(bomb.r, bomb.c); for (let rr = 0; rr < grid.length; rr++) { for (let cc = 0; cc < CONFIG.cols; cc++) { if (grid[rr][cc] && grid[rr][cc].active && Math.hypot(bPos.x - getGridPos(rr,cc).x, bPos.y - getGridPos(rr,cc).y) < DIAMETER * 2.5) { destroyed.add(rr + "," + cc); } } } } let bombsFoundInBlast = 0; destroyed.forEach(key => { let [rr, cc] = key.split(',').map(Number); let b = grid[rr][cc]; if (b.type === 'bomb') bombsFoundInBlast++; createDustExplosion(getGridPos(rr, cc).x, getGridPos(rr, cc).y, b.type === 'bomb' ? '#ff2222' : b.color); grid[rr][cc] = null; score += 15; }); bombsBlown += bombsFoundInBlast; addShake(12); addFlash(0.28, '255,80,80'); sfxBoom(); addPopup(p1.x, p1.y, '+' + destroyed.size * 15, '#ff6b6b'); } else { let cluster = findPhysicalCluster(r, c, bullet.color); if (cluster.length >= 3) { cluster.forEach(m => { createDustExplosion(getGridPos(m.r, m.c).x, getGridPos(m.r, m.c).y, grid[m.r][m.c].color); grid[m.r][m.c] = null; }); score += cluster.length * 10; coins += 10; sessionCoins += 10; combosMade++; saveProgress(); addShake(2); sfxPop(cluster.length); addPopup(getGridPos(r, c).x, getGridPos(r, c).y, '+' + cluster.length * 10, '#ffd700'); } } endBulletTurn();
 }
 
 function findPhysicalCluster(startR, startC, targetColor) { let cluster = []; let queue = [{r: startR, c: startC}]; let visited = new Set([startR + "," + startC]); let head = 0; while(head < queue.length) { let curr = queue[head++]; cluster.push(curr); let pos1 = getGridPos(curr.r, curr.c); for (let r = Math.max(0, curr.r - 2); r <= Math.min(grid.length - 1, curr.r + 2); r++) { for (let c = 0; c < CONFIG.cols; c++) { let b = grid[r][c]; if (b && b.active && b.type === 'normal' && b.color === targetColor) { let key = r + "," + c; if (!visited.has(key) && Math.hypot(pos1.x - getGridPos(r,c).x, pos1.y - getGridPos(r,c).y) < CONNECT_DIST) { visited.add(key); queue.push({r, c}); } } } } } return cluster; }
 
-function cleanFloatingBubbles() { let connected = new Set(); let queue = []; for (let c = 0; c < CONFIG.cols; c++) { if (grid[0] && grid[0][c] && grid[0][c].active) { connected.add("0," + c); queue.push({r: 0, c: c}); } } let head = 0; while(head < queue.length) { let curr = queue[head++]; let pos1 = getGridPos(curr.r, curr.c); for (let r = Math.max(0, curr.r - 2); r <= Math.min(grid.length - 1, curr.r + 2); r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r][c] && grid[r][c].active && !connected.has(r + "," + c) && Math.hypot(pos1.x - getGridPos(r, c).x, pos1.y - getGridPos(r, c).y) < CONNECT_DIST) { connected.add(r + "," + c); queue.push({r, c}); } } } } let dropped = 0; for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active && !connected.has(r + "," + c)) { createDustExplosion(getGridPos(r, c).x, getGridPos(r, c).y, grid[r][c].type === 'bomb' ? '#ff2222' : grid[r][c].color); grid[r][c] = null; dropped++; } } } if (dropped > 0) { score += dropped * 50; coins += dropped; sessionCoins += dropped; saveProgress(); } }
+function cleanFloatingBubbles() { let connected = new Set(); let queue = []; for (let c = 0; c < CONFIG.cols; c++) { if (grid[0] && grid[0][c] && grid[0][c].active) { connected.add("0," + c); queue.push({r: 0, c: c}); } } let head = 0; while(head < queue.length) { let curr = queue[head++]; let pos1 = getGridPos(curr.r, curr.c); for (let r = Math.max(0, curr.r - 2); r <= Math.min(grid.length - 1, curr.r + 2); r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r][c] && grid[r][c].active && !connected.has(r + "," + c) && Math.hypot(pos1.x - getGridPos(r, c).x, pos1.y - getGridPos(r, c).y) < CONNECT_DIST) { connected.add(r + "," + c); queue.push({r, c}); } } } } let dropped = 0; for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r] && grid[r][c] && grid[r][c].active && !connected.has(r + "," + c)) { createDustExplosion(getGridPos(r, c).x, getGridPos(r, c).y, grid[r][c].type === 'bomb' ? '#ff2222' : grid[r][c].color); grid[r][c] = null; dropped++; } } } if (dropped > 0) { score += dropped * 50; coins += dropped; sessionCoins += dropped; addShake(4); sfxThud(); addPopup(CANNON_X, CANVAS_HEIGHT - 220, '+' + dropped * 50, '#7effff'); saveProgress(); } }
 
-function createDustExplosion(x, y, color) { for (let i = 0; i < 15; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 15, vy: (Math.random() - 0.5) * 15, color: color, size: Math.random() * 5 + 3, life: 30 + Math.random() * 20 }); }
+function createDustExplosion(x, y, color) { for (let i = 0; i < 15; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 15, vy: (Math.random() - 0.5) * 15, color: color, size: Math.random() * 5 + 3, life: 30 + Math.random() * 20, additive: true }); for (let i = 0; i < 5; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 8, vy: (Math.random() - 0.5) * 8, color: '#ffffff', size: Math.random() * 3 + 1.5, life: 16 + Math.random() * 10, additive: true }); }
 
 function checkGameOver() {
     if (isGameOver) return; 
@@ -564,7 +520,8 @@ function checkGameOver() {
         if (getGridPos(r, 0).y > CANVAS_HEIGHT - 100) {
             for(let c=0; c<CONFIG.cols; c++) {
                 if (grid[r][c] && grid[r][c].active) {
-                    isGameOver = true; 
+                    isGameOver = true;
+                    addFlash(0.35, '255,80,80'); addShake(14); sfxOver();
                     if (currentLevel === 'endless' && score > bestEndlessScore) { bestEndlessScore = score; saveProgress(); }
                     document.getElementById('finalScore').innerText = score; document.getElementById('finalCoins').innerText = sessionCoins;
                     document.getElementById('gameOverScreen').style.display = 'flex'; document.getElementById('controls').style.display = 'none'; document.getElementById('boosterUI').style.display = 'none'; document.getElementById('topUI').style.display = 'none'; 
@@ -577,15 +534,17 @@ function checkGameOver() {
 }
 
 function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(-30, -30, canvas.width + 60, canvas.height + 60);
     for (let r = 0; r < grid.length; r++) { for (let c = 0; c < CONFIG.cols; c++) { if (grid[r][c] && grid[r][c].active) { let pos = getGridPos(r, c); if (pos.y < -DIAMETER) continue; if (grid[r][c].type === 'bomb') drawBomb(pos.x, pos.y); else drawBubble3D(pos.x, pos.y, grid[r][c].color); } } }
     if (!inMainMenu && !inLevelSelect && !isVictory && predictedCell && bullet && bullet.moving && (bullet.type === 'normal' || bullet.type === 'bomb')) { let pos = getGridPos(predictedCell.r, predictedCell.c); ctx.beginPath(); ctx.arc(pos.x, pos.y, CONFIG.radius - 2, 0, Math.PI*2); ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'; ctx.lineWidth = 2; ctx.stroke(); }
-    for (let p of particles) { ctx.fillStyle = p.color; ctx.beginPath(); ctx.rect(p.x, p.y, p.size, p.size); ctx.fill(); }
+    for (let p of particles) { ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 20)); ctx.fillStyle = p.color; if (p.additive) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; } ctx.beginPath(); ctx.rect(p.x, p.y, p.size, p.size); ctx.fill(); if (p.additive) { ctx.restore(); } }
+    ctx.globalAlpha = 1;
     if (!inMainMenu && !inLevelSelect && !isVictory && !isGameOver) {
         ctx.save(); ctx.translate(CANNON_X, CANNON_Y); ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 2; ctx.setLineDash([4, 12]); ctx.beginPath(); ctx.moveTo(Math.cos(angle) * BARREL_LENGTH, Math.sin(angle) * BARREL_LENGTH); ctx.lineTo(Math.cos(angle) * getAimLength(), Math.sin(angle) * getAimLength()); ctx.stroke(); ctx.restore(); ctx.setLineDash([]);
         ctx.save(); ctx.translate(CANNON_X, CANNON_Y); ctx.rotate(angle); ctx.translate(-recoilOffset, 0); 
         let bronzeGrad = ctx.createLinearGradient(0, -20, 0, 20); bronzeGrad.addColorStop(0, '{{BLOCK_COLOR}}'); bronzeGrad.addColorStop(1, '#222'); ctx.fillStyle = bronzeGrad; ctx.beginPath(); ctx.moveTo(-20, -22); ctx.lineTo(BARREL_LENGTH + 5, -15); ctx.lineTo(BARREL_LENGTH + 5, 15); ctx.lineTo(-20, 22); ctx.closePath(); ctx.fill(); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(-10, -23, 12, 46); ctx.fillRect(BARREL_LENGTH / 2 - 5, -19, 10, 38); ctx.fillRect(BARREL_LENGTH, -17, 14, 34); ctx.beginPath(); ctx.arc(BARREL_LENGTH + 7, 0, 13, 0, Math.PI*2); ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
-        if (bullet) { if (bullet.type === 'bomb') drawBomb(bullet.x, bullet.y); else if (bullet.type === 'fireball') drawFireball(bullet.x, bullet.y); else if (bullet.type === 'lightning') drawLightning(bullet.x, bullet.y); else drawBubble3D(bullet.x, bullet.y, bullet.color); }
+        if (bullet && bullet.trail && bullet.trail.length) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; for (let ti = 0; ti < bullet.trail.length; ti++) { const tp = bullet.trail[ti]; ctx.globalAlpha = (ti / bullet.trail.length) * 0.3; ctx.fillStyle = bullet.type === 'fireball' ? '#ff8c00' : (bullet.type === 'lightning' ? '#00d2d3' : '#ffffff'); ctx.beginPath(); ctx.arc(tp.x, tp.y, CONFIG.radius * (0.3 + 0.5 * ti / bullet.trail.length), 0, Math.PI * 2); ctx.fill(); } ctx.restore(); }
+        if (bullet) { ctx.shadowColor = bullet.type === 'fireball' ? '#ff8c00' : (bullet.type === 'lightning' ? '#00d2d3' : (bullet.type === 'bomb' ? '#ff2222' : '{{BLOCK_COLOR}}')); ctx.shadowBlur = 14; if (bullet.type === 'bomb') drawBomb(bullet.x, bullet.y); else if (bullet.type === 'fireball') drawFireball(bullet.x, bullet.y); else if (bullet.type === 'lightning') drawLightning(bullet.x, bullet.y); else drawBubble3D(bullet.x, bullet.y, bullet.color); ctx.shadowBlur = 0; }
         let woodGrad = ctx.createLinearGradient(CANNON_X - 50, CANNON_Y, CANNON_X + 50, CANNON_Y); woodGrad.addColorStop(0, '#111'); woodGrad.addColorStop(0.5, '#333'); woodGrad.addColorStop(1, '#111'); ctx.fillStyle = woodGrad; ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(CANNON_X - 50, CANNON_Y + 15); ctx.lineTo(CANNON_X - 40, CANVAS_HEIGHT); ctx.lineTo(CANNON_X + 40, CANVAS_HEIGHT); ctx.lineTo(CANNON_X + 50, CANNON_Y + 15); ctx.quadraticCurveTo(CANNON_X, CANNON_Y - 25, CANNON_X - 50, CANNON_Y + 15); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.beginPath(); ctx.arc(CANNON_X, CANNON_Y, 14, 0, Math.PI * 2); let boltGrad = ctx.createRadialGradient(CANNON_X - 5, CANNON_Y - 5, 2, CANNON_X, CANNON_Y, 14); boltGrad.addColorStop(0, '#777'); boltGrad.addColorStop(1, '#222'); ctx.fillStyle = boltGrad; ctx.fill(); ctx.strokeStyle = '#111'; ctx.lineWidth = 3; ctx.stroke();
         ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Segoe UI'; ctx.fillText(i18n[currentLang].next, 20, CANVAS_HEIGHT - 25); if (nextBulletType === 'bomb') drawBomb(80, CANVAS_HEIGHT - 30); else drawBubble3D(80, CANVAS_HEIGHT - 30, nextBubbleColor);
         ctx.strokeStyle = '{{BLOCK_COLOR}}'; ctx.lineWidth = 3; ctx.setLineDash([20, 10]); ctx.beginPath(); ctx.moveTo(0, CANVAS_HEIGHT - 100); ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT - 100); ctx.stroke(); ctx.setLineDash([]);
@@ -597,22 +556,44 @@ function drawBomb(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, M
 function drawFireball(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius + 2, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius+2); grad.addColorStop(0, '#fff'); grad.addColorStop(0.3, '#ffeb3b'); grad.addColorStop(0.7, '#ff4757'); grad.addColorStop(1, 'transparent'); ctx.fillStyle = grad; ctx.fill(); }
 function drawLightning(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); grad.addColorStop(0.5, '#00d2d3'); grad.addColorStop(1, '#000'); ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x-8, y-8); ctx.lineTo(x+2, y); ctx.lineTo(x-4, y+4); ctx.lineTo(x+8, y+10); ctx.stroke(); }
 
-function loop() { 
-    if (!isPaused && !inShop && !isGameOver && !inMainMenu && !inLevelSelect && document.getElementById('leaderboardScreen').style.display !== 'flex' && !isAdShowing) {
-        update(); 
+function drawOverlayFx() {
+    ctx.font = 'bold 24px Segoe UI, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const p of popups) {
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.6));
+        ctx.fillStyle = p.color; ctx.shadowColor = '#000000'; ctx.shadowBlur = 8;
+        ctx.fillText(p.text, p.x, p.y);
     }
-    draw(); 
-    requestAnimationFrame(loop); 
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    if (flash > 0.005) { ctx.fillStyle = 'rgba(' + flashHue + ',' + (flash * 0.65).toFixed(3) + ')'; ctx.fillRect(-30, -30, canvas.width + 60, canvas.height + 60); }
+}
+
+let lastT = performance.now();
+function loop(now) {
+    requestAnimationFrame(loop);
+    const dt = Math.min(0.05, Math.max(0.001, (now - lastT) / 1000));
+    lastT = now;
+    const f = dt * 60;
+    if (!isPaused && !inShop && !isGameOver && !inMainMenu && !inLevelSelect && document.getElementById('leaderboardScreen').style.display !== 'flex' && !isAdShowing) {
+        update(f);
+    }
+    ctx.save();
+    if (shake > 0.3) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    draw();
+    ctx.restore();
+    drawOverlayFx();
+    shake *= Math.pow(0.86, f); if (shake < 0.3) shake = 0;
+    flash = Math.max(0, flash - 0.045 * f);
 }
 
 function handleAim(clientX, clientY) { if (isPaused || inShop || isGameOver || inMainMenu || inLevelSelect || isVictory || document.getElementById('leaderboardScreen').style.display === 'flex' || isAdShowing) return; let rect = canvas.getBoundingClientRect(); let scaleX = canvas.width / rect.width; let scaleY = canvas.height / rect.height; let dx = ((clientX - rect.left) * scaleX) - CANNON_X; let dy = ((clientY - rect.top) * scaleY) - CANNON_Y; angle = Math.atan2(dy, dx); if (angle > -0.15) angle = -0.15; if (angle < -Math.PI + 0.15) angle = -Math.PI + 0.15; }
-function handleShoot() { if (isPaused || inShop || isGameOver || inMainMenu || inLevelSelect || isVictory || isReloading || document.getElementById('leaderboardScreen').style.display === 'flex' || isAdShowing) return; if (audioCtx.state === 'suspended') { audioCtx.resume(); } if (!bullet.moving) { bullet.moving = true; bullet.dx = Math.cos(angle) * CONFIG.speed; bullet.dy = Math.sin(angle) * CONFIG.speed; recoilOffset = 20; } }
+function handleShoot() { if (isPaused || inShop || isGameOver || inMainMenu || inLevelSelect || isVictory || isReloading || document.getElementById('leaderboardScreen').style.display === 'flex' || isAdShowing) return; ensureAudio(); if (audioCtx && audioCtx.state === 'suspended') { audioCtx.resume(); } if (!bullet.moving) { bullet.moving = true; bullet.dx = Math.cos(angle) * CONFIG.speed; bullet.dy = Math.sin(angle) * CONFIG.speed; recoilOffset = 20; if (bullet.type === 'fireball') sfxEquip(); else if (bullet.type === 'lightning') sfxZap(); else sfxShoot(); for (let i = 0; i < 6; i++) particles.push({ x: bullet.x, y: bullet.y, vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 4, color: '#ffee88', size: Math.random() * 4 + 2, life: 12 + Math.random() * 8, additive: true }); } }
 
 canvas.addEventListener('mousemove', e => handleAim(e.clientX, e.clientY)); canvas.addEventListener('mousedown', () => handleShoot()); canvas.addEventListener('touchstart', e => { if(e.target === canvas) e.preventDefault(); handleAim(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false}); canvas.addEventListener('touchmove', e => { if(e.target === canvas) e.preventDefault(); handleAim(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false}); canvas.addEventListener('touchend', e => { if(e.target === canvas) e.preventDefault(); handleShoot(); }, {passive: false});
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !inMainMenu && !inLevelSelect) togglePause(); if (e.key === '1') useFireball(); if (e.key === '2') useLightning(); });
 
-initSDK(); 
-requestAnimationFrame(loop); 
+applyLang();
+showMainMenu();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>

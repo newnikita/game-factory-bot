@@ -510,6 +510,8 @@ app.get('/:engine/', (req, res, next) => {
                .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                .replace(/{{PLATFORM}}/g, platform);
                
+    validateGameCode(html, platform).filter(i => i.level === 'critical')
+        .forEach(i => console.warn(`[Шаблон ${engine}] critical: ${i.msg}`));
     res.send(html);
 });
 
@@ -924,6 +926,8 @@ bot.action('download_source', async (ctx) => {
                    .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                    .replace(/{{PLATFORM}}/g, data.platform || 'pc');
         
+        validateGameCode(html, data.platform || 'pc').filter(i => i.level === 'critical')
+            .forEach(i => console.warn(`[ZIP ${data.engine}] critical: ${i.msg}`));
         fs.writeFileSync(indexPath, html);
         const archive = archiver('zip', { zlib: { level: 9 } }); 
         const output = fs.createWriteStream(zipPath);

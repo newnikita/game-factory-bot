@@ -7,6 +7,7 @@ const archiver = require('archiver');
 const express = require('express');
 const fse = require('fs-extra');
 const axios = require('axios');
+const vm = require('vm');
 
 process.on('uncaughtException', (err) => console.error('❌ Ошибка:', err.message));
 process.on('unhandledRejection', (err) => console.error('❌ Ошибка сети:', err.message));
@@ -109,78 +110,311 @@ function selectReferenceEngine(prompt) {
     return 'breaker.html';
 }
 
+const CONTROLS_MOBILE = "▶ УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: ИСКЛЮЧИТЕЛЬНО touch-события (или pointer-события). ЗАПРЕЩЕНЫ мышь и клавиатура. ЗАПРЕЩЕНЫ HTML-кнопки. Используй e.preventDefault().";
+const CONTROLS_PC = "▶ УПРАВЛЕНИЕ ДЛЯ ПК: Стандартное управление с клавиатуры или клики мышью. ЗАПРЕЩЕНЫ touch-события.";
+
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+
+const SAFETY_SETTINGS = [
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+];
+
+const SYSTEM_INSTRUCTION = {
+    parts: [{
+        text: [
+            "Ты — профессиональный разработчик браузерных игр на HTML5 Canvas.",
+            "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
+            "АБСОЛЮТНЫЕ ПРАВИЛА:",
+            "1. Игра запускается мгновенно. Запрещены экраны загрузки, прелоадеры и обращения к элементу loading-screen.",
+            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL. Графику рисуй процедурно на Canvas, персонажей и объекты — пиксель-артом (массивы из 0 и цифр-цветов через fillRect).",
+            "3. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
+            "4. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт.",
+            "5. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
+            "6. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
+            "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula]."
+        ].join('\n')
+    }]
+};
+
+function stripCodeMarkers(text) {
+    const marker = String.fromCharCode(96, 96, 96);
+    let out = text.replace(new RegExp(marker + 'html', 'gi'), '');
+    out = out.replace(new RegExp(marker, 'g'), '');
+    return out.trim();
+}
+
+function findFunctionStart(code, fnName) {
+    const esc = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = code.match(new RegExp('(?:async\\s+)?function\\s+' + esc + '\\s*\\('));
+    return m ? m.index : -1;
+}
+
+function findBlockEnd(code, fromIndex) {
+    let i = code.indexOf('{', fromIndex);
+    if (i === -1) return -1;
+    let depth = 0;
+    let state = 'code';
+    for (; i < code.length; i++) {
+        const ch = code[i];
+        const next = code[i + 1];
+        if (state === 'code') {
+            if (ch === '{') depth++;
+            else if (ch === '}') { depth--; if (depth === 0) return i; }
+            else if (ch === "'") state = 's1';
+            else if (ch === '"') state = 's2';
+            else if (ch === '`') state = 'tpl';
+            else if (ch === '/' && next === '/') { state = 'line'; i++; }
+            else if (ch === '/' && next === '*') { state = 'block'; i++; }
+        } else if (state === 's1') { if (ch === '\\') i++; else if (ch === "'") state = 'code'; }
+        else if (state === 's2') { if (ch === '\\') i++; else if (ch === '"') state = 'code'; }
+        else if (state === 'tpl') { if (ch === '\\') i++; else if (ch === '`') state = 'code'; }
+        else if (state === 'line') { if (ch === '\n') state = 'code'; }
+        else if (state === 'block') { if (ch === '*' && next === '/') { state = 'code'; i++; } }
+    }
+    return -1;
+}
+
+function removeFunctionBlock(code, fnName) {
+    const start = findFunctionStart(code, fnName);
+    if (start === -1) return code;
+    const end = findBlockEnd(code, start);
+    if (end === -1) return code;
+    let tail = end + 1;
+    if (code[tail] === ';') tail++;
+    return code.slice(0, start) + code.slice(tail);
+}
+
+function replaceFunctionBlock(code, fnName, replacement) {
+    const start = findFunctionStart(code, fnName);
+    if (start === -1) return code;
+    const end = findBlockEnd(code, start);
+    if (end === -1) return code;
+    let tail = end + 1;
+    if (code[tail] === ';') tail++;
+    return code.slice(0, start) + replacement + code.slice(tail);
+}
+
+function sanitizeReference(raw) {
+    let code = raw;
+    const s = styles.silent_stars;
+
+    code = code
+        .replace(/\{\{GAME_TITLE\}\}/g, 'Эталонная Игра')
+        .replace(/\{\{BG_IMAGE\}\}/g, s.img)
+        .replace(/\{\{BG_COLOR\}\}/g, s.bg)
+        .replace(/\{\{BLOCK_COLOR\}\}/g, s.block)
+        .replace(/\{\{FONT_FAMILY\}\}/g, s.font)
+        .replace(/\{\{SHADOW\}\}/g, s.shadow)
+        .replace(/\{\{LIFE_ICON\}\}/g, s.life)
+        .replace(/\{\{SCORE_ICON\}\}/g, s.score)
+        .replace(/\{\{BOOSTER_WIDE\}\}/g, s.b_wide)
+        .replace(/\{\{BOOSTER_TRIPLE\}\}/g, s.b_triple)
+        .replace(/\{\{BOOSTER_FIRE\}\}/g, s.b_fire)
+        .replace(/\{\{BOOSTER_LIGHTNING\}\}/g, s.b_lightning)
+        .replace(/\{\{PLATFORM\}\}/g, 'pc');
+
+    code = code.replace(/<div[^>]*id=["']loading-screen["'][^>]*>[\s\S]*?<\/div>/i, '');
+    code = code.replace(/#loading-screen\s*\{[^}]*\}/gi, '');
+    code = code.replace(/document\.getElementById\(\s*['"]loading-screen['"]\s*\)/g, "document.createElement('div')");
+
+    code = code.replace(/<script[^>]*src=["'][^"']*sdk\.js["'][^>]*>\s*<\/script>/gi, '');
+    code = code.replace(/<script[^>]*onload=["'][^"']*initSDK[^"']*["'][^>]*>\s*<\/script>/gi, '');
+
+    code = code.replace(/fetch\(\s*['"][^'"]+\.(?:mp3|wav|ogg|m4a)['"]\s*\)[\s\S]*?\.catch\([^;]*\);?/gi, '');
+    code = code.replace(/\.(?:mp3|wav|ogg|m4a)(?=["'])/gi, '');
+
+    code = replaceFunctionBlock(code, 'initSDK',
+        'function initSDK() { try { if (window.updateStaticTexts) window.updateStaticTexts(); if (window.startGameLogic) window.startGameLogic(); } catch (e) {} }');
+    code = removeFunctionBlock(code, 'loadLocalProgress');
+    code = code.replace(/\b(?:initSDK|loadLocalProgress)\s*\(\s*\)\s*;/g, '');
+
+    return code;
+}
+
+const referenceCache = {};
+function loadReference(fileName) {
+    if (referenceCache[fileName] !== undefined) return referenceCache[fileName];
+    const refPath = path.join(__dirname, 'references', fileName);
+    if (!fs.existsSync(refPath)) { referenceCache[fileName] = ''; return ''; }
+    const clean = sanitizeReference(fs.readFileSync(refPath, 'utf8'));
+    referenceCache[fileName] = clean;
+    return clean;
+}
+
+function validateGameCode(code, platform) {
+    const issues = [];
+    const critical = (msg) => issues.push({ level: 'critical', msg });
+    const warning = (msg) => issues.push({ level: 'warning', msg });
+
+    if (!/<\/html>/i.test(code)) critical('файл обрезан: нет закрывающего </html>');
+    if (!/<canvas[\s>]/i.test(code)) critical('нет элемента <canvas>');
+    if (!/getContext\s*\(\s*['"]2d['"]/.test(code)) critical('canvas не инициализирован через getContext("2d")');
+    if (!/requestAnimationFrame/i.test(code)) critical('нет игрового цикла requestAnimationFrame');
+
+    const phs = (code.match(/\{\{\s*[^}]+\s*\}\}/g) || []).filter(p => !/AI_BG_IMAGE/.test(p));
+    if (phs.length) critical('неподставленные плейсхолдеры: ' + [...new Set(phs)].slice(0, 5).join(', '));
+
+    const extScripts = code.match(/<script[^>]*\ssrc\s*=\s*["'][^"']+["'][^>]*>/gi) || [];
+    if (extScripts.length) critical('внешние <script src> запрещены (' + extScripts.length + ' шт.)');
+    if (/getElementById\s*\(\s*['"]loading-screen['"]\s*\)/i.test(code)) critical('остались обращения к экрану загрузки loading-screen');
+    if (/\.(mp3|wav|ogg|m4a|aac|flac)(?=["'\s?#])/i.test(code) || /new\s+Audio\s*\(\s*["']/.test(code)) critical('внешние аудиофайлы запрещены — используй WebAudio');
+    const extImgs = (code.match(/<img[^>]*\ssrc\s*=\s*["']https?:\/\/[^"']+["']/gi) || []).filter(u => !/unsplash/i.test(u));
+    if (extImgs.length) critical('внешние <img src> запрещены (' + extImgs.length + ' шт.)');
+
+    const extLinks = code.match(/<link[^>]*\shref\s*=\s*["']https?:\/\/[^"']+["'][^>]*>/gi) || [];
+    if (extLinks.length) warning('внешние <link> (стили/шрифты): ' + extLinks.length + ' шт.');
+
+    const hasTouch = /touch(start|end|move)|pointer(down|move|up)/i.test(code);
+    const hasKeyboard = /key(down|up)|wheel/i.test(code);
+    const hasMouse = /mouse(down|up|move)|pointer(down|move|up)|\bclick\b/i.test(code);
+    if (platform === 'mobile') {
+        if (!hasTouch && !hasMouse) critical('нет touch-управления для мобильной версии');
+        if (hasKeyboard) warning('клавиатура в мобильной версии — по условию её быть не должно');
+    } else {
+        if (!hasKeyboard && !hasMouse) critical('нет управления мышью/клавиатурой для ПК');
+        if (/touch(start|move|end)/i.test(code)) warning('touch-события в ПК-версии — по условию их быть не должно');
+    }
+    if (!/resize|innerWidth|clientWidth|devicePixelRatio|width:\s*100%|100vw/i.test(code)) warning('нет обработки ресайза/адаптации под экран');
+
+    if (!/меню|\bmenu\b|\bstart\b|старт/i.test(code)) warning('не найдено состояние Меню');
+    if (!/game\s*over|gameover|оконч\w*\s*игр|конец\s*игр|поражени|проигрыш|неудач/i.test(code)) warning('не найдено состояние Game Over');
+    if (!/restart|рестарт|заново|ещ[её]\s*раз|replay|try\s*again/i.test(code)) warning('не найдено состояние Рестарт');
+
+    if (/YaGames|\bysdk\b/i.test(code)) warning('Яндекс SDK (YaGames) — должен быть удалён');
+    if (/localStorage/i.test(code)) warning('localStorage — должен быть удалён');
+    if (/\bi18n\s*[=:[]/i.test(code)) warning('словари локализации i18n — должны быть удалены');
+    if (/<button[\s>]/i.test(code)) warning('HTML-элементы <button> — рисуй кнопки на canvas или div-оверлеями');
+    if (/fetch\s*\(|XMLHttpRequest/i.test(code)) warning('сетевые запросы fetch/XHR в игре — обычно не нужны');
+
+    const scriptRe = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
+    let m, idx = 0;
+    while ((m = scriptRe.exec(code)) !== null) {
+        const attrs = m[1] || '';
+        if (/\ssrc\s*=/.test(attrs)) continue;
+        const type = (attrs.match(/type\s*=\s*["']([^"']+)["']/i) || [])[1];
+        if (type && !/javascript|module/i.test(type)) continue;
+        const js = m[2].trim();
+        if (!js) continue;
+        try {
+            new vm.Script(js, { filename: 'game_' + idx + '.js' });
+        } catch (e) {
+            critical('сбой JavaScript в скрипте #' + (idx + 1) + ': ' + e.message);
+        }
+        idx++;
+    }
+    return issues;
+}
+
+async function repairGameCode(code, issues, platform) {
+    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+    let current = code;
+    let currentIssues = issues;
+    for (let round = 1; round <= 2; round++) {
+        const criticals = currentIssues.filter(i => i.level === 'critical');
+        if (!criticals.length) break;
+        const list = currentIssues.map((it, n) => `${n + 1}. ${it.level === 'critical' ? '[КРИТИЧНО]' : '[важно]'} ${it.msg}`).join('\n');
+        const repairPrompt = [
+            'Ниже — сгенерированная HTML5 Canvas-игра. Автоматическая проверка нашла проблемы:',
+            list,
+            '',
+            'Исправь ВСЕ перечисленные проблемы, сохранив рабочую механику игры.',
+            'Требования к результату:',
+            '- Верни ПОЛНЫЙ файл целиком: от <!DOCTYPE html> до </html>.',
+            '- Только код: без markdown, пояснений и комментариев.',
+            '- Один файл: CSS в <style>, JS в <script>, без внешних ресурсов.',
+            "- В CSS тела оставь дословно: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
+            '- Перед </html> добавь строку [BG: два-три англ слова для фона].',
+            '- Управление: ' + controlsPrompt,
+            '',
+            'КОД ИГРЫ:',
+            current
+        ].join('\n');
+        try {
+            const response = await axios.post(
+                `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
+                {
+                    systemInstruction: SYSTEM_INSTRUCTION,
+                    contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
+                    safetySettings: SAFETY_SETTINGS,
+                    generationConfig: { temperature: 0.3, topK: 40, topP: 0.9, maxOutputTokens: 65536 }
+                },
+                { headers: { 'Content-Type': 'application/json' }, timeout: 300000 }
+            );
+            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+            const repaired = stripCodeMarkers(text);
+            if (!repaired || !/<\/html>/i.test(repaired)) continue;
+            current = repaired;
+            currentIssues = validateGameCode(current, platform);
+            if (!currentIssues.some(i => i.level === 'critical')) break;
+        } catch (e) {
+            console.error(`[Авторемонт] Раунд ${round} не удался:`, e.message);
+        }
+    }
+    return { code: current, issues: currentIssues };
+}
+
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
     try {
-        if (!process.env.GEMINI_API_KEY) throw new Error("Ключ Gemini не настроен");
-        
+        if (!process.env.GEMINI_API_KEY) throw new Error('Ключ Gemini не настроен');
+
         const selectedFile = selectReferenceEngine(userPrompt);
-        let referenceCode = `\n\n=== ЭТАЛОН КОДА: ${selectedFile} ===\n`;
-        const refPath = path.join(__dirname, 'references', selectedFile);
-        
-        if (fs.existsSync(refPath)) {
-            referenceCode += fs.readFileSync(refPath, 'utf8');
+        const referenceCode = loadReference(selectedFile);
+        const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+
+        const promptLines = [];
+        if (referenceCode) {
+            promptLines.push(
+                `=== ЭТАЛОН КОДА (${selectedFile}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ ===`,
+                referenceCode,
+                '=== КОНЕЦ ЭТАЛОНА ===',
+                '',
+                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
+                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
+                ''
+            );
         }
-
-        const controlsMobile = "▶ УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: ИСКЛЮЧИТЕЛЬНО touch-события. ЗАПРЕЩЕНЫ мышь и клавиатура. ЗАПРЕЩЕНЫ HTML-кнопки. Используй e.preventDefault().";
-        const controlsPC = "▶ УПРАВЛЕНИЕ ДЛЯ ПК: Стандартное управление с клавиатуры или клики мышью. ЗАПРЕЩЕНЫ touch-события.";
-        const controlsPrompt = platform === 'mobile' ? controlsMobile : controlsPC;
-
-        const marker = String.fromCharCode(96, 96, 96);
-        const promptLines = [
-            "Ты — профессиональный разработчик Canvas игр.",
-            "Сделай ПОЛНОСТЬЮ РАБОЧУЮ игру в ОДНОМ файле.",
-            "АБСОЛЮТНЫЕ ЗАПРЕТЫ И ПРАВИЛА:",
-            "1. ЗАПРЕЩЕНО делать HTML-экраны загрузки. Игра запускается МГНОВЕННО.",
-            "2. Для персонажей используй пиксель-арт (массив из 0 и цифр для цветов) через ctx.fillRect.",
-            "3. ПИШИ МАКСИМАЛЬНО ПРОСТУЮ ЛОГИКУ. Без аудио, локализаций, localStorage.",
-            "4. ВЫДАВАЙ ТОЛЬКО КОД. Без комментариев.",
-            "5. ОБЯЗАТЕЛЬНО добавь CSS-свойство background к тегу body:",
-            "background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            "6. Перед </html> напиши тег: [BG: 1-2 англ слова для фона].",
-            "ПРАВИЛА УПРАВЛЕНИЯ: " + controlsPrompt,
-            "Эталон кода для физики и архитектуры:",
-            referenceCode,
-            "Идея для новой игры: " + userPrompt
-        ];
+        promptLines.push(
+            'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
+            '',
+            'Идея для новой игры: ' + userPrompt
+        );
         const fullPrompt = promptLines.join('\n');
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-        let fullCode = "";
-        let history = [{ role: "user", parts: [{ text: fullPrompt }] }];
+        const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
+        let fullCode = '';
+        let history = [{ role: 'user', parts: [{ text: fullPrompt }] }];
         let isFinished = false;
 
-        for (let chunk = 0; chunk < 4; chunk++) {
+        for (let chunk = 0; chunk < 5 && !isFinished; chunk++) {
             let attemptSuccess = false;
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
                     const payload = {
+                        systemInstruction: SYSTEM_INSTRUCTION,
                         contents: history,
-                        safetySettings: [
-                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-                        ],
-                        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 8192 }
+                        safetySettings: SAFETY_SETTINGS,
+                        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 65536 }
                     };
-                    
-                    const response = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
-                    const chunkText = response.data.candidates[0].content.parts[0].text;
+                    const response = await axios.post(url, payload, {
+                        headers: { 'Content-Type': 'application/json' },
+                        timeout: 300000
+                    });
+                    const chunkText = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+                    if (!chunkText) throw new Error('Пустой ответ модели');
                     fullCode += chunkText;
-                    
-                    let cleanCheck = fullCode.replace(new RegExp(marker + 'html', 'gi'), '');
-                    cleanCheck = cleanCheck.replace(new RegExp(marker, 'g'), '').trim();
 
-                    if (!cleanCheck.includes('</html>') && chunk < 3) {
-                        history.push({ role: "model", parts: [{ text: chunkText }] });
-                        history.push({ role: "user", parts: [{ text: "Код оборвался. Продолжи СТРОГО с того символа, где остановился." }] });
-                        attemptSuccess = true;
-                        break;
-                    } else {
-                        isFinished = true;
+                    if (!stripCodeMarkers(fullCode).includes('</html>')) {
+                        history.push({ role: 'model', parts: [{ text: chunkText }] });
+                        history.push({ role: 'user', parts: [{ text: 'Код оборвался. Продолжи СТРОГО с того символа, где остановился, и доведи файл до </html>.' }] });
                         attemptSuccess = true;
                         break;
                     }
+                    isFinished = true;
+                    attemptSuccess = true;
+                    break;
                 } catch (err) {
                     if (err.response && (err.response.status === 503 || err.response.status === 429)) {
                         if (attempt === maxRetries) throw err;
@@ -190,14 +424,14 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
                     throw err;
                 }
             }
-            if (isFinished || !attemptSuccess) break;
+            if (!attemptSuccess) break;
         }
-        
-        let finalOutput = fullCode.replace(new RegExp(marker + 'html', 'gi'), '');
-        return finalOutput.replace(new RegExp(marker, 'g'), '').trim();
-        
-    } catch(e) { 
-        return null; 
+
+        if (!isFinished) return null;
+        return stripCodeMarkers(fullCode);
+    } catch (e) {
+        console.error('[Генерация] Ошибка:', e.message);
+        return null;
     }
 }
 
@@ -387,20 +621,50 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     ];
 
     let stepIndex = 0;
+    let pulse = 0;
     const progressInterval = setInterval(async () => {
+        let state;
         if (stepIndex < progressStates.length) {
-            const state = progressStates[stepIndex];
-            const text = `⚒️ **Гримуар кода в работе...**\n\n\`[${state.bar}]\` **${state.percent}%**\n⏳ _${state.text}_`;
-            try {
-                await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'Markdown' });
-            } catch (e) {}
+            state = progressStates[stepIndex];
             stepIndex++;
+        } else {
+            pulse++;
+            state = { percent: 95, text: 'Генерация объёмного кода ' + '·'.repeat(1 + (pulse % 3)), bar: '█████████░' };
         }
+        const text = `⚒️ **Гримуар кода в работе...**\n\n\`[${state.bar}]\` **${state.percent}%**\n⏳ _${state.text}_`;
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'Markdown' });
+        } catch (e) {}
     }, 3500);
     
     try {
-        let gameCode = await generateAIGame(prompt, ctx.session.gameData.platform || 'pc');
-        if (!gameCode) throw new Error("Empty game code");
+        const platform = ctx.session.gameData.platform || 'pc';
+        let gameCode = await generateAIGame(prompt, platform);
+        if (!gameCode) throw new Error('Генерация оборвалась: модель не вернула полный файл');
+
+        clearInterval(progressInterval);
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, '`[██████████]` **100%**\n🔍 _Проверяю качество кода..._', { parse_mode: 'Markdown' });
+        } catch (e) {}
+
+        let issues = validateGameCode(gameCode, platform);
+        const criticals = issues.filter(i => i.level === 'critical');
+        if (criticals.length) {
+            console.error('[Валидация] Критично:', criticals.map(i => i.msg).join(' | '));
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, `🔧 **Автопочинка...**\n\n_Устраняю замечания проверки (${criticals.length})..._`, { parse_mode: 'Markdown' });
+            } catch (e) {}
+            const repaired = await repairGameCode(gameCode, issues, platform);
+            gameCode = repaired.code;
+            issues = repaired.issues;
+            const stillCritical = issues.filter(i => i.level === 'critical');
+            if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
+        }
+        if (issues.length) console.warn('[Валидация] Замечания:', issues.map(i => i.msg).join(' | '));
+
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, '🎨 **Подбор атмосферного фона...**', { parse_mode: 'Markdown' });
+        } catch (e) {}
 
         // Вытаскиваем ключевое слово
         let bgKeyword = 'fantasy landscape';
@@ -442,10 +706,14 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         
         // ЖЕЛЕЗОБЕТОННАЯ СТРАХОВКА:
         // Если ИИ удалил плейсхолдер и написал пустые кавычки, ссылка не вставится.
-        // Проверяем: если итоговой ссылки нет в коде — насильно инжектим стиль перед закрытием head.
+        // Проверяем: если итоговой ссылки нет в коде — насильно инжектим стиль фона.
         if (!gameCode.includes(customBgUrl)) {
-            const forcedStyle = `\n<style>\n  body { background: url('${customBgUrl}') center/cover no-repeat !important; }\n</style>\n</head>`;
-            gameCode = gameCode.replace('</head>', forcedStyle);
+            const styleTag = `<style>body { background: url('${customBgUrl}') center/cover no-repeat !important; }</style>`;
+            if (gameCode.includes('</head>')) {
+                gameCode = gameCode.replace('</head>', '\n' + styleTag + '\n</head>');
+            } else {
+                gameCode = gameCode.replace(/<body/i, styleTag + '<body');
+            }
         }
         
         const gameId = `ai_${Date.now()}`;
@@ -644,4 +912,14 @@ bot.action('download_source', async (ctx) => {
     }
 });
 
-bot.launch();
+if (require.main === module) {
+    bot.launch();
+}
+
+module.exports = {
+    generateAIGame,
+    validateGameCode,
+    repairGameCode,
+    loadReference,
+    sanitizeReference
+};

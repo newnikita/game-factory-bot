@@ -129,12 +129,24 @@ const SYSTEM_INSTRUCTION = {
             "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
             "АБСОЛЮТНЫЕ ПРАВИЛА:",
             "1. Игра запускается мгновенно. Запрещены экраны загрузки, прелоадеры и обращения к элементу loading-screen.",
-            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL. Графику рисуй процедурно на Canvas, персонажей и объекты — пиксель-артом (массивы из 0 и цифр-цветов через fillRect).",
-            "3. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
-            "4. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт.",
-            "5. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
-            "6. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula]."
+            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL.",
+            "3. Графика процедурная, на Canvas, и она должна быть красивой: градиенты (createLinearGradient/createRadialGradient), свечение (shadowBlur/shadowColor), скругления (roundRect), тени, полупрозрачные слои. Пиксель-арт из массивов — допустим, но не обязателен. КАК ЕДИНСТВЕННЫЙ способ рисовать объекты ЗАПРЕЩЕНЫ плоские одноцветные прямоугольники.",
+            "4. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
+            "5. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт. Экраны меню и Game Over стилизуй: крупный заголовок с градиентом или свечением, акцентная кнопка, счёт крупно.",
+            "6. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
+            "7. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
+            "8. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
+            "",
+            "ВИЗУАЛЬНОЕ КАЧЕСТВО — обязательные требования, игра НЕ ДОЛЖНА выглядеть прототипом:",
+            "A. Тёмная подложка поверх фотофона: CSS body::after { content:''; position:fixed; inset:0; background:rgba(3,5,15,0.55); pointer-events:none; } или непрозрачный слой rgba(0,0,0,0.35-0.6) в начале отрисовки кадра. Без неё фон конфликтует с графикой и текст не читается.",
+            "B. Единая палитра: максимум 2-3 акцентных цвета + нейтральный тёмный фон. Цвета персонажей, эффектов и HUD — из одной палитры, подобранные под фон.",
+            "C. Частицы обязательно: система частиц {x,y,vx,vy,life} с затуханием alpha — минимум при двух событиях (попадание/взрыв и сбор предмета или смерть врага). Рисуй их аддитивно: globalCompositeOperation='lighter'.",
+            "D. Свечение ключевых объектов (игрок, снаряды, бонусы) через shadowBlur+shadowColor.",
+            "E. Динамика: тряска экрана при уроне (translate на пару px с затуханием), белая/акцентная вспышка при попадании, score-попапы (+10 всплывает и улетает).",
+            "F. Фон живой: параллакс минимум в 2 слоя или анимированные фоновые частицы (звёзды, искры). Статичная картинка без движения запрещена.",
+            "G. Плавность: движение через delta time (секунды) или lerp, без рывков по кадрам; UI появляется с плавным изменением alpha.",
+            "H. Аудио опционально: короткие процедурные звуки через WebAudio (осциллятор), только после первого жеста пользователя и в try/catch. Если сомневаешься — лучше тишина, чем битый звук.",
+            "В гайде визуальных техник ниже есть готовые реализации всех этих приёмов — адаптируй их под свою игру."
         ].join('\n')
     }]
 };
@@ -242,6 +254,14 @@ function loadReference(fileName) {
     const clean = sanitizeReference(fs.readFileSync(refPath, 'utf8'));
     referenceCache[fileName] = clean;
     return clean;
+}
+
+let styleGuideCache = null;
+function loadStyleGuide() {
+    if (styleGuideCache !== null) return styleGuideCache;
+    const guidePath = path.join(__dirname, 'references', 'style_guide.html');
+    styleGuideCache = fs.existsSync(guidePath) ? fs.readFileSync(guidePath, 'utf8') : '';
+    return styleGuideCache;
 }
 
 function validateGameCode(code, platform) {
@@ -362,6 +382,7 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
 
         const selectedFile = selectReferenceEngine(userPrompt);
         const referenceCode = loadReference(selectedFile);
+        const styleGuide = loadStyleGuide();
         const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
 
         const promptLines = [];
@@ -373,6 +394,14 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
                 '',
                 '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
                 'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
+                ''
+            );
+        }
+        if (styleGuide) {
+            promptLines.push(
+                '=== ГАЙД ВИЗУАЛЬНЫХ ТЕХНИК — ИСПОЛЬЗУЙ ЭТИ ПРИЁМЫ В СВОЕЙ ИГРЕ ===',
+                styleGuide,
+                '=== КОНЕЦ ГАЙДА ===',
                 ''
             );
         }

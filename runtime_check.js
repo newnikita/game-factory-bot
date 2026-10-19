@@ -27,7 +27,13 @@ function runtimeDryRun(html) {
         };
 
         const ctxProxy = new Proxy(function () { }, {
-            get: (t, p) => (p === 'then') ? undefined : ctxProxy,
+            get: (t, p) => {
+                if (p === 'then') return undefined;
+                if (p === Symbol.toPrimitive) return () => 0;
+                if (p === 'valueOf') return () => 0;
+                if (p === 'toString') return () => '';
+                return ctxProxy;
+            },
             set: () => true,
             apply: () => ctxProxy
         });
@@ -224,7 +230,13 @@ function runtimeDryRun(html) {
         sandbox.frames = sandbox;
 
         const audioNodeProxy = new Proxy(function () { }, {
-            get: (t, p) => (p === 'then') ? undefined : audioNodeProxy,
+            get: (t, p) => {
+                if (p === 'then') return undefined;
+                if (p === Symbol.toPrimitive) return () => 0;
+                if (p === 'valueOf') return () => 0;
+                if (p === 'toString') return () => '';
+                return audioNodeProxy;
+            },
             set: () => true,
             apply: () => audioNodeProxy
         });

@@ -100,14 +100,184 @@ async function checkImageSafety(imageUrl) {
     }
 }
 
-function selectReferenceEngine(prompt) {
-    const text = prompt.toLowerCase();
-    const pWords = ['прыг', 'скач', 'платформ', 'беж', 'паркур', 'гравитац', 'вверх', 'уворачива', 'вниз'];
-    const sWords = ['шутер', 'стреля', 'выживан', 'оружие', 'пул', 'зомб', 'арена', 'отстрел', 'убива', 'враг'];
-    
-    if (sWords.some(w => text.includes(w))) return 'shooter.html';
-    if (pWords.some(w => text.includes(w))) return 'platformer.html';
-    return 'breaker.html';
+const REFERENCE_BY_GENRE = {
+    shooter: 'shooter.html',
+    platformer: 'platformer.html',
+    breaker: 'breaker.html'
+};
+
+function fallbackPlan(userPrompt, platform) {
+    const text = String(userPrompt || '').toLowerCase();
+    let genre = 'arcade';
+    if (/(шутер|стрел|зомб|пул |оружи|выживан|отстрел|снайпер)/.test(text)) genre = 'shooter';
+    else if (/(прыж|платформ|паркур|беж|скач)/.test(text)) genre = 'platformer';
+    else if (/(арканоид|брейк|кирпич|отскок)/.test(text)) genre = 'breaker';
+    else if (/(змейк|snake|червяк)/.test(text)) genre = 'snake';
+    else if (/(гонк|авто|машин|рейс|racing)/.test(text)) genre = 'racing';
+    else if (/(match|три в ряд|в ряд|матч)/.test(text)) genre = 'match3';
+    else if (/(пазл|головолом|логическ)/.test(text)) genre = 'puzzle';
+    else if (/(карт|пасьянс|покер|дурак|блэкджек)/.test(text)) genre = 'cards';
+    const trimmed = String(userPrompt || '').trim();
+    return {
+        genre,
+        title: trimmed.split(/\s+/).slice(0, 4).join(' ').slice(0, 50) || 'Новая игра',
+        coreLoop: trimmed || 'аркада на canvas',
+        mechanics: [],
+        entities: [],
+        controls: platform === 'mobile' ? 'касания (touch)' : 'клавиатура и/или мышь',
+        win: 'набрать как можно больше очков',
+        lose: 'потерять все жизни или допустить проигрыш',
+        theme: 'по описанию пользователя',
+        bgKeyword: 'abstract game background',
+        reference: REFERENCE_BY_GENRE[genre] || null,
+        fallback: true
+    };
+}
+
+function parsePlanJson(text) {
+    if (!text) return null;
+    let t = String(text).trim();
+    if (t.indexOf('```') !== -1) {
+        t = t.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
+    }
+    const start = t.indexOf('{');
+    const end = t.lastIndexOf('}');
+    if (start === -1 || end <= start) return null;
+    try {
+        const obj = JSON.parse(t.slice(start, end + 1));
+        return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : null;
+    } catch (e) { return null; }
+}
+
+function normalizePlan(raw, userPrompt, platform) {
+    const fb = fallbackPlan(userPrompt, platform);
+    if (!raw || typeof raw !== 'object') return fb;
+    const str = (v, d, max) => (typeof v === 'string' && v.trim()) ? v.trim().slice(0, max || 300) : d;
+    const list = (v) => Array.isArray(v)
+        ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 100)).slice(0, 8)
+        : [];
+    const genre = str(raw.genre, fb.genre, 30).toLowerCase();
+    const bg = str(raw.bgKeyword || raw.bg_keyword, fb.bgKeyword, 60).replace(/[^a-zA-Z0-9 \-]/g, '').trim();
+    return {
+        genre,
+        title: str(raw.title, fb.title, 60),
+        coreLoop: str(raw.coreLoop || raw.core_loop, fb.coreLoop, 300),
+        mechanics: list(raw.mechanics),
+        entities: list(raw.entities),
+        controls: str(raw.controls, fb.controls, 200),
+        win: str(raw.win, fb.win, 200),
+        lose: str(raw.lose, fb.lose, 200),
+        theme: str(raw.theme, fb.theme, 100),
+        bgKeyword: bg || fb.bgKeyword,
+        reference: REFERENCE_BY_GENRE[genre] || null,
+        fallback: false
+    };
+}
+
+async function planGameRequest(userPrompt, platform, maxRetries = 2) {
+    if (!process.env.GEMINI_API_KEY) return fallbackPlan(userPrompt, platform);
+    const controlsHint = platform === 'mobile'
+        ? 'мобильная платформа: управление через касания (touch), без клавиатуры и мыши'
+        : 'ПК: управление клавиатурой и/или мышью';
+    const planPrompt = [
+        'Ты — гейм-дизайнер. Составь точное ТЗ для HTML5 Canvas игры по идее пользователя.',
+        'Правила:',
+        '- Источник истины — описание пользователя. НЕ выдумывай жанры и механики, которых там нет.',
+        '- Пропущенные детали (название, условия победы/поражения) заполни минимальными разумными умолчаниями в духе описания.',
+        '- Язык полей — язык описания пользователя; кроме bgKeyword — всегда английский.',
+        '- Учёт платформы: ' + controlsHint + '.',
+        '- genre — одно слово латиницей: shooter, platformer, breaker, snake, match3, racing, puzzle, cards, arcade или other.',
+        '',
+        'Верни СТРОГО один JSON-объект без пояснений:',
+        '{',
+        ' "genre": "...",',
+        ' "title": "название до 4 слов",',
+        ' "coreLoop": "одно предложение: чем игрок занимается постоянно",',
+        ' "mechanics": ["механика из описания", "..."],',
+        ' "entities": ["игрок", "объекты из описания"],',
+        ' "controls": "как управлять по платформе",',
+        ' "win": "цель или условие победы",',
+        ' "lose": "условие проигрыша",',
+        ' "theme": "визуальная тема в 2-3 слова",',
+        ' "bgKeyword": "2-3 english words for background"',
+        '}',
+        '',
+        'Описание пользователя:',
+        '"""' + String(userPrompt || '') + '"""'
+    ].join('\n');
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await axios.post(
+                `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
+                {
+                    systemInstruction: { parts: [{ text: 'Отвечай только валидным JSON, без markdown и пояснений.' }] },
+                    contents: [{ role: 'user', parts: [{ text: planPrompt }] }],
+                    safetySettings: SAFETY_SETTINGS,
+                    generationConfig: { temperature: 0.2, topK: 40, topP: 0.9, maxOutputTokens: 2048, responseMimeType: 'application/json' }
+                },
+                { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+            );
+            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+            const parsed = parsePlanJson(text);
+            if (parsed) return normalizePlan(parsed, userPrompt, platform);
+            throw new Error('невалидный JSON плана');
+        } catch (e) {
+            console.error(`[План] Попытка ${attempt} не удалась:`, e.message);
+        }
+    }
+    return fallbackPlan(userPrompt, platform);
+}
+
+function buildGamePrompt(userPrompt, platform, plan) {
+    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+    const p = plan || fallbackPlan(userPrompt, platform);
+    const lines = [];
+
+    lines.push('=== ТЗ НА ИГРУ — СТРОГО СЛЕДУЙ ЭТОМУ ===');
+    lines.push('Жанр: ' + p.genre);
+    lines.push('Название: ' + p.title);
+    lines.push('Ядро геймплея: ' + p.coreLoop);
+    if (p.mechanics && p.mechanics.length) lines.push('Обязательные механики: ' + p.mechanics.join('; '));
+    if (p.entities && p.entities.length) lines.push('Объекты игры: ' + p.entities.join('; '));
+    lines.push('Управление: ' + p.controls);
+    lines.push('Условие победы/цели: ' + p.win);
+    lines.push('Условие поражения: ' + p.lose);
+    lines.push('Визуальная тема: ' + p.theme);
+    lines.push('=== КОНЕЦ ТЗ ===');
+    lines.push('');
+
+    if (p.reference) {
+        const referenceCode = loadReference(p.reference);
+        if (referenceCode) {
+            lines.push(
+                `=== ЭТАЛОН КОДА (${p.reference}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ КОДА ===`,
+                referenceCode,
+                '=== КОНЕЦ ЭТАЛОНА ===',
+                '',
+                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
+                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
+                'ЖАНР И МЕХАНИКИ ОПРЕДЕЛЯЕТ ТЗ, А НЕ ЭТАЛОН — при конфликте делай строго по ТЗ.',
+                ''
+            );
+        }
+    } else {
+        lines.push('Эталон кода для этого жанра не задан: придумай механику самостоятельно, но СТРОГО по ТЗ выше.', '');
+    }
+
+    const styleGuide = loadStyleGuide();
+    if (styleGuide) {
+        lines.push(
+            '=== ГАЙД ВИЗУАЛЬНЫХ ТЕХНИК — ИСПОЛЬЗУЙ ЭТИ ПРИЁМЫ В СВОЕЙ ИГРЕ ===',
+            styleGuide,
+            '=== КОНЕЦ ГАЙДА ===',
+            ''
+        );
+    }
+
+    lines.push('ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt, '');
+    lines.push('Исходная идея пользователя (дословно, высший приоритет): ' + userPrompt);
+    return lines.join('\n');
 }
 
 const CONTROLS_MOBILE = "▶ УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: ИСКЛЮЧИТЕЛЬНО touch-события (или pointer-события). ЗАПРЕЩЕНЫ мышь и клавиатура. ЗАПРЕЩЕНЫ HTML-кнопки. Используй e.preventDefault().";
@@ -127,6 +297,7 @@ const SYSTEM_INSTRUCTION = {
         text: [
             "Ты — профессиональный разработчик браузерных игр на HTML5 Canvas.",
             "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
+            "ГЛАВНОЕ: игра обязана ТОЧНО соответствовать ТЗ из пользовательского промпта — жанр, механики, сущности, управление и условия победы/поражения берутся из ТЗ. Эталон кода (если приложен) — только образец качества и структуры, НЕ источник жанра: если ТЗ говорит о другом жанре, делай по ТЗ.",
             "АБСОЛЮТНЫЕ ПРАВИЛА:",
             "1. Игра запускается мгновенно. Запрещены экраны загрузки, прелоадеры и обращения к элементу loading-screen.",
             "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL.",
@@ -376,41 +547,12 @@ async function repairGameCode(code, issues, platform) {
     return { code: current, issues: currentIssues };
 }
 
-async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5) {
+async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5, plan = null) {
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error('Ключ Gemini не настроен');
 
-        const selectedFile = selectReferenceEngine(userPrompt);
-        const referenceCode = loadReference(selectedFile);
-        const styleGuide = loadStyleGuide();
-        const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
-
-        const promptLines = [];
-        if (referenceCode) {
-            promptLines.push(
-                `=== ЭТАЛОН КОДА (${selectedFile}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ ===`,
-                referenceCode,
-                '=== КОНЕЦ ЭТАЛОНА ===',
-                '',
-                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
-                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
-                ''
-            );
-        }
-        if (styleGuide) {
-            promptLines.push(
-                '=== ГАЙД ВИЗУАЛЬНЫХ ТЕХНИК — ИСПОЛЬЗУЙ ЭТИ ПРИЁМЫ В СВОЕЙ ИГРЕ ===',
-                styleGuide,
-                '=== КОНЕЦ ГАЙДА ===',
-                ''
-            );
-        }
-        promptLines.push(
-            'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
-            '',
-            'Идея для новой игры: ' + userPrompt
-        );
-        const fullPrompt = promptLines.join('\n');
+        if (!plan) plan = await planGameRequest(userPrompt, platform);
+        const fullPrompt = buildGamePrompt(userPrompt, platform, plan);
 
         const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
         let fullCode = '';
@@ -670,7 +812,20 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     
     try {
         const platform = ctx.session.gameData.platform || 'pc';
-        let gameCode = await generateAIGame(prompt, platform);
+
+        let plan = (ctx.session.gameData.lastPlan && ctx.session.gameData.lastPrompt === prompt)
+            ? ctx.session.gameData.lastPlan
+            : null;
+        if (!plan) {
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, '🔍 **Разбираю идею по пунктам...**\n\n`[█░░░░░░░░░]` **10%**', { parse_mode: 'Markdown' });
+            } catch (e) {}
+            plan = await planGameRequest(prompt, platform);
+            ctx.session.gameData.lastPlan = plan;
+        }
+        console.log(`[План] жанр=${plan.genre} эталон=${plan.reference || 'нет'} fallback=${plan.fallback ? 'да' : 'нет'} title="${plan.title}"`);
+
+        let gameCode = await generateAIGame(prompt, platform, 5, plan);
         if (!gameCode) throw new Error('Генерация оборвалась: модель не вернула полный файл');
 
         clearInterval(progressInterval);
@@ -698,7 +853,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         } catch (e) {}
 
         // Вытаскиваем ключевое слово
-        let bgKeyword = 'fantasy landscape';
+        let bgKeyword = plan.bgKeyword || 'fantasy landscape';
         const bgMatch = gameCode.match(/\[BG:\s*([^\]]+)\]/i);
         if (bgMatch && bgMatch[1]) {
             bgKeyword = bgMatch[1].trim();
@@ -793,6 +948,7 @@ bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_ai_prompt') {
         ctx.session.step = null; 
         ctx.session.gameData.lastPrompt = ctx.message.text;
+        ctx.session.gameData.lastPlan = null;
         const msg = await ctx.reply('⚒️ **Гримуар кода в работе...**\n\n`[░░░░░░░░░░]` **0%**\n⏳ _Запуск нейронных потоков..._', { parse_mode: 'Markdown' });
         handleAIGeneration(ctx.chat.id, msg.message_id, ctx.message.text, ctx);
     } else if (ctx.session?.step === 'awaiting_name') {
@@ -954,5 +1110,10 @@ module.exports = {
     validateGameCode,
     repairGameCode,
     loadReference,
-    sanitizeReference
+    sanitizeReference,
+    buildGamePrompt,
+    fallbackPlan,
+    planGameRequest,
+    parsePlanJson,
+    normalizePlan
 };

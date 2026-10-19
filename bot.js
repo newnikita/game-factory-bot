@@ -8,6 +8,7 @@ const express = require('express');
 const fse = require('fs-extra');
 const axios = require('axios');
 const vm = require('vm');
+const { runtimeDryRun } = require('./runtime_check');
 
 process.on('uncaughtException', (err) => console.error('❌ Ошибка:', err.message));
 process.on('unhandledRejection', (err) => console.error('❌ Ошибка сети:', err.message));
@@ -496,6 +497,10 @@ function validateGameCode(code, platform) {
         }
         idx++;
     }
+
+    const crash = runtimeDryRun(code);
+    if (crash) critical('игра падает при запуске: ' + crash);
+
     return issues;
 }
 

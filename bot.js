@@ -107,6 +107,11 @@ const REFERENCE_BY_GENRE = {
     breaker: 'breaker.html'
 };
 
+const MOVEMENT_BY_GENRE = {
+    shooter: true, platformer: true, breaker: true, snake: true, racing: true,
+    match3: false, puzzle: false, cards: false, arcade: true, other: true
+};
+
 function fallbackPlan(userPrompt, platform) {
     const text = String(userPrompt || '').toLowerCase();
     let genre = 'arcade';
@@ -131,6 +136,10 @@ function fallbackPlan(userPrompt, platform) {
         theme: 'по описанию пользователя',
         bgKeyword: 'abstract game background',
         reference: REFERENCE_BY_GENRE[genre] || null,
+        movement: MOVEMENT_BY_GENRE[genre] !== undefined ? MOVEMENT_BY_GENRE[genre] : true,
+        lives: 3,
+        goalScore: 500,
+        sessionSeconds: 180,
         fallback: true
     };
 }
@@ -159,6 +168,10 @@ function normalizePlan(raw, userPrompt, platform) {
         : [];
     const genre = str(raw.genre, fb.genre, 30).toLowerCase();
     const bg = str(raw.bgKeyword || raw.bg_keyword, fb.bgKeyword, 60).replace(/[^a-zA-Z0-9 \-]/g, '').trim();
+    const int = (v, d, min, max) => {
+        const n = Math.round(Number(v));
+        return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d;
+    };
     return {
         genre,
         title: str(raw.title, fb.title, 60),
@@ -171,6 +184,12 @@ function normalizePlan(raw, userPrompt, platform) {
         theme: str(raw.theme, fb.theme, 100),
         bgKeyword: bg || fb.bgKeyword,
         reference: REFERENCE_BY_GENRE[genre] || null,
+        movement: typeof raw.movement === 'boolean'
+            ? raw.movement
+            : (MOVEMENT_BY_GENRE[genre] !== undefined ? MOVEMENT_BY_GENRE[genre] : true),
+        lives: int(raw.lives, 3, 1, 5),
+        goalScore: int(raw.goalScore !== undefined ? raw.goalScore : raw.goal_score, 500, 0, 100000),
+        sessionSeconds: int(raw.sessionSeconds !== undefined ? raw.sessionSeconds : raw.session_seconds, 180, 30, 300),
         fallback: false
     };
 }
@@ -188,6 +207,10 @@ async function planGameRequest(userPrompt, platform, maxRetries = 2) {
         '- Язык полей — язык описания пользователя; кроме bgKeyword — всегда английский.',
         '- Учёт платформы: ' + controlsHint + '.',
         '- genre — одно слово латиницей: shooter, platformer, breaker, snake, match3, racing, puzzle, cards, arcade или other.',
+        '- movement — true, если игрок перемещается по миру/полю (стрелки, WASD, свайп, зона удержания, движение за курсором); false — если механика реакционная на месте (блок, тап, всплывающие объекты). Ракетка/курсор, управляющие объектом — это true.',
+        '- lives — число жизней игрока 1..5 (для жанров без смерти всё равно ставь 3 — это будут попытки/вузы).',
+        '- goalScore — очков для победы (0, если победа не по очкам, например по таймеру или сюжету); обычно 100..5000.',
+        '- sessionSeconds — ориентир длительности одной сессии 30..300 секунд.',
         '',
         'Верни СТРОГО один JSON-объект без пояснений:',
         '{',
@@ -200,7 +223,11 @@ async function planGameRequest(userPrompt, platform, maxRetries = 2) {
         ' "win": "цель или условие победы",',
         ' "lose": "условие проигрыша",',
         ' "theme": "визуальная тема в 2-3 слова",',
-        ' "bgKeyword": "2-3 english words for background"',
+        ' "bgKeyword": "2-3 english words for background",',
+        ' "movement": true,',
+        ' "lives": 3,',
+        ' "goalScore": 500,',
+        ' "sessionSeconds": 180',
         '}',
         '',
         'Описание пользователя:',
@@ -244,6 +271,12 @@ function buildGamePrompt(userPrompt, platform, plan) {
     lines.push('Управление: ' + p.controls);
     lines.push('Условие победы/цели: ' + p.win);
     lines.push('Условие поражения: ' + p.lose);
+    lines.push('Числовые параметры (соблюдай буквально): жизней = ' + p.lives
+        + '; цель победы = ' + (p.goalScore > 0 ? p.goalScore + ' очков (обязателен экран победы при достижении)' : 'по условию выше')
+        + '; ориентир сессии ≈ ' + p.sessionSeconds + ' сек');
+    lines.push('Перемещение игрока: ' + (p.movement
+        ? 'ДА — игрок перемещается по миру/полю: реализуй полное управление движением (клавиши/мышь/свайп/удержание по платформе).'
+        : 'нет — механика реакционная, игрок стоит на месте (тап/блок/клик-реакция).'));
     lines.push('Визуальная тема: ' + p.theme);
     lines.push('=== КОНЕЦ ТЗ ===');
     lines.push('');
@@ -308,6 +341,8 @@ const SYSTEM_INSTRUCTION = {
             "6. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
             "7. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
             "8. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
+            "9. Числовые параметры ТЗ (жизни, цель по очкам, таймеры) соблюдай буквально: ровно указанное число жизней в HUD, победа СОБЫТАЕТСЯ при достижении цели — с отдельным экраном победы, а не только счётчиком в HUD. Если есть условие победы — в коде ОБЯЗАТЕЛЬНО состояние победы с рестартом.",
+            "10. Если в ТЗ сказано, что игрок перемещается (movement: ДА) — реализуй настоящее движение по миру, а не только прыжок/выстрел на месте; управление движением обязано работать на указанной платформе.",
             "",
             "ВИЗУАЛЬНОЕ КАЧЕСТВО — обязательные требования, игра НЕ ДОЛЖНА выглядеть прототипом:",
             "A. Тёмная подложка поверх фотофона: CSS body::after { content:''; position:fixed; inset:0; background:rgba(3,5,15,0.55); pointer-events:none; } или непрозрачный слой rgba(0,0,0,0.35-0.6) в начале отрисовки кадра. Без неё фон конфликтует с графикой и текст не читается.",
@@ -449,7 +484,7 @@ function injectCompat(html) {
     return RR_POLYFILL + '\n' + html;
 }
 
-function validateGameCode(code, platform) {
+function validateGameCode(code, platform, plan = null) {
     const issues = [];
     const critical = (msg) => issues.push({ level: 'critical', msg });
     const warning = (msg) => issues.push({ level: 'warning', msg });
@@ -494,6 +529,39 @@ function validateGameCode(code, platform) {
     if (/<button[\s>]/i.test(code)) warning('HTML-элементы <button> — рисуй кнопки на canvas или div-оверлеями');
     if (/fetch\s*\(|XMLHttpRequest/i.test(code)) warning('сетевые запросы fetch/XHR в игре — обычно не нужны');
 
+    // Мёртвые финалы: функция есть, но ни одного использования — условие не подключено
+    for (const fn of ['gameOver', 'winGame', 'gameWin', 'victory', 'endGame']) {
+        const declared = new RegExp('function\\s+' + fn + '\\s*\\(').test(code)
+            || new RegExp('\\b' + fn + '\\s*=').test(code);
+        if (!declared) continue;
+        const total = (code.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length;
+        if (total <= 1) critical('функция ' + fn + ' объявлена, но нигде не вызывается — условие проигрыша/победы не подключено');
+    }
+
+    // Цель по очкам заявлена, а события победы нет — игрок не может выиграть
+    const WIN_STATE_RE = /\bvictory\b|побед|\bwin\b|\bwon\b|\bhasWon\b|winScreen|winState/i;
+    const GOAL_MARKER_RE = /TARGET_SCORE|GOAL_SCORE|WIN_SCORE|goalScore|Цель\s*:|набери\s+\d|до\s+\d+\s*очк/i;
+    if (GOAL_MARKER_RE.test(code) && !WIN_STATE_RE.test(code)) {
+        critical('цель/счёт-цель заявлена, но события победы нет — игрок не может выиграть');
+    }
+
+    if (plan && !plan.fallback) {
+        if (Number(plan.lives) >= 1 && !/\blives\b|\blife\b|жизн|♥|❤|heart/i.test(code)) {
+            critical('по ТЗ есть жизни (' + plan.lives + '), но в коде жизней нет');
+        }
+        if (Number(plan.goalScore) > 0 && !WIN_STATE_RE.test(code)) {
+            critical('по ТЗ победа при ' + plan.goalScore + ' очках — в коде нет события/экрана победы');
+        }
+        if (plan.movement === true) {
+            const moveKeys = /ArrowLeft|ArrowRight|ArrowUp|ArrowDown|KeyA\b|KeyD\b|KeyW\b|KeyS\b/i.test(code);
+            const movePointer = /mousemove|pointermove|touchmove/i.test(code);
+            const moveButtons = /btnLeft|btnRight|zoneLeft|zoneRight|leftZone|rightZone|moveLeft|moveRight|holdLeft|holdRight|leftPressed|rightPressed|upPressed|downPressed|isLeft|isRight|goLeft|goRight|moveDir/i.test(code);
+            if (!moveKeys && !movePointer && !moveButtons) {
+                critical('по ТЗ игрок перемещается — нет механизма движения (клавиши движения, свайп/мышь или экранные кнопки движения)');
+            }
+        }
+    }
+
     const scriptRe = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
     let m, idx = 0;
     while ((m = scriptRe.exec(code)) !== null) {
@@ -517,7 +585,7 @@ function validateGameCode(code, platform) {
     return issues;
 }
 
-async function repairGameCode(code, issues, platform) {
+async function repairGameCode(code, issues, platform, plan = null) {
     const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
     let current = code;
     let currentIssues = issues;
@@ -556,13 +624,54 @@ async function repairGameCode(code, issues, platform) {
             const repaired = stripCodeMarkers(text);
             if (!repaired || !/<\/html>/i.test(repaired)) continue;
             current = repaired;
-            currentIssues = validateGameCode(current, platform);
+            currentIssues = validateGameCode(current, platform, plan);
             if (!currentIssues.some(i => i.level === 'critical')) break;
         } catch (e) {
             console.error(`[Авторемонт] Раунд ${round} не удался:`, e.message);
         }
     }
     return { code: current, issues: currentIssues };
+}
+
+async function reviewAgainstPlan(code, plan, userPrompt) {
+    if (!process.env.GEMINI_API_KEY || !plan || plan.fallback) return null;
+    const tz = JSON.stringify({
+        genre: plan.genre, coreLoop: plan.coreLoop, mechanics: plan.mechanics, entities: plan.entities,
+        controls: plan.controls, win: plan.win, lose: plan.lose,
+        movement: plan.movement, lives: plan.lives, goalScore: plan.goalScore
+    });
+    const reviewPrompt = [
+        'Ниже ТЗ и код HTML5-игры. Сверь код с ТЗ и найди РЕАЛЬНЫЕ нарушения ТЗ: отсутствующие механики/сущности/условия победы или поражения/управления/жизней/перемещения из ТЗ.',
+        'НЕ жалуйся на стиль, оптимизацию и мелочи — только пункты ТЗ, которых нет в коде или которые нарушены.',
+        'ТЗ: ' + tz,
+        'Идея пользователя: """' + String(userPrompt || '') + '"""',
+        'Код:',
+        code,
+        '',
+        'Верни СТРОГО один JSON-объект: {"violations": ["нарушение 1", "нарушение 2"]} или {"violations": []}, без markdown и пояснений.'
+    ].join('\n');
+    try {
+        const response = await axios.post(
+            `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
+            {
+                systemInstruction: { parts: [{ text: 'Отвечай только валидным JSON, без markdown и пояснений.' }] },
+                contents: [{ role: 'user', parts: [{ text: reviewPrompt }] }],
+                safetySettings: SAFETY_SETTINGS,
+                generationConfig: { temperature: 0.1, topK: 40, topP: 0.9, maxOutputTokens: 4096, responseMimeType: 'application/json' }
+            },
+            { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+        );
+        const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+        const parsed = parsePlanJson(text);
+        if (!parsed || !Array.isArray(parsed.violations)) return null;
+        return parsed.violations
+            .filter(v => typeof v === 'string' && v.trim())
+            .map(v => v.trim().slice(0, 300))
+            .slice(0, 10);
+    } catch (e) {
+        console.error('[ТЗ-ревью] Не удалось сверить (пропускаю):', e.message);
+        return null;
+    }
 }
 
 async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5, plan = null) {
@@ -852,20 +961,38 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             await bot.telegram.editMessageText(chatId, msgId, null, '`[██████████]` **100%**\n🔍 _Проверяю качество кода..._', { parse_mode: 'Markdown' });
         } catch (e) {}
 
-        let issues = validateGameCode(gameCode, platform);
+        let issues = validateGameCode(gameCode, platform, plan);
         const criticals = issues.filter(i => i.level === 'critical');
         if (criticals.length) {
             console.error('[Валидация] Критично:', criticals.map(i => i.msg).join(' | '));
             try {
                 await bot.telegram.editMessageText(chatId, msgId, null, `🔧 **Автопочинка...**\n\n_Устраняю замечания проверки (${criticals.length})..._`, { parse_mode: 'Markdown' });
             } catch (e) {}
-            const repaired = await repairGameCode(gameCode, issues, platform);
+            const repaired = await repairGameCode(gameCode, issues, platform, plan);
             gameCode = repaired.code;
             issues = repaired.issues;
             const stillCritical = issues.filter(i => i.level === 'critical');
             if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
         }
         if (issues.length) console.warn('[Валидация] Замечания:', issues.map(i => i.msg).join(' | '));
+
+        // ТЗ-ревью: второй вызов Gemini сверяет код с планом
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, '`[████████████]` **100%**\n🔎 _Сверяю код с ТЗ..._', { parse_mode: 'Markdown' });
+        } catch (e) {}
+        const violations = await reviewAgainstPlan(gameCode, plan, prompt);
+        if (violations && violations.length) {
+            console.warn('[ТЗ-ревью] Нарушения:', violations.join(' | '));
+            const reviewIssues = violations.map(v => ({ level: 'critical', msg: 'нарушение ТЗ: ' + v }));
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, `🔧 **Правлю по итогам ТЗ-ревью...**\n\n_Устраняю нарушения ТЗ (${violations.length})..._`, { parse_mode: 'Markdown' });
+            } catch (e) {}
+            const repaired = await repairGameCode(gameCode, [...issues, ...reviewIssues], platform, plan);
+            gameCode = repaired.code;
+            issues = repaired.issues;
+            const stillCritical = issues.filter(i => i.level === 'critical');
+            if (stillCritical.length) throw new Error('Игра не прошла ТЗ-ревью: ' + stillCritical[0].msg);
+        }
 
         try {
             await bot.telegram.editMessageText(chatId, msgId, null, '🎨 **Подбор атмосферного фона...**', { parse_mode: 'Markdown' });
@@ -925,6 +1052,12 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         
         const gameId = `ai_${Date.now()}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
+        try {
+            fs.writeFileSync(path.join(aiGamesDir, `${gameId}.plan.json`),
+                JSON.stringify({ prompt, platform, plan, savedAt: new Date().toISOString() }, null, 2));
+        } catch (e) {
+            console.error('[План] Не удалось сохранить plan.json:', e.message);
+        }
         
         clearInterval(progressInterval);
         
@@ -1138,5 +1271,6 @@ module.exports = {
     planGameRequest,
     parsePlanJson,
     normalizePlan,
+    reviewAgainstPlan,
     injectCompat
 };

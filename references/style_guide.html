@@ -231,11 +231,17 @@ requestAnimationFrame(loop);
 <h2>8. Стилизованные экраны меню и Game Over + кнопки на canvas</h2>
 <pre><code>
 function drawTitle(ctx, text, x, y, size) {
-    const g = ctx.createLinearGradient(x, y - size, x, y);
+    const maxW = Math.max(120, (ctx.canvas && ctx.canvas.width ? ctx.canvas.width : 480) - 40);
+    ctx.save();
+    let s = size;
+    ctx.font = 'bold ' + s + 'px Arial';
+    while (ctx.measureText(text).width > maxW && s > 14) {
+        s = Math.max(14, s - 2);
+        ctx.font = 'bold ' + s + 'px Arial';
+    }
+    const g = ctx.createLinearGradient(x, y - s, x, y);
     g.addColorStop(0, '#ffffff');
     g.addColorStop(1, PAL.accent);
-    ctx.save();
-    ctx.font = 'bold ' + size + 'px Arial';
     ctx.textAlign = 'center';
     ctx.shadowColor = PAL.accent;
     ctx.shadowBlur = 25;

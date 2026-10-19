@@ -436,6 +436,19 @@ function loadStyleGuide() {
     return styleGuideCache;
 }
 
+const RR_POLYFILL = '<script>/*__RR_POLYFILL__*/(function(){try{if(typeof CanvasRenderingContext2D!=="undefined"&&!CanvasRenderingContext2D.prototype.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){r=Number(r);if(!isFinite(r)||r<0)r=0;r=Math.min(r,Math.abs(w)/2,Math.abs(h)/2);this.moveTo(x+r,y);this.arcTo(x+w,y,x+w,y+h,r);this.arcTo(x+w,y+h,x,y+h,r);this.arcTo(x,y+h,x,y,r);this.arcTo(x,y,x+w,y,r);this.closePath();return this;};}}catch(e){}})();</script>';
+
+function injectCompat(html) {
+    if (typeof html !== 'string' || !html) return html;
+    if (html.includes('__RR_POLYFILL') || /prototype\.roundRect\s*=/.test(html)) return html;
+    const m = html.match(/<script(\s[^>]*)?>/i);
+    if (m && typeof m.index === 'number') {
+        return html.slice(0, m.index) + RR_POLYFILL + '\n' + html.slice(m.index);
+    }
+    if (html.includes('</head>')) return html.replace('</head>', RR_POLYFILL + '\n</head>');
+    return RR_POLYFILL + '\n' + html;
+}
+
 function validateGameCode(code, platform) {
     const issues = [];
     const critical = (msg) => issues.push({ level: 'critical', msg });
@@ -656,7 +669,8 @@ app.get('/:engine/', (req, res, next) => {
                .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                .replace(/{{PLATFORM}}/g, platform);
-               
+
+    html = injectCompat(html);
     validateGameCode(html, platform).filter(i => i.level === 'critical')
         .forEach(i => console.warn(`[Шаблон ${engine}] critical: ${i.msg}`));
     res.send(html);
@@ -906,6 +920,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
                 gameCode = gameCode.replace(/<body/i, styleTag + '<body');
             }
         }
+
+        gameCode = injectCompat(gameCode);
         
         const gameId = `ai_${Date.now()}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
@@ -1031,7 +1047,7 @@ bot.action(/dl_ai_(.+)/, async (ctx) => {
     if (!fs.existsSync(gamePath)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
     
     try {
-        let html = fs.readFileSync(gamePath, 'utf8');
+        let html = injectCompat(fs.readFileSync(gamePath, 'utf8'));
         const bgMatch = html.match(/\/uploads\/(bg_ai_\d+\.jpg)/);
         
         const archive = archiver('zip', { zlib: { level: 9 } });
@@ -1086,7 +1102,8 @@ bot.action('download_source', async (ctx) => {
                    .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                    .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                    .replace(/{{PLATFORM}}/g, data.platform || 'pc');
-        
+
+        html = injectCompat(html);
         validateGameCode(html, data.platform || 'pc').filter(i => i.level === 'critical')
             .forEach(i => console.warn(`[ZIP ${data.engine}] critical: ${i.msg}`));
         fs.writeFileSync(indexPath, html);
@@ -1120,5 +1137,6 @@ module.exports = {
     fallbackPlan,
     planGameRequest,
     parsePlanJson,
-    normalizePlan
+    normalizePlan,
+    injectCompat
 };

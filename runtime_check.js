@@ -328,6 +328,19 @@ function runtimeDryRun(html) {
                 pump(30);
                 fire(canvasEl, 'touchend', { changedTouches: [{ clientX: 150, clientY: 300 }], preventDefault() { } });
                 fire(canvasEl, 'mouseup', { clientX: 150, clientY: 300, preventDefault() { } });
+                const pBase = { pointerId: 1, isPrimary: true, pointerType: 'touch', bubbles: true, cancelable: true, preventDefault() { }, target: canvasEl, clientX: 150, clientY: 280 };
+                fire(canvasEl, 'pointerdown', pBase);
+                fire(documentObj, 'pointerdown', pBase);
+                fire(sandbox, 'pointerdown', pBase);
+                fire(canvasEl, 'pointermove', { ...pBase, clientY: 200 });
+                pump(30);
+                fire(canvasEl, 'pointerup', { ...pBase });
+                fire(documentObj, 'pointerup', { ...pBase });
+                fire(sandbox, 'pointerup', { ...pBase });
+                const pTap = { ...pBase, clientX: 150, clientY: 200 };
+                fire(canvasEl, 'pointerdown', pTap);
+                pump(20);
+                fire(canvasEl, 'pointerup', pTap);
             }
             pump(40);
         }

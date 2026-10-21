@@ -1,0 +1,65 @@
+# Render Blueprint для «Фабрика Игр»
+# Docs: https://render.com/docs/blueprint-spec
+#
+# ВАЖНО: persistent disk доступен только на платных инстансах (Starter и выше).
+# На free-плане Render диск подключить нельзя, и данные будут теряться при
+# каждом рестарте/деплое. Если диск не нужен — удалите секцию disk и DATA_DIR.
+
+services:
+  - type: web
+    name: game-factory-bot
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: gamefactory-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 24.21.0
+      - key: DATA_DIR
+        value: /var/data
+      - key: DB_FILE
+        value: /var/data/gamefactory.db
+      - key: BACKUP_DIR
+        value: /var/data/backups
+      - key: ADMIN_IDS
+        value: "6430160880"
+      - key: START_FREE_GAMES
+        value: "2"
+      - key: MAX_GENERATIONS_PER_DAY
+        value: "20"
+      - key: GENERATION_COOLDOWN_MS
+        value: "30000"
+      - key: REFERRALS_PER_MONTH
+        value: "10"
+      - key: GEMINI_SAFETY_THRESHOLD
+        value: BLOCK_MEDIUM_AND_ABOVE
+      - key: GEMINI_DANGEROUS_THRESHOLD
+        value: BLOCK_ONLY_HIGH
+      - key: ALLOW_UNMODERATED_IMAGE_UPLOADS
+        value: "false"
+      # Секреты и URL-ы задаются в Dashboard (sync: false).
+      - key: BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SIGHT_USER
+        sync: false
+      - key: SIGHT_SECRET
+        sync: false
+      - key: UNSPLASH_ACCESS_KEY
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
+      - key: WELCOME_IMAGE_URL
+        sync: false
+      - key: GAMES_PUBLIC_URL
+        sync: false
+      - key: COMMUNITY_URL
+        sync: false

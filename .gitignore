@@ -4,3 +4,8 @@ users.json
 uploads/
 ai_games/
 *.zip
+gamefactory.db
+gamefactory.db-shm
+gamefactory.db-wal
+backups/
+*.log

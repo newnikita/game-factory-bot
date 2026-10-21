@@ -3,46 +3,103 @@ const { Telegraf, session, Markup } = require('telegraf');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const archiver = require('archiver');
 const express = require('express');
 const fse = require('fs-extra');
 const axios = require('axios');
 const vm = require('vm');
-const { runtimeDryRun } = require('./runtime_check');
 
-process.on('uncaughtException', (err) => console.error('❌ Ошибка:', err.message));
-process.on('unhandledRejection', (err) => console.error('❌ Ошибка сети:', err.message));
+const {
+    initDb,
+    closeDb,
+    getUser: findUser,
+    ensureUser,
+    debit,
+    credit,
+    attachReferral,
+    qualifyReferral,
+    recordPayment,
+    getPaymentByChargeId,
+    markPaymentRefunded,
+    recordGeneration,
+    recordGame,
+    getGame,
+    logEvent,
+    getStats,
+    importLegacyUsers
+} = require('./lib/db');
+const {
+    escapeHtml,
+    sanitizeText,
+    sanitizeGameTitle,
+    safeFilename,
+    sanitizeBgFilename,
+    sanitizePlatform,
+    sanitizeEngine,
+    sanitizeBiome,
+    safeHttpsUrl,
+    safeCssUrl,
+    isSafeGameId,
+    validatePrompt,
+    tryConsumeRateLimit
+} = require('./lib/security');
+const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 
-const dbPath = path.join(__dirname, 'users.json');
-let usersDb = {};
-const ADMIN_ID = 123456789; // Впиши сюда свой ID
-
-if (fs.existsSync(dbPath)) {
-    usersDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+function envInt(name, fallback) {
+    const value = Number.parseInt(process.env[name], 10);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
-function saveDb() {
-    fs.writeFileSync(dbPath, JSON.stringify(usersDb, null, 2));
-}
+const START_FREE_GAMES = envInt('START_FREE_GAMES', 2);
+const REWARD_PER_REF = COST_PER_GAME * 2;
+const MAX_GENERATIONS_PER_DAY = envInt('MAX_GENERATIONS_PER_DAY', 20);
+const GENERATION_COOLDOWN_MS = envInt('GENERATION_COOLDOWN_MS', 30000);
+const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
+    .split(',')
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((value) => Number.isSafeInteger(value) && value > 0);
+const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
+const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
+const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
+
+process.on('uncaughtException', (err) => console.error('❌ Неперехваченная ошибка:', err.stack || err.message));
+process.on('unhandledRejection', (err) => console.error('❌ Необработанная ошибка:', (err && err.stack) || err));
 
 function getUser(id) {
-    if (!usersDb[id]) {
-        usersDb[id] = { balance: 100, referrals: 0, referredBy: null };
-        saveDb();
-    }
-    if (id == ADMIN_ID || (process.env.ADMIN_ID && id == process.env.ADMIN_ID)) {
-        if (usersDb[id].balance < 1000000) {
-            usersDb[id].balance = 1000000;
-            saveDb();
-        }
-    }
-    return usersDb[id];
+    return ensureUser(id);
 }
 
-const COST_PER_GAME = 25;
-const REWARD_PER_REF = 100;
+function tgUser(ctx) {
+    return ensureUser(ctx.from.id, {
+        username: ctx.from.username,
+        firstName: ctx.from.first_name,
+        language: ctx.from.language_code
+    });
+}
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+function userGames(user) {
+    return gamesFromBalance(user.balance);
+}
+
+function isAdmin(id) {
+    return ADMIN_IDS.includes(Number(id));
+}
+
+async function notifyAdmins(text) {
+    if (!ADMIN_IDS.length) return;
+    try {
+        await bot.telegram.sendMessage(ADMIN_IDS[0], text);
+    } catch (error) {
+        // Админ мог не начать диалог с ботом.
+    }
+}
+
+function escapeHtmlText(value) {
+    return escapeHtml(value);
+}
+
+const bot = new Telegraf(process.env.BOT_TOKEN || '0:test');
 bot.use(session());
 
 bot.use((ctx, next) => {
@@ -85,245 +142,58 @@ const styles = {
 };
 
 async function checkImageSafety(imageUrl) {
+    if (ALLOW_UNMODERATED_IMAGE_UPLOADS) return true;
+    if (!process.env.SIGHT_USER || !process.env.SIGHT_SECRET) {
+        console.error('[Модерация] SIGHT_USER/SIGHT_SECRET не заданы: загрузка изображений отключена');
+        return false;
+    }
     try {
-        if (!process.env.SIGHT_USER || !process.env.SIGHT_SECRET) return true;
         const response = await axios.get('https://api.sightengine.com/1.0/check.json', {
             params: {
-                'url': imageUrl,
-                'models': 'nudity-2.0',
-                'api_user': process.env.SIGHT_USER,
-                'api_secret': process.env.SIGHT_SECRET
-            }
+                url: imageUrl,
+                models: 'nudity-2.0',
+                api_user: process.env.SIGHT_USER,
+                api_secret: process.env.SIGHT_SECRET
+            },
+            timeout: 15000
         });
-        return !(response.data.status === 'success' && response.data.nudity.none < 0.8);
+        if (!response.data || response.data.status !== 'success' || !response.data.nudity) return false;
+        return Number(response.data.nudity.none) >= 0.8;
     } catch (e) {
-        return true;
+        console.error('[Модерация] Не удалось проверить изображение:', e.message);
+        return false;
     }
 }
 
-const REFERENCE_BY_GENRE = {
-    shooter: 'shooter.html',
-    platformer: 'platformer.html',
-    breaker: 'breaker.html'
-};
-
-const MOVEMENT_BY_GENRE = {
-    shooter: true, platformer: true, breaker: true, snake: true, racing: true,
-    match3: false, puzzle: false, cards: false, arcade: true, other: true
-};
-
-function fallbackPlan(userPrompt, platform) {
-    const text = String(userPrompt || '').toLowerCase();
-    let genre = 'arcade';
-    if (/(шутер|стрел|зомб|пул |оружи|выживан|отстрел|снайпер)/.test(text)) genre = 'shooter';
-    else if (/(прыж|платформ|паркур|беж|скач)/.test(text)) genre = 'platformer';
-    else if (/(арканоид|брейк|кирпич|отскок)/.test(text)) genre = 'breaker';
-    else if (/(змейк|snake|червяк)/.test(text)) genre = 'snake';
-    else if (/(гонк|авто|машин|рейс|racing)/.test(text)) genre = 'racing';
-    else if (/(match|три в ряд|в ряд|матч)/.test(text)) genre = 'match3';
-    else if (/(пазл|головолом|логическ)/.test(text)) genre = 'puzzle';
-    else if (/(карт|пасьянс|покер|дурак|блэкджек)/.test(text)) genre = 'cards';
-    const trimmed = String(userPrompt || '').trim();
-    return {
-        genre,
-        title: trimmed.split(/\s+/).slice(0, 4).join(' ').slice(0, 50) || 'Новая игра',
-        coreLoop: trimmed || 'аркада на canvas',
-        mechanics: [],
-        entities: [],
-        controls: platform === 'mobile' ? 'касания (touch)' : 'клавиатура и/или мышь',
-        win: 'набрать как можно больше очков',
-        lose: 'потерять все жизни или допустить проигрыш',
-        theme: 'по описанию пользователя',
-        bgKeyword: 'abstract game background',
-        reference: REFERENCE_BY_GENRE[genre] || null,
-        movement: MOVEMENT_BY_GENRE[genre] !== undefined ? MOVEMENT_BY_GENRE[genre] : true,
-        lives: 3,
-        goalScore: 500,
-        sessionSeconds: 180,
-        fallback: true
-    };
-}
-
-function parsePlanJson(text) {
-    if (!text) return null;
-    let t = String(text).trim();
-    if (t.indexOf('```') !== -1) {
-        t = t.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
-    }
-    const start = t.indexOf('{');
-    const end = t.lastIndexOf('}');
-    if (start === -1 || end <= start) return null;
-    try {
-        const obj = JSON.parse(t.slice(start, end + 1));
-        return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : null;
-    } catch (e) { return null; }
-}
-
-function normalizePlan(raw, userPrompt, platform) {
-    const fb = fallbackPlan(userPrompt, platform);
-    if (!raw || typeof raw !== 'object') return fb;
-    const str = (v, d, max) => (typeof v === 'string' && v.trim()) ? v.trim().slice(0, max || 300) : d;
-    const list = (v) => Array.isArray(v)
-        ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 100)).slice(0, 8)
-        : [];
-    const genre = str(raw.genre, fb.genre, 30).toLowerCase();
-    const bg = str(raw.bgKeyword || raw.bg_keyword, fb.bgKeyword, 60).replace(/[^a-zA-Z0-9 \-]/g, '').trim();
-    const int = (v, d, min, max) => {
-        const n = Math.round(Number(v));
-        return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d;
-    };
-    return {
-        genre,
-        title: str(raw.title, fb.title, 60),
-        coreLoop: str(raw.coreLoop || raw.core_loop, fb.coreLoop, 300),
-        mechanics: list(raw.mechanics),
-        entities: list(raw.entities),
-        controls: str(raw.controls, fb.controls, 200),
-        win: str(raw.win, fb.win, 200),
-        lose: str(raw.lose, fb.lose, 200),
-        theme: str(raw.theme, fb.theme, 100),
-        bgKeyword: bg || fb.bgKeyword,
-        reference: REFERENCE_BY_GENRE[genre] || null,
-        movement: typeof raw.movement === 'boolean'
-            ? raw.movement
-            : (MOVEMENT_BY_GENRE[genre] !== undefined ? MOVEMENT_BY_GENRE[genre] : true),
-        lives: int(raw.lives, 3, 1, 5),
-        goalScore: int(raw.goalScore !== undefined ? raw.goalScore : raw.goal_score, 500, 0, 100000),
-        sessionSeconds: int(raw.sessionSeconds !== undefined ? raw.sessionSeconds : raw.session_seconds, 180, 30, 300),
-        fallback: false
-    };
-}
-
-async function planGameRequest(userPrompt, platform, maxRetries = 2) {
-    if (!process.env.GEMINI_API_KEY) return fallbackPlan(userPrompt, platform);
-    const controlsHint = platform === 'mobile'
-        ? 'мобильная платформа: управление через касания (touch), без клавиатуры и мыши'
-        : 'ПК: управление клавиатурой и/или мышью';
-    const planPrompt = [
-        'Ты — гейм-дизайнер. Составь точное ТЗ для HTML5 Canvas игры по идее пользователя.',
-        'Правила:',
-        '- Источник истины — описание пользователя. НЕ выдумывай жанры и механики, которых там нет.',
-        '- Пропущенные детали (название, условия победы/поражения) заполни минимальными разумными умолчаниями в духе описания.',
-        '- Язык полей — язык описания пользователя; кроме bgKeyword — всегда английский.',
-        '- Учёт платформы: ' + controlsHint + '.',
-        '- genre — одно слово латиницей: shooter, platformer, breaker, snake, match3, racing, puzzle, cards, arcade или other.',
-        '- movement — true, если игрок перемещается по миру/полю (стрелки, WASD, свайп, зона удержания, движение за курсором); false — если механика реакционная на месте (блок, тап, всплывающие объекты). Ракетка/курсор, управляющие объектом — это true.',
-        '- lives — число жизней игрока 1..5 (для жанров без смерти всё равно ставь 3 — это будут попытки/вузы).',
-        '- goalScore — очков для победы (0, если победа не по очкам, например по таймеру или сюжету); обычно 100..5000.',
-        '- sessionSeconds — ориентир длительности одной сессии 30..300 секунд.',
-        '',
-        'Верни СТРОГО один JSON-объект без пояснений:',
-        '{',
-        ' "genre": "...",',
-        ' "title": "название до 4 слов",',
-        ' "coreLoop": "одно предложение: чем игрок занимается постоянно",',
-        ' "mechanics": ["механика из описания", "..."],',
-        ' "entities": ["игрок", "объекты из описания"],',
-        ' "controls": "как управлять по платформе",',
-        ' "win": "цель или условие победы",',
-        ' "lose": "условие проигрыша",',
-        ' "theme": "визуальная тема в 2-3 слова",',
-        ' "bgKeyword": "2-3 english words for background",',
-        ' "movement": true,',
-        ' "lives": 3,',
-        ' "goalScore": 500,',
-        ' "sessionSeconds": 180',
-        '}',
-        '',
-        'Описание пользователя:',
-        '"""' + String(userPrompt || '') + '"""'
-    ].join('\n');
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            const response = await axios.post(
-                `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
-                {
-                    systemInstruction: { parts: [{ text: 'Отвечай только валидным JSON, без markdown и пояснений.' }] },
-                    contents: [{ role: 'user', parts: [{ text: planPrompt }] }],
-                    safetySettings: SAFETY_SETTINGS,
-                    generationConfig: { temperature: 0.2, topK: 40, topP: 0.9, maxOutputTokens: 2048, responseMimeType: 'application/json' }
-                },
-                { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
-            );
-            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-            const parsed = parsePlanJson(text);
-            if (parsed) return normalizePlan(parsed, userPrompt, platform);
-            throw new Error('невалидный JSON плана');
-        } catch (e) {
-            console.error(`[План] Попытка ${attempt} не удалась:`, e.message);
-        }
-    }
-    return fallbackPlan(userPrompt, platform);
-}
-
-function buildGamePrompt(userPrompt, platform, plan) {
-    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
-    const p = plan || fallbackPlan(userPrompt, platform);
-    const lines = [];
-
-    lines.push('=== ТЗ НА ИГРУ — СТРОГО СЛЕДУЙ ЭТОМУ ===');
-    lines.push('Жанр: ' + p.genre);
-    lines.push('Название: ' + p.title);
-    lines.push('Ядро геймплея: ' + p.coreLoop);
-    if (p.mechanics && p.mechanics.length) lines.push('Обязательные механики: ' + p.mechanics.join('; '));
-    if (p.entities && p.entities.length) lines.push('Объекты игры: ' + p.entities.join('; '));
-    lines.push('Управление: ' + p.controls);
-    lines.push('Условие победы/цели: ' + p.win);
-    lines.push('Условие поражения: ' + p.lose);
-    lines.push('Числовые параметры (соблюдай буквально): жизней = ' + p.lives
-        + '; цель победы = ' + (p.goalScore > 0 ? p.goalScore + ' очков (обязателен экран победы при достижении)' : 'по условию выше')
-        + '; ориентир сессии ≈ ' + p.sessionSeconds + ' сек');
-    lines.push('Перемещение игрока: ' + (p.movement
-        ? 'ДА — игрок перемещается по миру/полю: реализуй полное управление движением (клавиши/мышь/свайп/удержание по платформе).'
-        : 'нет — механика реакционная, игрок стоит на месте (тап/блок/клик-реакция).'));
-    lines.push('Визуальная тема: ' + p.theme);
-    lines.push('=== КОНЕЦ ТЗ ===');
-    lines.push('');
-
-    if (p.reference) {
-        const referenceCode = loadReference(p.reference);
-        if (referenceCode) {
-            lines.push(
-                `=== ЭТАЛОН КОДА (${p.reference}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ КОДА ===`,
-                referenceCode,
-                '=== КОНЕЦ ЭТАЛОНА ===',
-                '',
-                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
-                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
-                'ЖАНР И МЕХАНИКИ ОПРЕДЕЛЯЕТ ТЗ, А НЕ ЭТАЛОН — при конфликте делай строго по ТЗ.',
-                ''
-            );
-        }
-    } else {
-        lines.push('Эталон кода для этого жанра не задан: придумай механику самостоятельно, но СТРОГО по ТЗ выше.', '');
-    }
-
-    const styleGuide = loadStyleGuide();
-    if (styleGuide) {
-        lines.push(
-            '=== ГАЙД ВИЗУАЛЬНЫХ ТЕХНИК — ИСПОЛЬЗУЙ ЭТИ ПРИЁМЫ В СВОЕЙ ИГРЕ ===',
-            styleGuide,
-            '=== КОНЕЦ ГАЙДА ===',
-            ''
-        );
-    }
-
-    lines.push('ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt, '');
-    lines.push('Исходная идея пользователя (дословно, высший приоритет): ' + userPrompt);
-    return lines.join('\n');
+function selectReferenceEngine(prompt) {
+    const text = prompt.toLowerCase();
+    const pWords = ['прыг', 'скач', 'платформ', 'беж', 'паркур', 'гравитац', 'вверх', 'уворачива', 'вниз'];
+    const sWords = ['шутер', 'стреля', 'выживан', 'оружие', 'пул', 'зомб', 'арена', 'отстрел', 'убива', 'враг'];
+    
+    if (sWords.some(w => text.includes(w))) return 'shooter.html';
+    if (pWords.some(w => text.includes(w))) return 'platformer.html';
+    return 'breaker.html';
 }
 
 const CONTROLS_MOBILE = "▶ УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: ИСКЛЮЧИТЕЛЬНО touch-события (или pointer-события). ЗАПРЕЩЕНЫ мышь и клавиатура. ЗАПРЕЩЕНЫ HTML-кнопки. Используй e.preventDefault().";
 const CONTROLS_PC = "▶ УПРАВЛЕНИЕ ДЛЯ ПК: Стандартное управление с клавиатуры или клики мышью. ЗАПРЕЩЕНЫ touch-события.";
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const GEMINI_INPUT_PRICE_PER_M = Number(process.env.GEMINI_INPUT_PRICE_PER_M || 0.30);
+const GEMINI_OUTPUT_PRICE_PER_M = Number(process.env.GEMINI_OUTPUT_PRICE_PER_M || 2.50);
 
+function estimateCostUsd(inputTokens, outputTokens) {
+    const input = (Number(inputTokens) || 0) / 1_000_000 * GEMINI_INPUT_PRICE_PER_M;
+    const output = (Number(outputTokens) || 0) / 1_000_000 * GEMINI_OUTPUT_PRICE_PER_M;
+    return Math.round((input + output) * 1_000_000) / 1_000_000;
+}
+
+const SAFETY_THRESHOLD = process.env.GEMINI_SAFETY_THRESHOLD || 'BLOCK_MEDIUM_AND_ABOVE';
 const SAFETY_SETTINGS = [
-    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: SAFETY_THRESHOLD },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: SAFETY_THRESHOLD },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: SAFETY_THRESHOLD },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: process.env.GEMINI_DANGEROUS_THRESHOLD || 'BLOCK_ONLY_HIGH' }
 ];
 
 const SYSTEM_INSTRUCTION = {
@@ -331,29 +201,49 @@ const SYSTEM_INSTRUCTION = {
         text: [
             "Ты — профессиональный разработчик браузерных игр на HTML5 Canvas.",
             "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
-            "ГЛАВНОЕ: игра обязана ТОЧНО соответствовать ТЗ из пользовательского промпта — жанр, механики, сущности, управление и условия победы/поражения берутся из ТЗ. Эталон кода (если приложен) — только образец качества и структуры, НЕ источник жанра: если ТЗ говорит о другом жанре, делай по ТЗ.",
             "АБСОЛЮТНЫЕ ПРАВИЛА:",
             "1. Игра запускается мгновенно. Запрещены экраны загрузки, прелоадеры и обращения к элементу loading-screen.",
-            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL.",
-            "3. Графика процедурная, на Canvas, и она должна быть красивой: градиенты (createLinearGradient/createRadialGradient), свечение (shadowBlur/shadowColor), скругления (roundRect), тени, полупрозрачные слои. Пиксель-арт из массивов — допустим, но не обязателен. КАК ЕДИНСТВЕННЫЙ способ рисовать объекты ЗАПРЕЩЕНЫ плоские одноцветные прямоугольники.",
-            "4. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
-            "5. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт. Экраны меню и Game Over стилизуй: крупный заголовок с градиентом или свечением, акцентная кнопка, счёт крупно.",
-            "6. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
-            "7. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            "8. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
-            "9. Числовые параметры ТЗ (жизни, цель по очкам, таймеры) соблюдай буквально: ровно указанное число жизней в HUD, победа СОБЫТАЕТСЯ при достижении цели — с отдельным экраном победы, а не только счётчиком в HUD. Если есть условие победы — в коде ОБЯЗАТЕЛЬНО состояние победы с рестартом.",
-            "10. Если в ТЗ сказано, что игрок перемещается (movement: ДА) — реализуй настоящее движение по миру, а не только прыжок/выстрел на месте; управление движением обязано работать на указанной платформе.",
-            "",
-            "ВИЗУАЛЬНОЕ КАЧЕСТВО — обязательные требования, игра НЕ ДОЛЖНА выглядеть прототипом:",
-            "A. Тёмная подложка поверх фотофона: CSS body::after { content:''; position:fixed; inset:0; background:rgba(3,5,15,0.55); pointer-events:none; } или непрозрачный слой rgba(0,0,0,0.35-0.6) в начале отрисовки кадра. Без неё фон конфликтует с графикой и текст не читается.",
-            "B. Единая палитра: максимум 2-3 акцентных цвета + нейтральный тёмный фон. Цвета персонажей, эффектов и HUD — из одной палитры, подобранные под фон.",
-            "C. Частицы обязательно: система частиц {x,y,vx,vy,life} с затуханием alpha — минимум при двух событиях (попадание/взрыв и сбор предмета или смерть врага). Рисуй их аддитивно: globalCompositeOperation='lighter'.",
-            "D. Свечение ключевых объектов (игрок, снаряды, бонусы) через shadowBlur+shadowColor.",
-            "E. Динамика: тряска экрана при уроне (translate на пару px с затуханием), белая/акцентная вспышка при попадании, score-попапы (+10 всплывает и улетает).",
-            "F. Фон живой: параллакс минимум в 2 слоя или анимированные фоновые частицы (звёзды, искры). Статичная картинка без движения запрещена.",
-            "G. Плавность: движение через delta time (секунды) или lerp, без рывков по кадрам; UI появляется с плавным изменением alpha.",
-            "H. Аудио опционально: короткие процедурные звуки через WebAudio (осциллятор), только после первого жеста пользователя и в try/catch. Если сомневаешься — лучше тишина, чем битый звук.",
-            "В гайде визуальных техник ниже есть готовые реализации всех этих приёмов — адаптируй их под свою игру."
+            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL. Графику рисуй процедурно на Canvas, персонажей и объекты — пиксель-артом (массивы из 0 и цифр-цветов через fillRect).",
+            "3. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
+            "4. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт.",
+            "5. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
+            "6. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
+            "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula]."
+        ].join('\n')
+    }]
+};
+
+const PLAN_INSTRUCTION = {
+    parts: [{
+        text: [
+            "Ты — геймдизайнер браузерных HTML5-игр.",
+            "Составь краткий план игры по идее пользователя. Не пиши код.",
+            "Формат — ровно 8 строк, без markdown и нумерации:",
+            "Жанр: ...",
+            "Ядро цикла: ...",
+            "Управление: ...",
+            "Объекты: ...",
+            "Правила победы: ...",
+            "Правила поражения: ...",
+            "Прогрессия: ...",
+            "Фишка: ...",
+            "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов."
+        ].join('\n')
+    }]
+};
+
+const IMPROVE_SYSTEM_INSTRUCTION = {
+    parts: [{
+        text: [
+            "Ты — профессиональный разработчик браузерных игр на HTML5 Canvas.",
+            "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
+            "ПРАВИЛА УЛУЧШЕНИЯ:",
+            "1. Сохрани всё, что пользователь не просил менять: управление, механику, визуальный стиль и фон.",
+            "2. Игра запускается мгновенно; запрещены экраны загрузки и loading-screen.",
+            "3. Всё в одном файле; запрещены внешние библиотеки, шрифты, картинки и аудио.",
+            "4. Запрещены localStorage, YaGames, i18n и HTML-элементы <button>.",
+            "5. Не используй плейсхолдер {{AI_BG_IMAGE}} и не добавляй строку [BG: ...] — фон уже в коде.",
+            "6. Сохрани состояния: Меню → Игра → Пауза → Game Over → Рестарт."
         ].join('\n')
     }]
 };
@@ -363,6 +253,38 @@ function stripCodeMarkers(text) {
     let out = text.replace(new RegExp(marker + 'html', 'gi'), '');
     out = out.replace(new RegExp(marker, 'g'), '');
     return out.trim();
+}
+
+async function generateGamePlan(userPrompt, platform = 'pc') {
+    if (!process.env.GEMINI_API_KEY) return { plan: '', inputTokens: 0, outputTokens: 0 };
+    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+    const prompt = [
+        'Идея игры: ' + userPrompt,
+        'Платформа: ' + (platform === 'mobile' ? 'мобильная' : 'ПК'),
+        'Управление: ' + controlsPrompt
+    ].join('\n');
+    try {
+        const response = await axios.post(
+            `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
+            {
+                systemInstruction: PLAN_INSTRUCTION,
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                safetySettings: SAFETY_SETTINGS,
+                generationConfig: { temperature: 0.5, topK: 40, topP: 0.9, maxOutputTokens: 1200 }
+            },
+            { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+        );
+        const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+        const usage = response.data.usageMetadata || {};
+        return {
+            plan: stripCodeMarkers(text).slice(0, 4000),
+            inputTokens: Number(usage.promptTokenCount) || 0,
+            outputTokens: Number(usage.candidatesTokenCount) || 0
+        };
+    } catch (e) {
+        console.error('[План] Не удалось составить план:', e.message);
+        return { plan: '', inputTokens: 0, outputTokens: 0 };
+    }
 }
 
 function findFunctionStart(code, fnName) {
@@ -463,28 +385,7 @@ function loadReference(fileName) {
     return clean;
 }
 
-let styleGuideCache = null;
-function loadStyleGuide() {
-    if (styleGuideCache !== null) return styleGuideCache;
-    const guidePath = path.join(__dirname, 'references', 'style_guide.html');
-    styleGuideCache = fs.existsSync(guidePath) ? fs.readFileSync(guidePath, 'utf8') : '';
-    return styleGuideCache;
-}
-
-const RR_POLYFILL = '<script>/*__RR_POLYFILL__*/(function(){try{if(typeof CanvasRenderingContext2D!=="undefined"&&!CanvasRenderingContext2D.prototype.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){r=Number(r);if(!isFinite(r)||r<0)r=0;r=Math.min(r,Math.abs(w)/2,Math.abs(h)/2);this.moveTo(x+r,y);this.arcTo(x+w,y,x+w,y+h,r);this.arcTo(x+w,y+h,x,y+h,r);this.arcTo(x,y+h,x,y,r);this.arcTo(x,y,x+w,y,r);this.closePath();return this;};}}catch(e){}})();</script>';
-
-function injectCompat(html) {
-    if (typeof html !== 'string' || !html) return html;
-    if (html.includes('__RR_POLYFILL') || /prototype\.roundRect\s*=/.test(html)) return html;
-    const m = html.match(/<script(\s[^>]*)?>/i);
-    if (m && typeof m.index === 'number') {
-        return html.slice(0, m.index) + RR_POLYFILL + '\n' + html.slice(m.index);
-    }
-    if (html.includes('</head>')) return html.replace('</head>', RR_POLYFILL + '\n</head>');
-    return RR_POLYFILL + '\n' + html;
-}
-
-function validateGameCode(code, platform, plan = null) {
+function validateGameCode(code, platform) {
     const issues = [];
     const critical = (msg) => issues.push({ level: 'critical', msg });
     const warning = (msg) => issues.push({ level: 'warning', msg });
@@ -529,39 +430,6 @@ function validateGameCode(code, platform, plan = null) {
     if (/<button[\s>]/i.test(code)) warning('HTML-элементы <button> — рисуй кнопки на canvas или div-оверлеями');
     if (/fetch\s*\(|XMLHttpRequest/i.test(code)) warning('сетевые запросы fetch/XHR в игре — обычно не нужны');
 
-    // Мёртвые финалы: функция есть, но ни одного использования — условие не подключено
-    for (const fn of ['gameOver', 'winGame', 'gameWin', 'victory', 'endGame']) {
-        const declared = new RegExp('function\\s+' + fn + '\\s*\\(').test(code)
-            || new RegExp('\\b' + fn + '\\s*=').test(code);
-        if (!declared) continue;
-        const total = (code.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length;
-        if (total <= 1) critical('функция ' + fn + ' объявлена, но нигде не вызывается — условие проигрыша/победы не подключено');
-    }
-
-    // Цель по очкам заявлена, а события победы нет — игрок не может выиграть
-    const WIN_STATE_RE = /\bvictory\b|побед|\bwin\b|\bwon\b|\bhasWon\b|winScreen|winState/i;
-    const GOAL_MARKER_RE = /TARGET_SCORE|GOAL_SCORE|WIN_SCORE|goalScore|Цель\s*:|набери\s+\d|до\s+\d+\s*очк/i;
-    if (GOAL_MARKER_RE.test(code) && !WIN_STATE_RE.test(code)) {
-        critical('цель/счёт-цель заявлена, но события победы нет — игрок не может выиграть');
-    }
-
-    if (plan && !plan.fallback) {
-        if (Number(plan.lives) >= 1 && !/\blives\b|\blife\b|жизн|♥|❤|heart/i.test(code)) {
-            critical('по ТЗ есть жизни (' + plan.lives + '), но в коде жизней нет');
-        }
-        if (Number(plan.goalScore) > 0 && !WIN_STATE_RE.test(code)) {
-            critical('по ТЗ победа при ' + plan.goalScore + ' очках — в коде нет события/экрана победы');
-        }
-        if (plan.movement === true) {
-            const moveKeys = /ArrowLeft|ArrowRight|ArrowUp|ArrowDown|KeyA\b|KeyD\b|KeyW\b|KeyS\b/i.test(code);
-            const movePointer = /mousemove|pointermove|touchmove/i.test(code);
-            const moveButtons = /btnLeft|btnRight|zoneLeft|zoneRight|leftZone|rightZone|moveLeft|moveRight|holdLeft|holdRight|leftPressed|rightPressed|upPressed|downPressed|isLeft|isRight|goLeft|goRight|moveDir/i.test(code);
-            if (!moveKeys && !movePointer && !moveButtons) {
-                critical('по ТЗ игрок перемещается — нет механизма движения (клавиши движения, свайп/мышь или экранные кнопки движения)');
-            }
-        }
-    }
-
     const scriptRe = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
     let m, idx = 0;
     while ((m = scriptRe.exec(code)) !== null) {
@@ -578,15 +446,49 @@ function validateGameCode(code, platform, plan = null) {
         }
         idx++;
     }
-
-    const crash = runtimeDryRun(code);
-    if (crash) critical('игра падает при запуске: ' + crash);
-
     return issues;
 }
 
-async function repairGameCode(code, issues, platform, plan = null) {
+function detectPlatform(code) {
+    const text = String(code || '');
+    const hasTouch = /touch(start|end|move)|pointer(down|move|up)/i.test(text);
+    const hasKeyboard = /key(down|up)|wheel/i.test(text);
+    return hasTouch && !hasKeyboard ? 'mobile' : 'pc';
+}
+
+function extractBackgroundUrl(code) {
+    const match = String(code || '').match(/background(?:-image)?\s*:\s*[^;]*?url\(\s*['"]?([^'")]+)['"]?\s*\)/i);
+    return match ? safeCssUrl(match[1], '') : '';
+}
+
+function normalizeImprovedCode(code, originalCode) {
+    let out = String(code || '').replace(/\[BG:\s*[^\]]+\]/gi, '').trim();
+    const originalBg = extractBackgroundUrl(originalCode);
+    if (originalBg) {
+        out = out.replace(/\{\{AI_BG_IMAGE\}\}/g, originalBg);
+        if (!/background(?:-image)?\s*:[^;]*url\(/i.test(out)) {
+            const styleTag = `<style>body { background: url('${originalBg}') center/cover no-repeat !important; }</style>`;
+            if (out.includes('</head>')) out = out.replace('</head>', '\n' + styleTag + '\n</head>');
+            else out = out.replace(/<body/i, styleTag + '<body');
+        }
+    } else {
+        out = out.replace(/\{\{AI_BG_IMAGE\}\}/g, '');
+    }
+    return out;
+}
+
+async function repairGameCode(code, issues, platform, options = {}) {
     const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+    const preserveBackground = Boolean(options.preserveBackground);
+    const backgroundRules = preserveBackground
+        ? [
+            '- Сохрани существующий фон и визуальный стиль игры.',
+            '- Не используй {{AI_BG_IMAGE}} и не добавляй строку [BG: ...].'
+        ]
+        : [
+            "- В CSS тела оставь дословно: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
+            '- Перед </html> добавь строку [BG: два-три англ слова для фона].'
+        ];
     let current = code;
     let currentIssues = issues;
     for (let round = 1; round <= 2; round++) {
@@ -602,8 +504,7 @@ async function repairGameCode(code, issues, platform, plan = null) {
             '- Верни ПОЛНЫЙ файл целиком: от <!DOCTYPE html> до </html>.',
             '- Только код: без markdown, пояснений и комментариев.',
             '- Один файл: CSS в <style>, JS в <script>, без внешних ресурсов.',
-            "- В CSS тела оставь дословно: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            '- Перед </html> добавь строку [BG: два-три англ слова для фона].',
+            ...backgroundRules,
             '- Управление: ' + controlsPrompt,
             '',
             'КОД ИГРЫ:',
@@ -613,7 +514,7 @@ async function repairGameCode(code, issues, platform, plan = null) {
             const response = await axios.post(
                 `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
                 {
-                    systemInstruction: SYSTEM_INSTRUCTION,
+                    systemInstruction: preserveBackground ? IMPROVE_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION,
                     contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
                     safetySettings: SAFETY_SETTINGS,
                     generationConfig: { temperature: 0.3, topK: 40, topP: 0.9, maxOutputTokens: 65536 }
@@ -621,10 +522,11 @@ async function repairGameCode(code, issues, platform, plan = null) {
                 { headers: { 'Content-Type': 'application/json' }, timeout: 300000 }
             );
             const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-            const repaired = stripCodeMarkers(text);
+            let repaired = stripCodeMarkers(text);
             if (!repaired || !/<\/html>/i.test(repaired)) continue;
+            if (preserveBackground) repaired = normalizeImprovedCode(repaired, options.originalCode || code);
             current = repaired;
-            currentIssues = validateGameCode(current, platform, plan);
+            currentIssues = validateGameCode(current, platform);
             if (!currentIssues.some(i => i.level === 'critical')) break;
         } catch (e) {
             console.error(`[Авторемонт] Раунд ${round} не удался:`, e.message);
@@ -633,58 +535,48 @@ async function repairGameCode(code, issues, platform, plan = null) {
     return { code: current, issues: currentIssues };
 }
 
-async function reviewAgainstPlan(code, plan, userPrompt) {
-    if (!process.env.GEMINI_API_KEY || !plan || plan.fallback) return null;
-    const tz = JSON.stringify({
-        genre: plan.genre, coreLoop: plan.coreLoop, mechanics: plan.mechanics, entities: plan.entities,
-        controls: plan.controls, win: plan.win, lose: plan.lose,
-        movement: plan.movement, lives: plan.lives, goalScore: plan.goalScore
-    });
-    const reviewPrompt = [
-        'Ниже ТЗ и код HTML5-игры. Сверь код с ТЗ и найди РЕАЛЬНЫЕ нарушения ТЗ: отсутствующие механики/сущности/условия победы или поражения/управления/жизней/перемещения из ТЗ.',
-        'НЕ жалуйся на стиль, оптимизацию и мелочи — только пункты ТЗ, которых нет в коде или которые нарушены.',
-        'ТЗ: ' + tz,
-        'Идея пользователя: """' + String(userPrompt || '') + '"""',
-        'Код:',
-        code,
-        '',
-        'Верни СТРОГО один JSON-объект: {"violations": ["нарушение 1", "нарушение 2"]} или {"violations": []}, без markdown и пояснений.'
-    ].join('\n');
-    try {
-        const response = await axios.post(
-            `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
-            {
-                systemInstruction: { parts: [{ text: 'Отвечай только валидным JSON, без markdown и пояснений.' }] },
-                contents: [{ role: 'user', parts: [{ text: reviewPrompt }] }],
-                safetySettings: SAFETY_SETTINGS,
-                generationConfig: { temperature: 0.1, topK: 40, topP: 0.9, maxOutputTokens: 4096, responseMimeType: 'application/json' }
-            },
-            { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
-        );
-        const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-        const parsed = parsePlanJson(text);
-        if (!parsed || !Array.isArray(parsed.violations)) return null;
-        return parsed.violations
-            .filter(v => typeof v === 'string' && v.trim())
-            .map(v => v.trim().slice(0, 300))
-            .slice(0, 10);
-    } catch (e) {
-        console.error('[ТЗ-ревью] Не удалось сверить (пропускаю):', e.message);
-        return null;
-    }
-}
-
-async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5, plan = null) {
+async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetries = 5) {
+    const plan = String(options.plan || '').trim();
     try {
         if (!process.env.GEMINI_API_KEY) throw new Error('Ключ Gemini не настроен');
 
-        if (!plan) plan = await planGameRequest(userPrompt, platform);
-        const fullPrompt = buildGamePrompt(userPrompt, platform, plan);
+        const selectedFile = selectReferenceEngine(userPrompt);
+        const referenceCode = loadReference(selectedFile);
+        const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+
+        const promptLines = [];
+        if (referenceCode) {
+            promptLines.push(
+                `=== ЭТАЛОН КОДА (${selectedFile}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ ===`,
+                referenceCode,
+                '=== КОНЕЦ ЭТАЛОНА ===',
+                '',
+                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
+                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
+                ''
+            );
+        }
+        if (plan) {
+            promptLines.push(
+                '=== ПЛАН ИГРЫ (СЛЕДУЙ ЕМУ) ===',
+                plan,
+                '=== КОНЕЦ ПЛАНА ===',
+                ''
+            );
+        }
+        promptLines.push(
+            'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
+            '',
+            'Идея для новой игры: ' + userPrompt
+        );
+        const fullPrompt = promptLines.join('\n');
 
         const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
         let fullCode = '';
         let history = [{ role: 'user', parts: [{ text: fullPrompt }] }];
         let isFinished = false;
+        let inputTokens = 0;
+        let outputTokens = 0;
 
         for (let chunk = 0; chunk < 5 && !isFinished; chunk++) {
             let attemptSuccess = false;
@@ -702,6 +594,9 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5, plan 
                     });
                     const chunkText = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
                     if (!chunkText) throw new Error('Пустой ответ модели');
+                    const usage = response.data.usageMetadata || {};
+                    inputTokens += Number(usage.promptTokenCount) || 0;
+                    outputTokens += Number(usage.candidatesTokenCount) || 0;
                     fullCode += chunkText;
 
                     if (!stripCodeMarkers(fullCode).includes('</html>')) {
@@ -714,59 +609,230 @@ async function generateAIGame(userPrompt, platform = 'pc', maxRetries = 5, plan 
                     attemptSuccess = true;
                     break;
                 } catch (err) {
-                    if (err.response && (err.response.status === 503 || err.response.status === 429)) {
-                        if (attempt === maxRetries) throw err;
-                        await new Promise(r => setTimeout(r, 5000));
-                        continue;
-                    }
-                    throw err;
+                    const status = err.response ? err.response.status : null;
+                    const retryable = !status || status === 429 || status >= 500;
+                    if (!retryable || attempt === maxRetries) throw err;
+                    await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));
+                    continue;
                 }
             }
             if (!attemptSuccess) break;
         }
 
         if (!isFinished) return null;
-        return stripCodeMarkers(fullCode);
+        return {
+            code: stripCodeMarkers(fullCode),
+            inputTokens,
+            outputTokens,
+            model: 'gemini-2.5-flash'
+        };
     } catch (e) {
         console.error('[Генерация] Ошибка:', e.message);
         return null;
     }
 }
 
+async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetries = 3) {
+    if (!process.env.GEMINI_API_KEY) throw new Error('Ключ Gemini не настроен');
+    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+    const prompt = [
+        'Ниже — рабочая HTML5 Canvas-игра. Улучши её по инструкции пользователя.',
+        'ИНСТРУКЦИЯ: ' + instruction,
+        '',
+        'Требования:',
+        '- Верни ПОЛНЫЙ файл от <!DOCTYPE html> до </html>, без markdown и пояснений.',
+        '- Сохрани всё, что не просили менять: управление, механику, стиль и фон.',
+        '- Не ломай текущую игру и не добавляй внешние ресурсы.',
+        '- Не используй {{AI_BG_IMAGE}}, не добавляй [BG: ...], localStorage, YaGames, i18n и HTML <button>.',
+        '- Управление: ' + controlsPrompt,
+        '',
+        'ТЕКУЩИЙ КОД:',
+        currentCode
+    ].join('\n');
+    const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await axios.post(url, {
+                systemInstruction: IMPROVE_SYSTEM_INSTRUCTION,
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                safetySettings: SAFETY_SETTINGS,
+                generationConfig: { temperature: 0.4, topK: 40, topP: 0.9, maxOutputTokens: 65536 }
+            }, { headers: { 'Content-Type': 'application/json' }, timeout: 300000 });
+            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+            const usage = response.data.usageMetadata || {};
+            inputTokens += Number(usage.promptTokenCount) || 0;
+            outputTokens += Number(usage.candidatesTokenCount) || 0;
+            const code = stripCodeMarkers(text);
+            if (!code || !/<\/html>/i.test(code)) throw new Error('Модель вернула неполный файл');
+            return { code, inputTokens, outputTokens, model: 'gemini-2.5-flash' };
+        } catch (err) {
+            const status = err.response ? err.response.status : null;
+            const retryable = !status || status === 429 || status >= 500;
+            if (!retryable || attempt === maxRetries) throw err;
+            await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));
+        }
+    }
+    throw new Error('Не удалось улучшить игру');
+}
+
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => res.send('Фабрика Игр: Статус OK'));
-app.get('/sdk.js', (req, res) => res.send('console.log("Mock SDK loaded");'));
-
-const uploadsDir = path.join(__dirname, 'uploads');
-const aiGamesDir = path.join(__dirname, 'ai_games');
+app.disable('x-powered-by');
+const PORT = envInt('PORT', 3000);
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+const uploadsDir = path.join(DATA_DIR, 'uploads');
+const aiGamesDir = path.join(DATA_DIR, 'ai_games');
 const referencesDir = path.join(__dirname, 'references');
+const legalDir = path.join(__dirname, 'legal');
+const ENGINE_NAMES = ['arkanoid', 'bubble', 'platformer', 'shooter', 'tetris'];
 
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-if (!fs.existsSync(aiGamesDir)) fs.mkdirSync(aiGamesDir);
-if (!fs.existsSync(referencesDir)) fs.mkdirSync(referencesDir);
+for (const dir of [uploadsDir, aiGamesDir, referencesDir, legalDir]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
 
-app.use('/uploads', express.static(uploadsDir));
-app.use('/ai_games', express.static(aiGamesDir));
+function publicGameUrl(gameId) {
+    const base = GAMES_PUBLIC_URL || '';
+    return `${base}/play/${encodeURIComponent(gameId)}`;
+}
+
+function sandboxGameUrl(gameId) {
+    const base = GAMES_PUBLIC_URL || '';
+    return `${base}/sandbox/${encodeURIComponent(gameId)}`;
+}
+
+app.get('/', (req, res) => res.type('text').send('Фабрика Игр: Статус OK'));
+app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
+
+app.get('/healthz', (req, res) => {
+    res.json({ ok: true, uptime: Math.round(process.uptime()) });
+});
+
+app.get('/readyz', (req, res) => {
+    try {
+        getStats();
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(503).json({ ok: false, error: 'database_unavailable' });
+    }
+});
+
+app.use('/uploads', express.static(uploadsDir, {
+    fallthrough: false,
+    setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+        res.setHeader('Referrer-Policy', 'no-referrer');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
+}));
+
+app.get('/legal', (req, res) => {
+    const files = fs.readdirSync(legalDir).filter((file) => file.endsWith('.md')).sort();
+    const items = files.map((file) => {
+        const title = file.replace(/\.md$/i, '').replace(/[-_]/g, ' ');
+        return `<li><a href="/legal/${encodeURIComponent(file)}">${escapeHtml(title)}</a></li>`;
+    }).join('');
+    res.type('html').send(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Правила и документы</title></head><body><h1>Правила и документы</h1><ul>${items}</ul></body></html>`);
+});
+
+app.use('/legal', express.static(legalDir, {
+    fallthrough: false,
+    setHeaders: (res) => {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+}));
+
+app.get('/play/:gameId', (req, res) => {
+    const gameId = req.params.gameId;
+    if (!isSafeGameId(gameId)) return res.status(404).send('Игра не найдена');
+
+    const gamePath = path.join(aiGamesDir, `${gameId}.html`);
+    if (!fs.existsSync(gamePath)) return res.status(404).send('Игра не найдена');
+
+    const game = getGame(gameId);
+    const title = escapeHtml(sanitizeGameTitle(game && game.title, 'Игра'));
+    const iframeSrc = escapeHtml(sandboxGameUrl(gameId));
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>${title}</title>
+<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}iframe{display:block;width:100%;height:100%;border:0}</style>
+</head>
+<body>
+<iframe src="${iframeSrc}" title="${title}" sandbox="allow-scripts allow-pointer-lock allow-orientation-lock" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
+</body>
+</html>`);
+});
+
+app.get('/sandbox/:gameId', (req, res) => {
+    const gameId = req.params.gameId;
+    if (!isSafeGameId(gameId)) return res.status(404).type('text').send('Игра не найдена');
+
+    const gamePath = path.join(aiGamesDir, `${gameId}.html`);
+    if (!fs.existsSync(gamePath)) return res.status(404).type('text').send('Игра не найдена');
+
+    let html;
+    try {
+        html = fs.readFileSync(gamePath, 'utf8');
+    } catch (error) {
+        return res.status(500).type('text').send('Не удалось открыть игру');
+    }
+
+    res.setHeader('Content-Security-Policy', [
+        'sandbox allow-scripts allow-pointer-lock allow-orientation-lock',
+        "default-src 'none'",
+        "script-src 'unsafe-inline' 'unsafe-eval'",
+        "style-src 'unsafe-inline'",
+        "img-src data: https: http:",
+        "media-src data:",
+        "font-src data:",
+        "connect-src 'none'",
+        "form-action 'none'",
+        "base-uri 'none'"
+    ].join('; '));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.type('html').send(html);
+});
+
+app.get('/ai_games/:file', (req, res) => {
+    const match = String(req.params.file || '').match(/^(ai_[0-9]{10,20})\.html$/);
+    if (!match) return res.status(404).send('Игра не найдена');
+    const gamePath = path.join(aiGamesDir, `${match[1]}.html`);
+    if (!fs.existsSync(gamePath)) return res.status(404).send('Игра не найдена');
+    return res.redirect(301, publicGameUrl(match[1]));
+});
 
 app.get('/:engine/', (req, res, next) => {
-    const engine = req.params.engine;
-    if (['ai_games', 'uploads', 'references'].includes(engine)) return next();
-    
-    const biome = req.query.biome || 'silent_stars';
-    const s = styles[biome] || styles['silent_stars'];
-    const platform = req.query.platform || 'pc';
+    const engine = sanitizeEngine(req.params.engine, ENGINE_NAMES);
+    if (!engine) return next();
+
+    const biomeKey = sanitizeBiome(req.query.biome, Object.keys(styles));
+    const s = styles[biomeKey];
+    const platform = sanitizePlatform(req.query.platform);
+    const bgFile = sanitizeBgFilename(req.query.bg);
     const indexPath = path.join(__dirname, 'templates', `${engine}_core`, 'index.html');
-    
-    if (!fs.existsSync(indexPath)) return res.status(404).send("<h2>⚙️ Движок в разработке.</h2>");
-    
+
+    if (!fs.existsSync(indexPath)) return res.status(404).send('<h2>Движок в разработке.</h2>');
+
     let html = fs.readFileSync(indexPath, 'utf8');
-    const customBg = req.query.bg ? `/uploads/${req.query.bg}` : s.img;
-    const gameName = req.query.name || s.name;
-    
-    html = html.replace(/{{GAME_TITLE}}/g, gameName)
-               .replace(/{{BG_IMAGE}}/g, customBg)
+    const customBg = safeCssUrl(bgFile ? `/uploads/${bgFile}` : s.img, s.img);
+    const gameName = sanitizeGameTitle(req.query.name, s.name);
+    const safeTitle = escapeHtmlText(gameName);
+
+    html = html.replace(/{{GAME_TITLE}}/g, () => safeTitle)
+               .replace(/{{BG_IMAGE}}/g, () => customBg)
                .replace(/{{BG_COLOR}}/g, s.bg)
                .replace(/{{BLOCK_COLOR}}/g, s.block)
                .replace(/{{FONT_FAMILY}}/g, s.font)
@@ -779,139 +845,697 @@ app.get('/:engine/', (req, res, next) => {
                .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                .replace(/{{PLATFORM}}/g, platform);
 
-    html = injectCompat(html);
-    validateGameCode(html, platform).filter(i => i.level === 'critical')
-        .forEach(i => console.warn(`[Шаблон ${engine}] critical: ${i.msg}`));
-    res.send(html);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.type('html').send(html);
 });
 
 app.use('/:engine', (req, res, next) => {
-    const dir = path.join(__dirname, 'templates', `${req.params.engine}_core`);
+    const engine = sanitizeEngine(req.params.engine, ENGINE_NAMES);
+    if (!engine) return next();
+    const dir = path.join(__dirname, 'templates', `${engine}_core`);
     if (fs.existsSync(dir)) express.static(dir)(req, res, next); else next();
 });
 
-app.listen(PORT, () => console.log(`[Сервер] Запущен на порту ${PORT}`));
+app.use((err, req, res, next) => {
+    console.error('[HTTP] Ошибка:', err.message);
+    if (res.headersSent) return next(err);
+    res.status(err.status || 500).type('text').send('Ошибка сервера');
+});
+
+const UI_DIVIDER = '━━━━━━━━━━━━━━';
+const WELCOME_IMAGE_URL = safeHttpsUrl(process.env.WELCOME_IMAGE_URL || styles.silent_stars.img, null);
+const PLAN_META = {
+    pack3: { emoji: '🧪', label: 'Попробовать', short: '3 игры' },
+    starter: { emoji: '🌱', label: 'Starter', short: '15 игр/мес' },
+    creator: { emoji: '🚀', label: 'Creator', short: '50 игр/мес' },
+    studio: { emoji: '🏆', label: 'Studio', short: '150 игр/мес' },
+    campaign: { emoji: '🎯', label: 'Кампания', short: '15 игр' }
+};
+const ENGINE_LABELS = {
+    arkanoid: 'Арканоид',
+    bubble: 'Бабл Шутер',
+    platformer: 'Платформер',
+    shooter: 'Шутер',
+    tetris: 'Тетрис'
+};
+const AI_IDEAS = [
+    'аркада, где кот-космонавт собирает звёзды и уворачивается от астероидов',
+    'платформер, где робот-садовник оживляет растения и убегает от токсичного тумана',
+    'шутер, где пиксельный самурай отражает волны духов в неоновом Токио',
+    'бабл-шутер с драконами и кристаллами в подземелье',
+    'арканоид, где ты разрушаешь астероиды и собираешь редкие минералы',
+    'тетрис с инопланетными блоками и гравитационными аномалиями'
+];
+
+function planMeta(plan) {
+    return PLAN_META[plan.id] || { emoji: '💎', label: plan.title, short: gamesLabel(plan.games) };
+}
+
+function planButton(plan) {
+    const meta = planMeta(plan);
+    return Markup.button.callback(`${meta.emoji} ${meta.label} · ${plan.stars} ⭐`, `plan_${plan.id}`);
+}
+
+function subscriptionLine(user) {
+    const until = user.subscriptionUntil ? new Date(user.subscriptionUntil) : null;
+    if (!until || !Number.isFinite(until.getTime()) || until.getTime() <= Date.now()) return '';
+    const plan = user.subscriptionPlan ? getPlan(user.subscriptionPlan) : null;
+    const title = plan ? plan.title : 'активна';
+    return `💎 Подписка: <b>${escapeHtml(title)}</b> до ${until.toLocaleDateString('ru-RU')}`;
+}
+
+function getMainMenuText(user) {
+    const sub = subscriptionLine(user);
+    const lines = [
+        '🌌 <b>Фабрика Игр</b>',
+        '<i>Твоя идея — игра за пару минут</i>',
+        UI_DIVIDER,
+        `🎮 Доступно: <b>${gamesLabel(userGames(user))}</b>`
+    ];
+    if (sub) lines.push(sub);
+    lines.push('', 'Выбери действие:');
+    return lines.join('\n');
+}
 
 function getMainMenuKeyboard() {
-    return Markup.inlineKeyboard([
-        [Markup.button.callback('🎮 Создать игру', 'start_creation')],
-        [Markup.button.callback('👤 Мой профиль / Баланс', 'show_profile')],
-        [Markup.button.callback('👥 Пригласить друга', 'show_referral')],
-        [Markup.button.url('🌐 Наше сообщество', 'https://t.me/your_community_link')]
-    ]);
+    const rows = [
+        [Markup.button.callback('✨ Создать игру', 'start_creation')],
+        [Markup.button.callback('💎 Тарифы', 'show_plans'), Markup.button.callback('👤 Профиль', 'show_profile')],
+        [Markup.button.callback('🎁 Пригласить друга', 'show_referral'), Markup.button.callback('❓ Как это работает', 'show_howto')],
+        [Markup.button.callback('📜 Правила и оферта', 'show_legal')]
+    ];
+    const communityUrl = safeHttpsUrl(process.env.COMMUNITY_URL || '', null);
+    if (communityUrl) rows.push([Markup.button.url('🌐 Наше сообщество', communityUrl)]);
+    return Markup.inlineKeyboard(rows);
 }
 
 bot.start(async (ctx) => {
-    ctx.session.gameData = {}; 
+    ctx.session.gameData = {};
     ctx.session.step = null;
-    const userId = ctx.from.id; 
-    const refId = ctx.payload;
-    const user = getUser(userId);
-    
-    if (!usersDb[userId] && refId && refId != userId && usersDb[refId]) {
-        user.referredBy = refId; 
-        usersDb[refId].balance += REWARD_PER_REF; 
-        usersDb[refId].referrals += 1; 
-        saveDb();
-        try { 
-            await bot.telegram.sendMessage(refId, `🎉 Зарегистрировался новый демиург!\n+${REWARD_PER_REF} 🪙`); 
-        } catch (e) {}
+    const userId = ctx.from.id;
+    const refId = Number.parseInt(ctx.payload, 10);
+    const existing = findUser(userId);
+    const user = tgUser(ctx);
+
+    if (!existing && Number.isSafeInteger(refId) && refId !== userId) {
+        const referrer = findUser(refId);
+        if (referrer && !referrer.banned) {
+            const attached = attachReferral(userId, refId);
+            if (attached) {
+                try {
+                    await bot.telegram.sendMessage(refId, '🎉 По твоей ссылке пришёл новый игрок. Награда придёт после его первой игры.');
+                } catch (e) { /* пользователь мог заблокировать бота */ }
+            }
+        }
     }
-    const txt = `🌌 Добро пожаловать!\n\nГенерация стоит ${COST_PER_GAME} 🪙. На счету ${user.balance} 🪙!`;
-    return ctx.reply(txt, getMainMenuKeyboard());
+
+    logEvent('start', userId, { newUser: !existing, refId: Number.isSafeInteger(refId) ? refId : null });
+    const text = getMainMenuText(user);
+    const options = { parse_mode: 'HTML', ...getMainMenuKeyboard() };
+    if (WELCOME_IMAGE_URL) {
+        try {
+            await ctx.replyWithPhoto(WELCOME_IMAGE_URL, {
+                caption: '✨ <b>Добро пожаловать в Фабрику Игр!</b>\n<i>Собери свою игру за пару минут</i>',
+                parse_mode: 'HTML'
+            });
+        } catch (e) {
+            console.warn('[Старт] Не удалось отправить баннер:', e.message);
+        }
+    }
+    return ctx.reply(text, options);
 });
 
 bot.action('main_menu', async (ctx) => {
-    ctx.session.gameData = {}; 
+    ctx.session.gameData = {};
     ctx.session.step = null;
-    try { 
-        await ctx.editMessageText('🌌 Главное меню:', getMainMenuKeyboard()); 
-    } catch(e) { 
-        await ctx.reply('🌌 Главное меню:', getMainMenuKeyboard()); 
+    const user = tgUser(ctx);
+    const text = getMainMenuText(user);
+    const options = { parse_mode: 'HTML', ...getMainMenuKeyboard() };
+    try {
+        await ctx.editMessageText(text, options);
+    } catch (e) {
+        await ctx.reply(text, options);
     }
 });
 
+bot.action('show_howto', async (ctx) => {
+    const txt = [
+        '🚀 <b>Как это работает</b>',
+        UI_DIVIDER,
+        '1️⃣ Опиши идею в 1–2 предложениях',
+        '2️⃣ Нейросеть проектирует механику и собирает игру',
+        '3️⃣ Играй прямо в Telegram и улучшай результат',
+        '',
+        '✨ <b>Совет:</b> чем конкретнее идея, тем интереснее игра.',
+        '<i>Пример: «кот-космонавт собирает звёзды и уворачивается от астероидов»</i>'
+    ].join('\n');
+    const kb = [
+        [Markup.button.callback('✨ Создать игру', 'start_creation')],
+        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+    ];
+    await ctx.editMessageText(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
 bot.action('show_profile', async (ctx) => {
-    const user = getUser(ctx.from.id);
-    const bal = user.balance >= 1000000 ? `**БЕСКОНЕЧНОСТЬ 👑**` : `**${user.balance} 🪙**`;
-    const genCount = Math.floor(user.balance / COST_PER_GAME);
-    const txt = `👤 **Профиль**\n\n🆔 ID: \`${ctx.from.id}\`\n🪙 Баланс: ${bal}\n🕹️ Генераций: **${genCount}**\n👥 Друзей: **${user.referrals}**`;
-    
-    const kb = [[Markup.button.callback('⬅️ Назад', 'main_menu')]];
-    await ctx.editMessageText(txt, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(kb) });
+    const user = tgUser(ctx);
+    const lines = [
+        '👤 <b>Профиль</b>',
+        UI_DIVIDER,
+        `🆔 ID: <code>${ctx.from.id}</code>`,
+        `🎮 Доступно: <b>${gamesLabel(userGames(user))}</b>`,
+        `👥 Друзей: <b>${user.referrals}</b>`
+    ];
+    const sub = subscriptionLine(user);
+    if (sub) lines.push(sub);
+    if (user.isAdmin) lines.push('👑 <b>Администратор</b>');
+
+    const kb = [
+        [Markup.button.callback('✨ Создать игру', 'start_creation'), Markup.button.callback('💎 Пополнить', 'show_plans')],
+        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+    ];
+    await ctx.editMessageText(lines.join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 });
 
 bot.action('show_referral', async (ctx) => {
     const botInfo = await bot.telegram.getMe();
     const link = `https://t.me/${botInfo.username}?start=${ctx.from.id}`;
-    const txt = `👥 **Реферальная программа**\n\nЗа 1 друга: **+${REWARD_PER_REF} 🪙**\nСсылка:\n\`${link}\``;
-    
-    const kb = [[Markup.button.callback('⬅️ Назад', 'main_menu')]];
-    await ctx.editMessageText(txt, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(kb) });
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Собери свою игру в «Фабрике Игр» за пару минут 🎮')}`;
+    const reward = gamesLabel(gamesFromBalance(REWARD_PER_REF));
+    const txt = [
+        '🎁 <b>Приглашай друзей</b>',
+        UI_DIVIDER,
+        `За друга, который создаст первую игру: <b>+${reward}</b>`,
+        '',
+        '🔗 <b>Твоя ссылка:</b>',
+        `<code>${escapeHtml(link)}</code>`,
+        '',
+        '<i>Награда начисляется один раз после первой игры приглашённого.</i>'
+    ].join('\n');
+
+    const kb = [
+        [Markup.button.url('📤 Поделиться', shareUrl)],
+        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+    ];
+    await ctx.editMessageText(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
+bot.action('show_plans', async (ctx) => {
+    const order = ['starter', 'creator', 'studio', 'pack3', 'campaign'];
+    const rows = [
+        [planButton(PLANS.starter), planButton(PLANS.creator)],
+        [planButton(PLANS.studio)],
+        [planButton(PLANS.pack3), planButton(PLANS.campaign)],
+        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+    ];
+    const lines = [
+        '💎 <b>Тарифы</b>',
+        '<i>Оплата в Telegram Stars · игры начисляются сразу</i>',
+        UI_DIVIDER
+    ];
+    for (const id of order) {
+        const plan = PLANS[id];
+        if (!plan) continue;
+        const meta = planMeta(plan);
+        const period = plan.periodDays > 0 ? ' / мес' : '';
+        lines.push(`${meta.emoji} <b>${escapeHtml(meta.label)}</b> — ${meta.short} · ${plan.stars} ⭐${period}`);
+    }
+    lines.push(
+        '',
+        '<i>Starter, Creator и Studio продлеваются каждые 30 дней. Отменить автопродление можно в Telegram Stars → Подписки.</i>',
+        'Нужен счёт для компании? Напиши администратору.'
+    );
+    await ctx.editMessageText(lines.join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) });
+});
+
+bot.action(/^plan_([a-z0-9_]+)$/, async (ctx) => {
+    const plan = getPlan(ctx.match[1]);
+    if (!plan) return ctx.answerCbQuery('Тариф не найден.', { show_alert: true });
+    const meta = planMeta(plan);
+    const features = plan.periodDays > 0
+        ? [
+            '✅ Игры начисляются сразу после оплаты',
+            `✅ ${gamesLabel(plan.games)} каждый месяц`,
+            '✅ Автопродление каждые 30 дней',
+            '✅ Отмена в Telegram Stars → Подписки'
+        ]
+        : [
+            '✅ Игры начисляются сразу после оплаты',
+            `✅ ${gamesLabel(plan.games)} на баланс`,
+            '✅ Без подписки и автосписаний'
+        ];
+    const txt = [
+        `${meta.emoji} <b>${escapeHtml(plan.title)}</b>`,
+        `<i>${escapeHtml(plan.description)}</i>`,
+        UI_DIVIDER,
+        ...features,
+        '',
+        `💰 <b>${plan.stars} ⭐</b>${plan.periodDays > 0 ? ' / 30 дней' : ''}`
+    ].join('\n');
+    const kb = [
+        [Markup.button.callback(`💳 Оформить · ${plan.stars} ⭐`, `buy_${plan.id}`)],
+        [Markup.button.callback('⬅️ Назад', 'show_plans')]
+    ];
+    await ctx.editMessageText(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
+bot.action(/^buy_(.+)$/, async (ctx) => {
+    const plan = getPlan(ctx.match[1]);
+    if (!plan) return ctx.answerCbQuery('Пакет не найден.', { show_alert: true });
+
+    const user = tgUser(ctx);
+    if (user.banned) return ctx.answerCbQuery('Аккаунт заблокирован.', { show_alert: true });
+
+    const subscription = plan.periodDays > 0;
+    const payload = JSON.stringify({
+        planId: plan.id,
+        userId: ctx.from.id,
+        stars: plan.stars,
+        games: plan.games,
+        subscription,
+        periodDays: plan.periodDays,
+        ts: Date.now()
+    });
+    const title = `Game Factory: ${plan.title}`.slice(0, 32);
+    const description = `${plan.description}. Игры начисляются сразу.`.slice(0, 255);
+    const prices = [{ label: gamesLabel(plan.games), amount: plan.stars }];
+
+    try {
+        if (subscription) {
+            const link = await bot.telegram.createInvoiceLink({
+                title,
+                description,
+                payload,
+                provider_token: '',
+                currency: 'XTR',
+                prices,
+                subscription_period: plan.periodDays * 24 * 60 * 60
+            });
+            await ctx.editMessageText([
+                `📅 <b>${escapeHtml(plan.title)}</b>`,
+                `<i>${escapeHtml(plan.description)}</i>`,
+                UI_DIVIDER,
+                `✅ ${gamesLabel(plan.games)} начисляются сразу`,
+                '✅ Автопродление каждые 30 дней',
+                '✅ Отмена в Telegram Stars → Подписки',
+                '',
+                `💰 <b>${plan.stars} ⭐ / 30 дней</b>`
+            ].join('\n'), {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.url('💳 Оформить подписку', link)],
+                    [Markup.button.callback('⬅️ Назад', 'show_plans')]
+                ])
+            });
+        } else {
+            await ctx.replyWithInvoice({
+                title,
+                description,
+                payload,
+                provider_token: '',
+                currency: 'XTR',
+                prices
+            }, { start_parameter: `buy_${plan.id}` });
+        }
+        logEvent('checkout_started', ctx.from.id, {
+            planId: plan.id,
+            stars: plan.stars,
+            subscription
+        });
+        await ctx.answerCbQuery();
+    } catch (error) {
+        console.error('[Платёж] Не удалось создать счёт:', error.message);
+        await ctx.answerCbQuery('Не удалось создать счёт. Попробуй позже.', { show_alert: true });
+    }
+});
+
+bot.on('pre_checkout_query', async (ctx) => {
+    try {
+        const query = ctx.preCheckoutQuery;
+        const payload = JSON.parse(query.invoice_payload || '{}');
+        const plan = getPlan(payload.planId);
+        const buyerId = query.from ? query.from.id : ctx.from.id;
+        const expectedStars = Number.isFinite(Number(payload.stars)) ? Number(payload.stars) : Number(plan && plan.stars);
+        const expectedSubscription = Boolean(plan && plan.periodDays > 0);
+        const valid = plan
+            && Number(payload.userId) === Number(buyerId)
+            && query.currency === 'XTR'
+            && Number(query.total_amount) === expectedStars
+            && Boolean(payload.subscription) === expectedSubscription;
+
+        if (!valid) return ctx.answerPreCheckoutQuery(false, 'Счёт устарел. Создай новый.');
+        const user = findUser(buyerId);
+        if (!user || user.banned) return ctx.answerPreCheckoutQuery(false, 'Аккаунт недоступен.');
+        return ctx.answerPreCheckoutQuery(true);
+    } catch (error) {
+        console.error('[Платёж] Ошибка pre_checkout:', error.message);
+        return ctx.answerPreCheckoutQuery(false, 'Не удалось проверить платёж.');
+    }
+});
+
+async function handleSuccessfulPayment(ctx, payment) {
+    const chargeId = payment.telegram_payment_charge_id;
+    if (!chargeId) return;
+
+    let payload = {};
+    try {
+        payload = JSON.parse(payment.invoice_payload || '{}');
+    } catch (error) {
+        payload = {};
+    }
+    const plan = getPlan(payload.planId);
+    const expectedStars = Number.isFinite(Number(payload.stars)) ? Number(payload.stars) : Number(plan && plan.stars);
+    const expectedGames = Number.isFinite(Number(payload.games)) && Number(payload.games) > 0
+        ? Math.trunc(Number(payload.games))
+        : Number(plan && plan.games);
+    const subscription = Boolean(plan && plan.periodDays > 0);
+    const valid = plan
+        && Number(payload.userId) === Number(ctx.from.id)
+        && payment.currency === 'XTR'
+        && Number(payment.total_amount) === expectedStars
+        && Number.isSafeInteger(expectedGames) && expectedGames > 0
+        && Boolean(payload.subscription) === subscription;
+
+    if (!valid) {
+        console.error('[Платёж] Несоответствие платежа:', { chargeId, payload, amount: payment.total_amount });
+        logEvent('payment_failed', ctx.from.id, { chargeId, reason: 'payload_mismatch' });
+        await notifyAdmins(`⚠️ Платёж не распознан: пользователь ${ctx.from.id}, charge ${chargeId}, сумма ${payment.total_amount}, payload ${payment.invoice_payload}`);
+        return ctx.reply('Платёж получен, но пакет не распознан. Напиши в поддержку и приложи это сообщение.');
+    }
+
+    const expiration = Number(payment.subscription_expiration_date);
+    const subscriptionUntil = Number.isFinite(expiration) && expiration > 0
+        ? new Date(expiration * 1000).toISOString()
+        : null;
+
+    const result = recordPayment({
+        telegramId: ctx.from.id,
+        provider: 'telegram_stars',
+        chargeId,
+        payload: payment.invoice_payload,
+        amount: payment.total_amount,
+        currency: payment.currency,
+        planId: plan.id,
+        gamesGranted: gamesGranted({ games: expectedGames }),
+        subscriptionUntil,
+        subscriptionDays: subscriptionUntil ? 0 : (plan.periodDays || 0),
+        raw: payment
+    });
+
+    if (result.duplicate) {
+        return ctx.reply('ℹ️ Этот платёж уже учтён. Игры начислены ранее.');
+    }
+    if (!result.credited) {
+        console.error('[Платёж] Не удалось начислить игры:', chargeId);
+        logEvent('payment_failed', ctx.from.id, { chargeId, reason: 'credit_failed' });
+        await notifyAdmins(`🚨 Платёж без начисления: пользователь ${ctx.from.id}, charge ${chargeId}, сумма ${payment.total_amount}`);
+        return ctx.reply('Платёж получен, но игры не начислены. Напиши в поддержку, мы всё исправим.');
+    }
+
+    const user = tgUser(ctx);
+    const renewal = subscription && payment.is_recurring && !payment.is_first_recurring;
+    logEvent('payment_succeeded', ctx.from.id, {
+        chargeId,
+        planId: plan.id,
+        amount: payment.total_amount,
+        subscription,
+        renewal
+    });
+    const until = user.subscriptionUntil ? new Date(user.subscriptionUntil) : null;
+    const lines = [
+        renewal ? '🎉 <b>Подписка продлена!</b>' : '✨ <b>Оплата получена!</b>',
+        UI_DIVIDER,
+        `💎 ${subscription ? 'Подписка' : 'Пакет'}: <b>${escapeHtml(plan.title)}</b>`,
+        `🎮 Начислено: <b>${gamesLabel(expectedGames)}</b>`,
+        `💰 Доступно: <b>${gamesLabel(userGames(user))}</b>`
+    ];
+    if (subscription && until && Number.isFinite(until.getTime())) {
+        lines.push(`📅 Активна до <b>${until.toLocaleDateString('ru-RU')}</b>`);
+    }
+    const msg = lines.join('\n');
+
+    await ctx.reply(msg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+
+    const paymentKind = renewal ? 'Продление подписки' : (subscription ? 'Новая подписка' : 'Новый пакет');
+    await notifyAdmins(`💰 ${paymentKind}: ${plan.title}, ${payment.total_amount} Stars, пользователь ${ctx.from.id}`);
+}
+
+bot.on('message', async (ctx, next) => {
+    const payment = ctx.message && ctx.message.successful_payment;
+    if (!payment) return next();
+    await handleSuccessfulPayment(ctx, payment);
+});
+
+bot.action('show_legal', async (ctx) => {
+    const base = (WEBAPP_URL && /^https:\/\//i.test(WEBAPP_URL)) ? WEBAPP_URL : '';
+    const docs = [
+        ['📄 Публичная оферта', 'offer.md'],
+        ['🔒 Политика конфиденциальности', 'privacy.md'],
+        ['📜 Правила использования', 'rules.md'],
+        ['↩️ Возвраты', 'refunds.md'],
+        ['🎨 Лицензия на игры', 'license.md']
+    ];
+    if (!base) {
+        return ctx.editMessageText(
+            '📄 Документы появятся после настройки публичного HTTPS-домена (WEBAPP_URL).',
+            Markup.inlineKeyboard([[Markup.button.callback('⬅️ Назад', 'main_menu')]])
+        );
+    }
+    const rows = docs.map(([title, file]) => [Markup.button.url(title, `${base}/legal/${file}`)]);
+    rows.push([Markup.button.callback('⬅️ Назад', 'main_menu')]);
+    await ctx.editMessageText([
+        '📜 <b>Правила и документы</b>',
+        '<i>Перед покупкой ознакомься с офертой и правилами возврата.</i>'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) });
+});
+
+bot.command('legal', async (ctx) => {
+    const base = (WEBAPP_URL && /^https:\/\//i.test(WEBAPP_URL)) ? WEBAPP_URL : '';
+    if (!base) return ctx.reply('Документы появятся после настройки публичного домена.');
+    await ctx.reply(`Оферта: ${base}/legal/offer.md\nПолитика: ${base}/legal/privacy.md\nПравила: ${base}/legal/rules.md\nВозвраты: ${base}/legal/refunds.md\nЛицензия: ${base}/legal/license.md`);
+});
+
+bot.command('stats', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const stats = getStats();
+    await ctx.reply(`👑 Статистика\n\nПользователей: ${stats.users}\nИгр: ${stats.games}\nГенераций: ${stats.generations}\nПлатежей: ${stats.payments}`);
+});
+
+bot.command('grant', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const [, targetRaw, gamesRaw] = String(ctx.message.text || '').trim().split(/\s+/);
+    const target = Number.parseInt(targetRaw, 10);
+    const games = Number.parseInt(gamesRaw, 10);
+    if (!Number.isSafeInteger(target) || target <= 0 || !Number.isSafeInteger(games) || games <= 0) {
+        return ctx.reply('Использование: /grant <telegram_id> <количество игр>');
+    }
+    ensureUser(target);
+    const ok = credit(target, games * COST_PER_GAME, 'admin_grant', `admin-manual:${Date.now()}:${target}`);
+    await ctx.reply(ok ? `Начислено: ${gamesLabel(games)} пользователю ${target}.` : 'Не удалось начислить.');
+});
+
+bot.command('refund', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const chargeId = String(ctx.message.text || '').trim().split(/\s+/)[1];
+    if (!chargeId) return ctx.reply('Использование: /refund <telegram_payment_charge_id>');
+    const payment = getPaymentByChargeId(chargeId);
+    if (!payment) return ctx.reply('Платёж не найден.');
+    if (payment.status === 'refunded') return ctx.reply('Этот платёж уже возвращён.');
+
+    try {
+        await bot.telegram.callApi('refundStarPayment', {
+            user_id: Number(payment.telegram_id),
+            telegram_payment_charge_id: chargeId
+        });
+        const user = findUser(payment.telegram_id);
+        const remove = Math.min(user ? user.balance : 0, Number(payment.games_granted) || 0);
+        if (remove > 0) debit(payment.telegram_id, remove, 'refund_reversal', `refund-reversal:${chargeId}`);
+        markPaymentRefunded(chargeId);
+        logEvent('payment_refunded', payment.telegram_id, { chargeId, remove });
+        await ctx.reply(`Возврат выполнен. Списано игр: ${gamesFromBalance(remove)}.`);
+    } catch (error) {
+        console.error('[Возврат] Ошибка:', error.message);
+        await notifyAdmins(`🚨 Ошибка возврата ${chargeId}: ${error.message}`);
+        await ctx.reply(`Не удалось выполнить возврат: ${error.message}`);
+    }
 });
 
 bot.action('start_creation', async (ctx) => {
     ctx.session.step = 'platform';
     const kb = [
-        [Markup.button.callback('📱 Мобильная', 'platform_mobile')],
-        [Markup.button.callback('💻 ПК', 'platform_pc')],
+        [Markup.button.callback('📱 Мобильная', 'platform_mobile'), Markup.button.callback('💻 ПК', 'platform_pc')],
         [Markup.button.callback('⬅️ Отмена', 'main_menu')]
     ];
-    await ctx.editMessageText('Выбери платформу:', Markup.inlineKeyboard(kb));
+    await ctx.editMessageText([
+        '🎮 <b>Создание игры</b>',
+        `<i>Стоимость: ${gamesLabel(1)} за генерацию</i>`,
+        UI_DIVIDER,
+        '1️⃣ <b>Выбери платформу</b>'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 });
 
-bot.action(/platform_(.+)/, async (ctx) => {
-    ctx.session.gameData.platform = ctx.match[1];
+bot.action(/^platform_(mobile|pc)$/, async (ctx) => {
+    ctx.session.gameData.platform = sanitizePlatform(ctx.match[1]);
     const kb = [
-        [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble')],
-        [Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')],
-        [Markup.button.callback('🧩 Тетрис', 'engine_tetris')],
-        [Markup.button.callback('🚀 Платформер', 'engine_platformer')],
-        [Markup.button.callback('🔫 Шутер', 'engine_shooter')],
-        [Markup.button.callback('✨ ИИ-Генератор', 'engine_ai')],
-        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+        [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble'), Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')],
+        [Markup.button.callback('🧩 Тетрис', 'engine_tetris'), Markup.button.callback('🚀 Платформер', 'engine_platformer')],
+        [Markup.button.callback('🔫 Шутер', 'engine_shooter'), Markup.button.callback('✨ ИИ-Генератор', 'engine_ai')],
+        [Markup.button.callback('⬅️ Назад', 'start_creation')]
     ];
-    await ctx.editMessageText('Выбери движок:', Markup.inlineKeyboard(kb));
+    await ctx.editMessageText([
+        '2️⃣ <b>Выбери движок</b>',
+        '<i>Шаблоны собираются мгновенно. ИИ — по твоему описанию.</i>'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 });
 
 bot.action('engine_ai', async (ctx) => {
-    if (getUser(ctx.from.id).balance < COST_PER_GAME) {
-        const kb = [
-            [Markup.button.callback('👥 Пригласить', 'show_referral')], 
-            [Markup.button.callback('🏠 Меню', 'main_menu')]
-        ];
-        return ctx.editMessageText('❌ Мало токенов!', Markup.inlineKeyboard(kb));
+    const user = tgUser(ctx);
+    if (user.banned) {
+        return ctx.answerCbQuery('Аккаунт заблокирован.', { show_alert: true });
     }
-    ctx.session.gameData.engine = 'ai'; 
+    if (userGames(user) < 1) {
+        return ctx.editMessageText([
+            '💎 <b>Игры закончились</b>',
+            UI_DIVIDER,
+            'Купи пакет или пригласи друга — за первую игру приглашённого начислим ' +
+                `<b>${gamesLabel(gamesFromBalance(REWARD_PER_REF))}</b>.`
+        ].join('\n'), { parse_mode: 'HTML', ...paywallKeyboard() });
+    }
+    ctx.session.gameData.engine = 'ai';
     ctx.session.step = 'awaiting_ai_prompt';
-    
-    const kb = [[Markup.button.callback('🏠 Меню', 'main_menu')]];
-    await ctx.editMessageText(`✨ Опиши свою игру в 1-2 предложениях.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(kb) });
-});
 
-bot.action(/engine_(?!ai)(.+)/, async (ctx) => {
-    ctx.session.gameData.engine = ctx.match[1];
     const kb = [
-        [Markup.button.callback('🌌 Звезды', 'biome_silent_stars')],
-        [Markup.button.callback('🩸 Фэнтези', 'biome_credo_fantasy')],
-        [Markup.button.callback('🍃 Лес', 'biome_ghibli_forest')],
-        [Markup.button.callback('🌃 Токио', 'biome_neon_tokyo')],
-        [Markup.button.callback('⚙️ Пустошь', 'biome_wasteland')],
-        [Markup.button.callback('⬅️ Назад', 'main_menu')]
+        [Markup.button.callback('🎲 Случайная идея', 'random_ai_idea')],
+        [Markup.button.callback('⬅️ Назад', 'start_creation')]
     ];
-    await ctx.editMessageText('Выбери визуальный шаблон:', Markup.inlineKeyboard(kb));
+    await ctx.editMessageText([
+        '✨ <b>ИИ-Генератор</b>',
+        `<i>Стоимость: ${gamesLabel(1)}</i>`,
+        UI_DIVIDER,
+        'Опиши игру в 1–2 предложениях.',
+        '',
+        '<b>Пример:</b>',
+        '<i>«кот-космонавт собирает звёзды и уворачивается от астероидов»</i>'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 });
 
-bot.action(/biome_(.+)/, async (ctx) => {
-    ctx.session.gameData.biome = ctx.match[1]; 
-    ctx.session.step = 'awaiting_name';
-    await ctx.editMessageText('Придумай название для игры:');
+bot.action('random_ai_idea', async (ctx) => {
+    if (ctx.session?.step !== 'awaiting_ai_prompt') {
+        return ctx.answerCbQuery('Сначала выбери ИИ-Генератор.', { show_alert: true });
+    }
+    const idea = AI_IDEAS[Math.floor(Math.random() * AI_IDEAS.length)];
+    ctx.session.step = null;
+    ctx.session.gameData.lastPrompt = idea;
+    await ctx.answerCbQuery('🎲 Идея выбрана').catch(() => {});
+    await handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, idea, ctx);
 });
+
+bot.action(/^engine_(?!ai$)([a-z_]+)$/, async (ctx) => {
+    const engine = sanitizeEngine(ctx.match[1], ENGINE_NAMES);
+    if (!engine) return ctx.answerCbQuery('❌ Движок не найден.', { show_alert: true });
+    const user = tgUser(ctx);
+    if (userGames(user) < 1) {
+        return ctx.editMessageText([
+            '💎 <b>Игры закончились</b>',
+            UI_DIVIDER,
+            'Купи пакет или пригласи друга — и продолжай создавать.'
+        ].join('\n'), { parse_mode: 'HTML', ...paywallKeyboard() });
+    }
+    ctx.session.gameData.engine = engine;
+    const kb = [
+        [Markup.button.callback('🌌 Звёзды', 'biome_silent_stars'), Markup.button.callback('🩸 Фэнтези', 'biome_credo_fantasy')],
+        [Markup.button.callback('🍃 Лес', 'biome_ghibli_forest'), Markup.button.callback('🌃 Токио', 'biome_neon_tokyo')],
+        [Markup.button.callback('⚙️ Пустошь', 'biome_wasteland')],
+        [Markup.button.callback('⬅️ Назад', 'start_creation')]
+    ];
+    await ctx.editMessageText([
+        `3️⃣ <b>Выбери стиль</b>`,
+        `<i>Движок: ${escapeHtml(ENGINE_LABELS[engine] || engine)}</i>`,
+        UI_DIVIDER,
+        'Стиль задаёт фон, цвета и атмосферу игры.'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
+bot.action(/^biome_([a-z_]+)$/, async (ctx) => {
+    const biome = sanitizeBiome(ctx.match[1], Object.keys(styles));
+    if (!biome || biome !== ctx.match[1]) {
+        return ctx.answerCbQuery('❌ Стиль не найден.', { show_alert: true });
+    }
+    ctx.session.gameData.biome = biome;
+    ctx.session.step = 'awaiting_name';
+    await ctx.editMessageText([
+        '4️⃣ <b>Название игры</b>',
+        UI_DIVIDER,
+        'Напиши короткое название — оно появится в самой игре.'
+    ].join('\n'), { parse_mode: 'HTML' });
+});
+
+function paywallKeyboard() {
+    return Markup.inlineKeyboard([
+        [Markup.button.callback('💎 Купить игры', 'show_plans')],
+        [Markup.button.callback('🎁 Бесплатно за друга', 'show_referral')],
+        [Markup.button.callback('🏠 Меню', 'main_menu')]
+    ]);
+}
+
+async function notifyReferralReward(result) {
+    if (!result || !result.rewarded) return;
+    try {
+        await bot.telegram.sendMessage(
+            result.referrerId,
+            `🎉 Твой друг создал первую игру!\n+${gamesLabel(gamesFromBalance(result.amount))} начислено.`
+        );
+    } catch (e) { /* пользователь мог заблокировать бота */ }
+}
 
 async function handleAIGeneration(chatId, msgId, prompt, ctx) {
-    const user = getUser(ctx.from.id);
-    user.balance -= COST_PER_GAME; 
-    saveDb();
+    const userId = ctx.from.id;
+    let completed = false;
+    let createdGameId = null;
+    const validation = validatePrompt(prompt);
+    if (!validation.ok) {
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `❌ ${validation.error}`,
+            paywallKeyboard()
+        ).catch(() => {});
+    }
+    const cleanPrompt = validation.value;
+    ctx.session.gameData.lastPrompt = cleanPrompt;
+
+    const user = tgUser(ctx);
+    if (user.banned) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Аккаунт заблокирован.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
+    }
+    if (userGames(user) < 1) {
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `❌ Игры закончились.\n\nКупи пакет или пригласи друга — за первую игру приглашённого начислим ${gamesLabel(gamesFromBalance(REWARD_PER_REF))}.`,
+            paywallKeyboard()
+        ).catch(() => {});
+    }
+    if (!tryConsumeRateLimit(`generation:${userId}`, 1, GENERATION_COOLDOWN_MS)) {
+        const seconds = Math.max(1, Math.ceil(GENERATION_COOLDOWN_MS / 1000));
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `⏳ Подожди ${seconds} сек. перед следующей генерацией.`,
+            Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+        ).catch(() => {});
+    }
+    if (!tryConsumeRateLimit(`generation-day:${userId}`, MAX_GENERATIONS_PER_DAY, 24 * 60 * 60 * 1000)) {
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            '⏳ На сегодня лимит генераций исчерпан. Возвращайся завтра.',
+            Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+        ).catch(() => {});
+    }
+
+    const generationId = crypto.randomUUID();
+    const platform = sanitizePlatform(ctx.session.gameData.platform);
+    const charged = debit(userId, COST_PER_GAME, 'generation', `gen:${generationId}`);
+    if (!charged) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Недостаточно игр на балансе.', paywallKeyboard()).catch(() => {});
+    }
 
     const progressStates = [
         { percent: 15, text: 'Проектирование игровой архитектуры...', bar: '██░░░░░░░░' },
@@ -932,43 +1556,58 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             pulse++;
             state = { percent: 95, text: 'Генерация объёмного кода ' + '·'.repeat(1 + (pulse % 3)), bar: '█████████░' };
         }
-        const text = `⚒️ **Гримуар кода в работе...**\n\n\`[${state.bar}]\` **${state.percent}%**\n⏳ _${state.text}_`;
+        const text = [
+            '⚒️ <b>Гримуар кода в работе...</b>',
+            UI_DIVIDER,
+            `<code>[${state.bar}]</code> <b>${state.percent}%</b>`,
+            `⏳ <i>${state.text}</i>`
+        ].join('\n');
         try {
-            await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'Markdown' });
+            await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'HTML' });
         } catch (e) {}
     }, 3500);
-    
+
     try {
-        const platform = ctx.session.gameData.platform || 'pc';
+        recordGeneration({
+            id: generationId,
+            telegramId: userId,
+            prompt: cleanPrompt,
+            platform,
+            engine: 'ai',
+            status: 'running',
+            model: 'gemini-2.5-flash'
+        });
+        logEvent('generation_started', userId, { generationId, platform });
 
-        let plan = (ctx.session.gameData.lastPlan && ctx.session.gameData.lastPrompt === prompt)
-            ? ctx.session.gameData.lastPlan
-            : null;
-        if (!plan) {
-            try {
-                await bot.telegram.editMessageText(chatId, msgId, null, '🔍 **Разбираю идею по пунктам...**\n\n`[█░░░░░░░░░]` **10%**', { parse_mode: 'Markdown' });
-            } catch (e) {}
-            plan = await planGameRequest(prompt, platform);
-            ctx.session.gameData.lastPlan = plan;
-        }
-        console.log(`[План] жанр=${plan.genre} эталон=${plan.reference || 'нет'} fallback=${plan.fallback ? 'да' : 'нет'} title="${plan.title}"`);
-
-        let gameCode = await generateAIGame(prompt, platform, 5, plan);
-        if (!gameCode) throw new Error('Генерация оборвалась: модель не вернула полный файл');
+        const planResult = await generateGamePlan(cleanPrompt, platform);
+        const generated = await generateAIGame(cleanPrompt, platform, { plan: planResult.plan });
+        if (!generated || !generated.code) throw new Error('Генерация оборвалась: модель не вернула полный файл');
+        const totalInputTokens = generated.inputTokens + planResult.inputTokens;
+        const totalOutputTokens = generated.outputTokens + planResult.outputTokens;
+        let gameCode = generated.code;
 
         clearInterval(progressInterval);
         try {
-            await bot.telegram.editMessageText(chatId, msgId, null, '`[██████████]` **100%**\n🔍 _Проверяю качество кода..._', { parse_mode: 'Markdown' });
+            await bot.telegram.editMessageText(chatId, msgId, null, [
+                '⚒️ <b>Гримуар кода в работе...</b>',
+                UI_DIVIDER,
+                '<code>[██████████]</code> <b>100%</b>',
+                '🔍 <i>Проверяю качество кода...</i>'
+            ].join('\n'), { parse_mode: 'HTML' });
         } catch (e) {}
 
-        let issues = validateGameCode(gameCode, platform, plan);
+        let issues = validateGameCode(gameCode, platform);
         const criticals = issues.filter(i => i.level === 'critical');
         if (criticals.length) {
             console.error('[Валидация] Критично:', criticals.map(i => i.msg).join(' | '));
             try {
-                await bot.telegram.editMessageText(chatId, msgId, null, `🔧 **Автопочинка...**\n\n_Устраняю замечания проверки (${criticals.length})..._`, { parse_mode: 'Markdown' });
+                await bot.telegram.editMessageText(chatId, msgId, null, [
+                    '🔧 <b>Автопочинка...</b>',
+                    UI_DIVIDER,
+                    `<i>Устраняю замечания проверки (${criticals.length})...</i>`
+                ].join('\n'), { parse_mode: 'HTML' });
             } catch (e) {}
-            const repaired = await repairGameCode(gameCode, issues, platform, plan);
+            const repaired = await repairGameCode(gameCode, issues, platform);
             gameCode = repaired.code;
             issues = repaired.issues;
             const stillCritical = issues.filter(i => i.level === 'critical');
@@ -976,69 +1615,52 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         }
         if (issues.length) console.warn('[Валидация] Замечания:', issues.map(i => i.msg).join(' | '));
 
-        // ТЗ-ревью: второй вызов Gemini сверяет код с планом
         try {
-            await bot.telegram.editMessageText(chatId, msgId, null, '`[████████████]` **100%**\n🔎 _Сверяю код с ТЗ..._', { parse_mode: 'Markdown' });
-        } catch (e) {}
-        const violations = await reviewAgainstPlan(gameCode, plan, prompt);
-        if (violations && violations.length) {
-            console.warn('[ТЗ-ревью] Нарушения:', violations.join(' | '));
-            const reviewIssues = violations.map(v => ({ level: 'critical', msg: 'нарушение ТЗ: ' + v }));
-            try {
-                await bot.telegram.editMessageText(chatId, msgId, null, `🔧 **Правлю по итогам ТЗ-ревью...**\n\n_Устраняю нарушения ТЗ (${violations.length})..._`, { parse_mode: 'Markdown' });
-            } catch (e) {}
-            const repaired = await repairGameCode(gameCode, [...issues, ...reviewIssues], platform, plan);
-            gameCode = repaired.code;
-            issues = repaired.issues;
-            const stillCritical = issues.filter(i => i.level === 'critical');
-            if (stillCritical.length) throw new Error('Игра не прошла ТЗ-ревью: ' + stillCritical[0].msg);
-        }
-
-        try {
-            await bot.telegram.editMessageText(chatId, msgId, null, '🎨 **Подбор атмосферного фона...**', { parse_mode: 'Markdown' });
+            await bot.telegram.editMessageText(chatId, msgId, null, [
+                '🎨 <b>Подбор атмосферного фона...</b>',
+                UI_DIVIDER,
+                '<i>Ищу подходящую атмосферу для твоего мира...</i>'
+            ].join('\n'), { parse_mode: 'HTML' });
         } catch (e) {}
 
-        // Вытаскиваем ключевое слово
-        let bgKeyword = plan.bgKeyword || 'fantasy landscape';
+        let bgKeyword = 'fantasy landscape';
         const bgMatch = gameCode.match(/\[BG:\s*([^\]]+)\]/i);
         if (bgMatch && bgMatch[1]) {
-            bgKeyword = bgMatch[1].trim();
+            bgKeyword = sanitizeText(bgMatch[1], 60) || bgKeyword;
         }
-
-        // Очищаем код от тега, чтобы он не ломал Flexbox
         gameCode = gameCode.replace(/\[BG:\s*([^\]]+)\]/i, '').trim();
-        
-        // Дефолтный фон на случай сбоя Unsplash 
-        let customBgUrl = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop'; 
+
+        let customBgUrl = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop';
+        customBgUrl = safeCssUrl(customBgUrl, 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop');
 
         try {
             const query = encodeURIComponent(bgKeyword);
             const apiKey = process.env.UNSPLASH_ACCESS_KEY || '';
-            const unUrl = `https://api.unsplash.com/photos/random?query=${query}&orientation=landscape&client_id=${apiKey}`;
-            const unRes = await axios.get(unUrl);
-            
-            const imgUrl = (unRes.data && unRes.data.urls) ? unRes.data.urls.regular : null;
-            if (imgUrl) {
-                const fileName = `bg_ai_${Date.now()}.jpg`;
-                const filePath = path.join(uploadsDir, fileName);
-                const writer = fs.createWriteStream(filePath);
-                
-                const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream' });
-                imgStream.data.pipe(writer);
-                await new Promise((res, rej) => { writer.on('finish', res); writer.on('error', rej); });
-                
-                customBgUrl = `/uploads/${fileName}`;
+            if (apiKey) {
+                const unUrl = `https://api.unsplash.com/photos/random?query=${query}&orientation=landscape&client_id=${apiKey}`;
+                const unRes = await axios.get(unUrl, { timeout: 15000 });
+                const imgUrl = (unRes.data && unRes.data.urls) ? unRes.data.urls.regular : null;
+                if (imgUrl) {
+                    const fileName = `bg_ai_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+                    const filePath = path.join(uploadsDir, fileName);
+                    const writer = fs.createWriteStream(filePath);
+                    const imgStream = await axios({ url: imgUrl, method: 'GET', responseType: 'stream', timeout: 30000 });
+
+                    imgStream.data.pipe(writer);
+                    await new Promise((resolve, reject) => {
+                        writer.on('finish', resolve);
+                        writer.on('error', reject);
+                    });
+
+                    customBgUrl = safeCssUrl(`/uploads/${fileName}`, customBgUrl);
+                }
             }
         } catch (e) {
-            console.error("Unsplash skipped:", e.message);
+            console.error('Unsplash skipped:', e.message);
         }
 
-        // Стандартная замена плейсхолдера
-        gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, customBgUrl);
-        
-        // ЖЕЛЕЗОБЕТОННАЯ СТРАХОВКА:
-        // Если ИИ удалил плейсхолдер и написал пустые кавычки, ссылка не вставится.
-        // Проверяем: если итоговой ссылки нет в коде — насильно инжектим стиль фона.
+        gameCode = gameCode.replace(/\{\{AI_BG_IMAGE\}\}/g, () => customBgUrl);
+
         if (!gameCode.includes(customBgUrl)) {
             const styleTag = `<style>body { background: url('${customBgUrl}') center/cover no-repeat !important; }</style>`;
             if (gameCode.includes('</head>')) {
@@ -1048,182 +1670,654 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             }
         }
 
-        gameCode = injectCompat(gameCode);
-        
-        const gameId = `ai_${Date.now()}`;
+        const gameId = `ai_${Date.now()}${crypto.randomInt(0, 1000000)}`;
         fs.writeFileSync(path.join(aiGamesDir, `${gameId}.html`), gameCode);
-        try {
-            fs.writeFileSync(path.join(aiGamesDir, `${gameId}.plan.json`),
-                JSON.stringify({ prompt, platform, plan, savedAt: new Date().toISOString() }, null, 2));
-        } catch (e) {
-            console.error('[План] Не удалось сохранить plan.json:', e.message);
-        }
-        
-        clearInterval(progressInterval);
-        
-        try {
-            await bot.telegram.editMessageText(chatId, msgId, null, `⚒️ **Гримуар кода в работе...**\n\n\`[██████████]\` **100%**\n✅ _Финальная компиляция..._`, { parse_mode: 'Markdown' });
-        } catch(e) {}
 
-        const url = `${process.env.WEBAPP_URL}/ai_games/${gameId}.html`;
+        recordGame({
+            id: gameId,
+            telegramId: userId,
+            generationId,
+            title: sanitizeGameTitle(cleanPrompt, 'Игра'),
+            source: 'ai',
+            htmlPath: `${gameId}.html`
+        });
+        recordGeneration({
+            id: generationId,
+            telegramId: userId,
+            prompt: cleanPrompt,
+            platform,
+            engine: 'ai',
+            status: 'completed',
+            model: generated.model,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            costUsd: estimateCostUsd(totalInputTokens, totalOutputTokens),
+            attempts: 1,
+            gameId
+        });
+        logEvent('generation_succeeded', userId, {
+            generationId,
+            gameId,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            planTokens: planResult.inputTokens + planResult.outputTokens
+        });
+        completed = true;
+        createdGameId = gameId;
+
+        const referral = qualifyReferral(userId);
+        await notifyReferralReward(referral);
+
+        clearInterval(progressInterval);
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, [
+                '⚒️ <b>Гримуар кода в работе...</b>',
+                UI_DIVIDER,
+                '<code>[██████████]</code> <b>100%</b>',
+                '🚀 <i>Финальная компиляция...</i>'
+            ].join('\n'), { parse_mode: 'HTML' });
+        } catch (e) {}
+
+        const url = publicGameUrl(gameId);
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+            [Markup.button.callback('✏️ Улучшить', `improve_ai_${gameId}`)],
             [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`)],
             [Markup.button.callback('🔁 Перегенерировать', 'regen_ai')],
+            [Markup.button.callback('💳 Купить ещё', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
-        
-        const msg = `✅ Проект успешно собран!\n💳 Остаток: ${user.balance} 🪙`;
-        await bot.telegram.editMessageText(chatId, msgId, null, msg, Markup.inlineKeyboard(kb));
-        
+
+        const fresh = findUser(userId) || user;
+        const msg = [
+            '🎉 <b>Игра готова!</b>',
+            UI_DIVIDER,
+            `🎮 Доступно: <b>${gamesLabel(userGames(fresh))}</b>`,
+            '',
+            'Сыграй и нажми «✏️ Улучшить», чтобы изменить механику или сложность.'
+        ].join('\n');
+        await bot.telegram.editMessageText(chatId, msgId, null, msg, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
     } catch (err) {
         clearInterval(progressInterval);
-        console.error(err);
-        user.balance += COST_PER_GAME; 
-        saveDb();
+        console.error('[Генерация]', err);
+        if (completed && createdGameId) {
+            try {
+                const url = publicGameUrl(createdGameId);
+                await bot.telegram.sendMessage(
+                    chatId,
+                    `✅ Игра готова: ${url}`,
+                    Markup.inlineKeyboard([[Markup.button.webApp('🎮 ИГРАТЬ', url)]])
+                );
+            } catch (e) {}
+            return;
+        }
+        let refunded = false;
+        try {
+            refunded = credit(userId, COST_PER_GAME, 'refund', `refund:${generationId}`);
+        } catch (refundError) {
+            console.error('[Генерация] Не удалось вернуть игру:', refundError.message);
+        }
+        try {
+            recordGeneration({
+                id: generationId,
+                telegramId: userId,
+                prompt: cleanPrompt,
+                platform,
+                engine: 'ai',
+                status: 'failed',
+                model: 'gemini-2.5-flash',
+                error: String(err.message || 'unknown').slice(0, 500)
+            });
+        } catch (recordError) {
+            console.error('[Генерация] Не удалось записать ошибку:', recordError.message);
+        }
+        logEvent('generation_failed', userId, { generationId, error: String(err.message || 'unknown').slice(0, 200) });
+
         const kb = [
-            [Markup.button.callback('🔄 Повторить', 'regen_ai')], 
+            [Markup.button.callback('🔄 Повторить', 'regen_ai')],
+            [Markup.button.callback('💳 Купить игры', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
-        await bot.telegram.editMessageText(chatId, msgId, null, '❌ Ошибка генерации. Магия прервалась.', Markup.inlineKeyboard(kb));
+        const refundLine = refunded ? '\nИгра не списана — баланс восстановлен.' : '';
+        await bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `❌ Не получилось собрать игру. Попробуй ещё раз или измени описание.${refundLine}`,
+            Markup.inlineKeyboard(kb)
+        ).catch(() => {});
+    }
+}
+
+bot.action(/^improve_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    if (!isSafeGameId(gameId)) return ctx.answerCbQuery('❌ Игра не найдена.', { show_alert: true });
+
+    const game = getGame(gameId);
+    if (!game || Number(game.telegram_id) !== Number(ctx.from.id)) {
+        return ctx.answerCbQuery('❌ Это не твоя игра.', { show_alert: true });
+    }
+    if (!fs.existsSync(path.join(aiGamesDir, `${gameId}.html`))) {
+        return ctx.answerCbQuery('❌ Файл игры не найден.', { show_alert: true });
+    }
+
+    const user = tgUser(ctx);
+    if (user.banned) return ctx.answerCbQuery('Аккаунт заблокирован.', { show_alert: true });
+    if (userGames(user) < 1) {
+        return ctx.editMessageText(
+            '❌ Игры закончились. Купи пакет или пригласи друга.',
+            paywallKeyboard()
+        ).catch(() => {});
+    }
+
+    ctx.session.step = 'awaiting_improve_prompt';
+    ctx.session.gameData.improveGameId = gameId;
+    await ctx.editMessageText(
+        '✏️ Что улучшить в игре?\n\nНапиши одной фразой: «добавь бонусы», «сделай сложнее», «ускорь персонажа».\n\nСтоимость: 1 игра.',
+        Markup.inlineKeyboard([[Markup.button.callback('⬅️ Отмена', 'main_menu')]])
+    ).catch(() => {});
+});
+
+async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
+    const userId = ctx.from.id;
+    const validation = validatePrompt(instruction);
+    if (!validation.ok) {
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `❌ ${validation.error}`,
+            Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+        ).catch(() => {});
+    }
+    const cleanInstruction = validation.value;
+
+    const user = tgUser(ctx);
+    if (user.banned) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Аккаунт заблокирован.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
+    }
+    if (userGames(user) < 1) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Игры закончились. Купи пакет или пригласи друга.', paywallKeyboard()).catch(() => {});
+    }
+    if (!tryConsumeRateLimit(`improve:${userId}`, 1, GENERATION_COOLDOWN_MS)) {
+        const seconds = Math.max(1, Math.ceil(GENERATION_COOLDOWN_MS / 1000));
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `⏳ Подожди ${seconds} сек. перед следующим улучшением.`,
+            Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+        ).catch(() => {});
+    }
+    if (!tryConsumeRateLimit(`generation-day:${userId}`, MAX_GENERATIONS_PER_DAY, 24 * 60 * 60 * 1000)) {
+        return bot.telegram.editMessageText(
+            chatId, msgId, null,
+            '⏳ На сегодня лимит генераций исчерпан. Возвращайся завтра.',
+            Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+        ).catch(() => {});
+    }
+
+    const game = getGame(gameId);
+    if (!game || Number(game.telegram_id) !== Number(userId)) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Игра не найдена.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
+    }
+    const gamePath = path.join(aiGamesDir, `${gameId}.html`);
+    if (!fs.existsSync(gamePath)) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Файл игры не найден.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
+    }
+    const originalCode = fs.readFileSync(gamePath, 'utf8');
+    const platform = ctx.session?.gameData?.platform === 'mobile' ? 'mobile' : detectPlatform(originalCode);
+
+    const generationId = crypto.randomUUID();
+    const charged = debit(userId, COST_PER_GAME, 'improvement', `improve:${generationId}`);
+    if (!charged) {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Недостаточно игр на балансе.', paywallKeyboard()).catch(() => {});
+    }
+
+    const progressStates = [
+        { percent: 25, text: 'Разбираю текущую механику...', bar: '███░░░░░░░' },
+        { percent: 50, text: 'Вношу изменения в код...', bar: '█████░░░░░' },
+        { percent: 75, text: 'Проверяю физику и управление...', bar: '███████░░░' },
+        { percent: 90, text: 'Собираю обновлённую версию...', bar: '█████████░' }
+    ];
+    let stepIndex = 0;
+    let pulse = 0;
+    const progressInterval = setInterval(async () => {
+        let state;
+        if (stepIndex < progressStates.length) {
+            state = progressStates[stepIndex];
+            stepIndex++;
+        } else {
+            pulse++;
+            state = { percent: 90, text: 'Дорабатываю детали ' + '·'.repeat(1 + (pulse % 3)), bar: '█████████░' };
+        }
+        const text = [
+            '✏️ <b>Улучшаю игру...</b>',
+            UI_DIVIDER,
+            `<code>[${state.bar}]</code> <b>${state.percent}%</b>`,
+            `⏳ <i>${state.text}</i>`
+        ].join('\n');
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, text, { parse_mode: 'HTML' });
+        } catch (e) {}
+    }, 3500);
+
+    let committed = false;
+    let tmpPath = null;
+    try {
+        recordGeneration({
+            id: generationId,
+            telegramId: userId,
+            prompt: `Улучшение: ${cleanInstruction}`,
+            platform,
+            engine: 'ai',
+            status: 'running',
+            model: 'gemini-2.5-flash'
+        });
+        logEvent('generation_started', userId, { generationId, gameId, kind: 'improve' });
+
+        const improved = await improveAIGame(originalCode, cleanInstruction, platform);
+        if (!improved || !improved.code) throw new Error('Модель не вернула полный файл');
+        let gameCode = normalizeImprovedCode(improved.code, originalCode);
+
+        clearInterval(progressInterval);
+        try {
+            await bot.telegram.editMessageText(chatId, msgId, null, [
+                '✏️ <b>Улучшаю игру...</b>',
+                UI_DIVIDER,
+                '<code>[██████████]</code> <b>100%</b>',
+                '🔍 <i>Проверяю обновлённый код...</i>'
+            ].join('\n'), { parse_mode: 'HTML' });
+        } catch (e) {}
+
+        let issues = validateGameCode(gameCode, platform);
+        const criticals = issues.filter(i => i.level === 'critical');
+        if (criticals.length) {
+            console.error('[Улучшение] Критично:', criticals.map(i => i.msg).join(' | '));
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, [
+                    '🔧 <b>Автопочинка...</b>',
+                    UI_DIVIDER,
+                    `<i>Устраняю замечания проверки (${criticals.length})...</i>`
+                ].join('\n'), { parse_mode: 'HTML' });
+            } catch (e) {}
+            const repaired = await repairGameCode(gameCode, issues, platform, { preserveBackground: true, originalCode });
+            gameCode = normalizeImprovedCode(repaired.code, originalCode);
+            issues = validateGameCode(gameCode, platform);
+            const stillCritical = issues.filter(i => i.level === 'critical');
+            if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
+        }
+        if (issues.length) console.warn('[Улучшение] Замечания:', issues.map(i => i.msg).join(' | '));
+
+        tmpPath = path.join(aiGamesDir, `.${gameId}.${Date.now()}.tmp`);
+        fs.writeFileSync(tmpPath, gameCode);
+        fs.renameSync(tmpPath, gamePath);
+        tmpPath = null;
+        committed = true;
+
+        try {
+            recordGeneration({
+                id: generationId,
+                telegramId: userId,
+                prompt: `Улучшение: ${cleanInstruction}`,
+                platform,
+                engine: 'ai',
+                status: 'completed',
+                model: improved.model,
+                inputTokens: improved.inputTokens,
+                outputTokens: improved.outputTokens,
+                costUsd: estimateCostUsd(improved.inputTokens, improved.outputTokens),
+                attempts: 1,
+                gameId
+            });
+        } catch (recordError) {
+            console.error('[Улучшение] Не удалось записать метрики:', recordError.message);
+        }
+        logEvent('game_improved', userId, {
+            generationId,
+            gameId,
+            inputTokens: improved.inputTokens,
+            outputTokens: improved.outputTokens
+        });
+
+        clearInterval(progressInterval);
+        const url = publicGameUrl(gameId);
+        const kb = [
+            [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+            [Markup.button.callback('✏️ Улучшить ещё', `improve_ai_${gameId}`)],
+            [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`)],
+            [Markup.button.callback('🏠 Меню', 'main_menu')]
+        ];
+        const fresh = findUser(userId) || user;
+        const msg = [
+            '✨ <b>Игра обновлена!</b>',
+            UI_DIVIDER,
+            `🎮 Доступно: <b>${gamesLabel(userGames(fresh))}</b>`,
+            '',
+            'Можно улучшать дальше или скачать архив.'
+        ].join('\n');
+        await bot.telegram.editMessageText(
+            chatId, msgId, null,
+            msg,
+            { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) }
+        ).catch(() => {});
+    } catch (err) {
+        clearInterval(progressInterval);
+        if (tmpPath && fs.existsSync(tmpPath)) {
+            try { fs.unlinkSync(tmpPath); } catch (cleanupError) {}
+        }
+        console.error('[Улучшение]', err);
+
+        if (committed) {
+            return bot.telegram.editMessageText(
+                chatId, msgId, null,
+                '✅ Изменения сохранены, но не удалось завершить оформление. Открой игру заново.',
+                Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])
+            ).catch(() => {});
+        }
+
+        let refunded = false;
+        try {
+            refunded = credit(userId, COST_PER_GAME, 'refund', `refund:${generationId}`);
+        } catch (refundError) {
+            console.error('[Улучшение] Не удалось вернуть игру:', refundError.message);
+        }
+        try {
+            recordGeneration({
+                id: generationId,
+                telegramId: userId,
+                prompt: `Улучшение: ${cleanInstruction}`,
+                platform,
+                engine: 'ai',
+                status: 'failed',
+                model: 'gemini-2.5-flash',
+                error: String(err.message || 'unknown').slice(0, 500)
+            });
+        } catch (recordError) {
+            console.error('[Улучшение] Не удалось записать ошибку:', recordError.message);
+        }
+        logEvent('generation_failed', userId, { generationId, gameId, kind: 'improve', error: String(err.message || 'unknown').slice(0, 200) });
+
+        const kb = [
+            [Markup.button.callback('🔄 Попробовать снова', `improve_ai_${gameId}`)],
+            [Markup.button.callback('🏠 Меню', 'main_menu')]
+        ];
+        const refundLine = refunded ? '\nИгра не списана — баланс восстановлен.' : '';
+        await bot.telegram.editMessageText(
+            chatId, msgId, null,
+            `❌ Не получилось улучшить игру. Попробуй переформулировать.${refundLine}`,
+            Markup.inlineKeyboard(kb)
+        ).catch(() => {});
     }
 }
 
 bot.action('regen_ai', async (ctx) => {
     const p = ctx.session?.gameData?.lastPrompt;
     if (!p) return ctx.answerCbQuery('❌ Запрос не найден.', { show_alert: true });
-    if (getUser(ctx.from.id).balance < COST_PER_GAME) return ctx.answerCbQuery('❌ Мало токенов!', { show_alert: true });
-    
-    await ctx.editMessageText('⚒️ **Гримуар кода в работе...**\n\n`[░░░░░░░░░░]` **0%**\n⏳ _Запуск нейронных потоков..._', { parse_mode: 'Markdown' });
-    handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, p, ctx);
+    const user = tgUser(ctx);
+    if (userGames(user) < 1) return ctx.answerCbQuery('❌ Игры закончились. Купи пакет или пригласи друга.', { show_alert: true });
+
+    try {
+        await ctx.editMessageText('⚒️ <b>Гримуар кода в работе...</b>\n━━━━━━━━━━━━━━\n<code>[░░░░░░░░░░]</code> <b>0%</b>\n⏳ <i>Запуск нейронных потоков...</i>', { parse_mode: 'HTML' });
+    } catch (e) {}
+    await handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, p, ctx);
 });
 
 bot.on('text', async (ctx) => {
     if (ctx.session?.step === 'awaiting_ai_prompt') {
-        ctx.session.step = null; 
-        ctx.session.gameData.lastPrompt = ctx.message.text;
-        ctx.session.gameData.lastPlan = null;
-        const msg = await ctx.reply('⚒️ **Гримуар кода в работе...**\n\n`[░░░░░░░░░░]` **0%**\n⏳ _Запуск нейронных потоков..._', { parse_mode: 'Markdown' });
-        handleAIGeneration(ctx.chat.id, msg.message_id, ctx.message.text, ctx);
+        const validation = validatePrompt(ctx.message.text);
+        if (!validation.ok) {
+            return ctx.reply(`❌ ${validation.error}`);
+        }
+        ctx.session.step = null;
+        ctx.session.gameData.lastPrompt = validation.value;
+        const msg = await ctx.reply('⚒️ <b>Гримуар кода в работе...</b>\n━━━━━━━━━━━━━━\n<code>[░░░░░░░░░░]</code> <b>0%</b>\n⏳ <i>Запуск нейронных потоков...</i>', { parse_mode: 'HTML' });
+        await handleAIGeneration(ctx.chat.id, msg.message_id, validation.value, ctx);
+    } else if (ctx.session?.step === 'awaiting_improve_prompt') {
+        const gameId = ctx.session.gameData.improveGameId;
+        const rawInstruction = String(ctx.message.text || '').trim();
+        if (rawInstruction.startsWith('/')) {
+            return ctx.reply('Напиши, что улучшить, обычным текстом. Или нажми «Отмена» в сообщении выше.');
+        }
+        const validation = validatePrompt(rawInstruction);
+        if (!validation.ok) {
+            return ctx.reply(`❌ ${validation.error}`);
+        }
+        if (!gameId || !isSafeGameId(gameId)) {
+            ctx.session.step = null;
+            return ctx.reply('❌ Игра не найдена. Открой её заново из меню.');
+        }
+        ctx.session.step = null;
+        ctx.session.gameData.improveGameId = null;
+        const msg = await ctx.reply('✏️ <b>Улучшаю игру...</b>\n━━━━━━━━━━━━━━\n<code>[░░░░░░░░░░]</code> <b>0%</b>\n⏳ <i>Запуск нейронных потоков...</i>', { parse_mode: 'HTML' });
+        await handleAIImprove(ctx.chat.id, msg.message_id, validation.value, gameId, ctx);
     } else if (ctx.session?.step === 'awaiting_name') {
-        ctx.session.gameData.gameName = ctx.message.text; 
+        const gameName = sanitizeGameTitle(ctx.message.text, '');
+        if (!gameName) {
+            return ctx.reply('❌ Название не подходит. Используй буквы и цифры, до 60 символов.');
+        }
+        ctx.session.gameData.gameName = gameName;
         ctx.session.step = 'awaiting_bg_choice';
         const kb = [
-            [Markup.button.callback('🏞 Оставить как есть', 'bg_choice_standard')], 
-            [Markup.button.callback('🖼 Своя картинка', 'bg_choice_custom')]
+            [Markup.button.callback('🏞 Стандартный фон', 'bg_choice_standard'), Markup.button.callback('🖼 Свой фон', 'bg_choice_custom')]
         ];
-        await ctx.reply(`Фон?`, Markup.inlineKeyboard(kb));
+        await ctx.reply([
+            '5️⃣ <b>Фон игры</b>',
+            UI_DIVIDER,
+            'Можно оставить атмосферный фон стиля или загрузить своё фото.'
+        ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
     }
 });
 
 bot.action('bg_choice_standard', async (ctx) => {
-    if (ctx.session?.step === 'awaiting_bg_choice') { 
-        ctx.session.gameData.customBgFile = null; 
-        ctx.session.step = null; 
-        await ctx.editMessageText('✅ Собираю...'); 
-        finishGameGeneration(ctx); 
+    if (ctx.session?.step === 'awaiting_bg_choice') {
+        ctx.session.gameData.customBgFile = null;
+        ctx.session.step = null;
+        await ctx.editMessageText('✅ <b>Собираю игру...</b>', { parse_mode: 'HTML' });
+        await finishGameGeneration(ctx);
     }
 });
 
 bot.action('bg_choice_custom', async (ctx) => {
-    if (ctx.session?.step === 'awaiting_bg_choice') { 
-        ctx.session.step = 'awaiting_photo'; 
-        await ctx.editMessageText('Отправь фото 🖼️'); 
+    if (ctx.session?.step === 'awaiting_bg_choice') {
+        ctx.session.step = 'awaiting_photo';
+        await ctx.editMessageText([
+            '📷 <b>Отправь фото</b>',
+            UI_DIVIDER,
+            'Пришли картинку следующим сообщением — она станет фоном игры.'
+        ].join('\n'), { parse_mode: 'HTML' });
     }
 });
 
 bot.on('photo', async (ctx) => {
-    if (ctx.session?.step === 'awaiting_photo') {
-        const msg = await ctx.reply('⏳ Проверяю...');
-        try {
-            const url = (await ctx.telegram.getFileLink(ctx.message.photo.pop().file_id)).href;
-            if (!(await checkImageSafety(url))) {
-                return ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, '🔞 Отклонено.');
-            }
-            const fileName = `bg_${Date.now()}.jpg`; 
-            const writer = fs.createWriteStream(path.join(uploadsDir, fileName));
-            const response = await axios({ url, method: 'GET', responseType: 'stream' });
-            
-            response.data.pipe(writer);
-            writer.on('finish', () => { 
-                ctx.session.gameData.customBgFile = fileName; 
-                ctx.session.step = null; 
-                ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id); 
-                finishGameGeneration(ctx); 
-            });
-        } catch (e) { 
-            ctx.reply('❌ Ошибка.'); 
+    if (ctx.session?.step !== 'awaiting_photo') return;
+
+    const msg = await ctx.reply('⏳ Проверяю...');
+    let fileName = null;
+    try {
+        const photos = Array.isArray(ctx.message.photo) ? ctx.message.photo : [];
+        if (!photos.length) return ctx.reply('❌ Не удалось получить изображение.');
+        const url = (await ctx.telegram.getFileLink(photos[photos.length - 1].file_id)).href;
+        if (!(await checkImageSafety(url))) {
+            ctx.session.step = null;
+            return ctx.telegram.editMessageText(
+                ctx.chat.id,
+                msg.message_id,
+                null,
+                '❌ Изображение не прошло модерацию или проверка недоступна. Выбери стандартный фон.'
+            );
         }
+
+        const response = await axios({ url, method: 'GET', responseType: 'stream', timeout: 30000 });
+        fileName = `bg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.jpg`;
+        const writer = fs.createWriteStream(path.join(uploadsDir, fileName));
+
+        await new Promise((resolve, reject) => {
+            response.data.pipe(writer);
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+            response.data.on('error', reject);
+        });
+
+        ctx.session.gameData.customBgFile = fileName;
+        ctx.session.step = null;
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await finishGameGeneration(ctx);
+    } catch (e) {
+        if (fileName) {
+            try { fs.unlinkSync(path.join(uploadsDir, fileName)); } catch (cleanupError) {}
+            ctx.session.gameData.customBgFile = null;
+        }
+        console.error('[Фон] Ошибка:', e.message);
+        ctx.session.step = null;
+        await ctx.reply('❌ Не удалось загрузить фон. Попробуй ещё раз или выбери стандартный.');
     }
 });
 
 async function finishGameGeneration(ctx) {
-    const data = ctx.session.gameData;
-    const bgParam = data.customBgFile ? `&bg=${data.customBgFile}` : '';
-    const platform = data.platform || 'pc';
-    const nameEnc = encodeURIComponent(data.gameName);
-    
-    const url = `${process.env.WEBAPP_URL}/${data.engine}/?biome=${data.biome}&name=${nameEnc}${bgParam}&platform=${platform}`;
+    const data = ctx.session.gameData || {};
+    const engine = sanitizeEngine(data.engine, ENGINE_NAMES);
+    if (!engine) return ctx.reply('❌ Движок не найден. Начни создание заново.');
+
+    const biome = sanitizeBiome(data.biome, Object.keys(styles));
+    const platform = sanitizePlatform(data.platform);
+    const gameName = sanitizeGameTitle(data.gameName, styles[biome].name);
+    const customBg = sanitizeBgFilename(data.customBgFile);
+    const bgFile = customBg && fs.existsSync(path.join(uploadsDir, customBg)) ? customBg : null;
+    const bgParam = bgFile ? `&bg=${encodeURIComponent(bgFile)}` : '';
+    const nameEnc = encodeURIComponent(gameName);
+    const base = WEBAPP_URL || '';
+    const templateGameId = `tpl_${Date.now()}_${crypto.randomInt(0, 1000000)}`;
+    const build = { engine, biome, platform, gameName, customBgFile: bgFile };
+
+    const url = `${base}/${engine}/?biome=${encodeURIComponent(biome)}&name=${nameEnc}${bgParam}&platform=${platform}`;
     const kb = [
-        [Markup.button.webApp('🎮 ИГРАТЬ', url)], 
-        [Markup.button.callback('📦 Архив', 'download_source')], 
+        [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+        [Markup.button.callback('📦 Архив', `dl_tpl_${templateGameId}`)],
+        [Markup.button.callback('💳 Купить ещё', 'show_plans')],
         [Markup.button.callback('🏠 Меню', 'main_menu')]
     ];
-    await ctx.reply(`✅ Игра "${data.gameName}" готова!`, Markup.inlineKeyboard(kb));
+
+    const chargeRef = `template:${crypto.randomUUID()}`;
+    const charged = debit(ctx.from.id, COST_PER_GAME, 'template', chargeRef);
+    if (!charged) {
+        return ctx.reply('❌ Игры закончились. Купи пакет или пригласи друга.', paywallKeyboard());
+    }
+
+    try {
+        recordGame({
+            id: templateGameId,
+            telegramId: ctx.from.id,
+            title: gameName,
+            source: 'template',
+            htmlPath: null,
+            build
+        });
+    } catch (error) {
+        try {
+            credit(ctx.from.id, COST_PER_GAME, 'refund', `refund:${chargeRef}`);
+        } catch (refundError) {
+            console.error('[Шаблон] Не удалось вернуть игру:', refundError.message);
+        }
+        console.error('[Шаблон] Не удалось сохранить игру:', error.message);
+        return ctx.reply('❌ Не удалось сохранить игру. Игра не списана.');
+    }
+
+    logEvent('game_created', ctx.from.id, { engine, biome, platform, source: 'template' });
+    try {
+        const referral = qualifyReferral(ctx.from.id);
+        await notifyReferralReward(referral);
+    } catch (error) {
+        console.error('[Реферал] Ошибка после создания шаблона:', error.message);
+    }
+
+    const txt = [
+        '🎉 <b>Игра готова!</b>',
+        UI_DIVIDER,
+        `🎮 <b>${escapeHtml(gameName)}</b>`,
+        `🧩 ${escapeHtml(ENGINE_LABELS[engine] || engine)}`,
+        `🎨 ${escapeHtml(styles[biome].name)}`,
+        `📱 ${platform === 'mobile' ? 'Мобильная' : 'ПК'}`
+    ].join('\n');
+    await ctx.reply(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 }
 
-bot.action(/dl_ai_(.+)/, async (ctx) => {
+bot.action(/^dl_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
     const gameId = ctx.match[1];
-    const zipPath = path.join(os.tmpdir(), `${gameId}.zip`);
+    if (!isSafeGameId(gameId)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
+
+    const zipPath = path.join(os.tmpdir(), `${gameId}_${Date.now()}_${crypto.randomInt(0, 1000000)}.zip`);
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
-    
+
     if (!fs.existsSync(gamePath)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
-    
+
+    const game = getGame(gameId);
+    if (game && Number(game.telegram_id) !== Number(ctx.from.id) && !isAdmin(ctx.from.id)) {
+        return ctx.answerCbQuery('❌ Это не твоя игра.', { show_alert: true });
+    }
+
     try {
-        let html = injectCompat(fs.readFileSync(gamePath, 'utf8'));
-        const bgMatch = html.match(/\/uploads\/(bg_ai_\d+\.jpg)/);
-        
+        const html = fs.readFileSync(gamePath, 'utf8');
+        const bgMatch = html.match(/\/uploads\/(bg_ai_[0-9a-f_]+\.jpg)/);
         const archive = archiver('zip', { zlib: { level: 9 } });
         const output = fs.createWriteStream(zipPath);
-        
-        output.on('close', async () => { 
-            await ctx.replyWithDocument({ source: zipPath, filename: `ai_game.zip` }); 
-            fs.unlinkSync(zipPath); 
+
+        await new Promise((resolve, reject) => {
+            output.on('close', resolve);
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+
+            if (bgMatch && fs.existsSync(path.join(uploadsDir, bgMatch[1]))) {
+                archive.file(path.join(uploadsDir, bgMatch[1]), { name: bgMatch[1] });
+                archive.append(html.replace(/\/uploads\//g, ''), { name: 'index.html' });
+            } else {
+                archive.append(html, { name: 'index.html' });
+            }
+            archive.finalize();
         });
-        archive.pipe(output);
-        
-        if (bgMatch && fs.existsSync(path.join(uploadsDir, bgMatch[1]))) {
-            archive.file(path.join(uploadsDir, bgMatch[1]), { name: bgMatch[1] });
-            archive.append(html.replace(/\/uploads\//g, ''), { name: 'index.html' });
-        } else {
-            archive.append(html, { name: 'index.html' });
+
+        logEvent('game_downloaded', ctx.from.id, { gameId, source: 'ai' });
+        await ctx.replyWithDocument({ source: zipPath, filename: 'ai_game.zip' });
+    } catch (e) {
+        console.error('[Архив AI] Ошибка:', e.message);
+        await ctx.reply('❌ Не удалось собрать архив.');
+    } finally {
+        if (fs.existsSync(zipPath)) {
+            try { fs.unlinkSync(zipPath); } catch (e) {}
         }
-        archive.finalize();
-    } catch (e) { 
-        ctx.reply('❌ Ошибка.'); 
     }
 });
 
-bot.action('download_source', async (ctx) => {
-    const data = ctx.session.gameData; 
-    const s = styles[data.biome]; 
-    const tempDir = path.join(os.tmpdir(), `build_${Date.now()}`); 
-    const zipPath = path.join(os.tmpdir(), `game_${data.engine}.zip`);
-    
+async function sendTemplateArchive(ctx, build) {
+    const engine = sanitizeEngine(build && build.engine, ENGINE_NAMES);
+    if (!engine) return ctx.answerCbQuery('❌ Игра не найдена. Создай её заново.', { show_alert: true });
+
+    const biome = sanitizeBiome(build.biome, Object.keys(styles));
+    const s = styles[biome];
+    const platform = sanitizePlatform(build.platform);
+    const gameName = sanitizeGameTitle(build.gameName, s.name);
+    const customBgFile = sanitizeBgFilename(build.customBgFile);
+    const buildId = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const tempDir = path.join(os.tmpdir(), `build_${buildId}`);
+    const zipPath = path.join(os.tmpdir(), `game_${buildId}.zip`);
+    const templateDir = path.join(__dirname, 'templates', `${engine}_core`);
+
+    if (!fs.existsSync(templateDir)) {
+        return ctx.answerCbQuery('❌ Шаблон не найден.', { show_alert: true });
+    }
+
     try {
-        fse.copySync(path.join(__dirname, 'templates', `${data.engine}_core`), tempDir);
+        fse.copySync(templateDir, tempDir);
         let finalBgPath = s.img;
-        
-        if (data.customBgFile) { 
-            fse.copySync(path.join(uploadsDir, data.customBgFile), path.join(tempDir, 'custom_bg.jpg')); 
-            finalBgPath = 'custom_bg.jpg'; 
+
+        if (customBgFile) {
+            const customBgPath = path.join(uploadsDir, customBgFile);
+            if (fs.existsSync(customBgPath)) {
+                fse.copySync(customBgPath, path.join(tempDir, 'custom_bg.jpg'));
+                finalBgPath = 'custom_bg.jpg';
+            }
         }
-        
+
         const indexPath = path.join(tempDir, 'index.html');
         let html = fs.readFileSync(indexPath, 'utf8');
-        
-        html = html.replace(/{{GAME_TITLE}}/g, data.gameName || s.name)
-                   .replace(/{{BG_IMAGE}}/g, finalBgPath)
+
+        html = html.replace(/{{GAME_TITLE}}/g, () => gameName)
+                   .replace(/{{BG_IMAGE}}/g, () => finalBgPath)
                    .replace(/{{BG_COLOR}}/g, s.bg)
                    .replace(/{{BLOCK_COLOR}}/g, s.block)
                    .replace(/{{FONT_FAMILY}}/g, s.font)
@@ -1234,43 +2328,145 @@ bot.action('download_source', async (ctx) => {
                    .replace(/{{BOOSTER_TRIPLE}}/g, s.b_triple)
                    .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                    .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
-                   .replace(/{{PLATFORM}}/g, data.platform || 'pc');
+                   .replace(/{{PLATFORM}}/g, platform);
 
-        html = injectCompat(html);
-        validateGameCode(html, data.platform || 'pc').filter(i => i.level === 'critical')
-            .forEach(i => console.warn(`[ZIP ${data.engine}] critical: ${i.msg}`));
         fs.writeFileSync(indexPath, html);
-        const archive = archiver('zip', { zlib: { level: 9 } }); 
+
+        const archive = archiver('zip', { zlib: { level: 9 } });
         const output = fs.createWriteStream(zipPath);
-        
-        output.on('close', async () => { 
-            await ctx.replyWithDocument({ source: zipPath, filename: `${data.gameName}.zip` }); 
-            fse.removeSync(tempDir); 
-            fs.unlinkSync(zipPath); 
+        await new Promise((resolve, reject) => {
+            output.on('close', resolve);
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+            archive.directory(tempDir, false);
+            archive.finalize();
         });
-        archive.pipe(output); 
-        archive.directory(tempDir, false); 
-        archive.finalize();
-    } catch (e) { 
-        ctx.reply('❌ Ошибка сборки.'); 
+
+        const zipName = `${safeFilename(gameName, 'game').replace(/\.zip$/i, '')}.zip`;
+        logEvent('game_downloaded', ctx.from.id, { engine, biome, platform, source: 'template' });
+        await ctx.replyWithDocument({ source: zipPath, filename: zipName });
+    } catch (e) {
+        console.error('[Архив шаблона] Ошибка:', e.message);
+        await ctx.reply('❌ Не удалось собрать архив.');
+    } finally {
+        if (fs.existsSync(tempDir)) {
+            try { fse.removeSync(tempDir); } catch (e) {}
+        }
+        if (fs.existsSync(zipPath)) {
+            try { fs.unlinkSync(zipPath); } catch (e) {}
+        }
     }
+}
+
+bot.action(/^dl_tpl_(tpl_[0-9]{10,20}_[0-9]{1,6})$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    if (!isSafeGameId(gameId)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
+
+    const game = getGame(gameId);
+    if (!game) return ctx.answerCbQuery('❌ Игра не найдена.', { show_alert: true });
+    if (Number(game.telegram_id) !== Number(ctx.from.id)) {
+        return ctx.answerCbQuery('❌ Это не твоя игра.', { show_alert: true });
+    }
+
+    let build = null;
+    try {
+        build = game.build_json ? JSON.parse(game.build_json) : null;
+    } catch (error) {
+        console.error('[Архив шаблона] Некорректные данные сборки:', error.message);
+    }
+    if (!build) return ctx.answerCbQuery('❌ Данные игры потеряны. Создай её заново.', { show_alert: true });
+
+    return sendTemplateArchive(ctx, build);
 });
 
+bot.action('download_source', async (ctx) => {
+    const data = (ctx.session && ctx.session.gameData) || {};
+    return sendTemplateArchive(ctx, data);
+});
+
+function validateConfig() {
+    const errors = [];
+    if (!String(process.env.BOT_TOKEN || '').trim()) errors.push('BOT_TOKEN не задан');
+    if (!String(process.env.GEMINI_API_KEY || '').trim()) errors.push('GEMINI_API_KEY не задан');
+    if (!/^https:\/\//i.test(WEBAPP_URL)) errors.push('WEBAPP_URL должен быть публичным HTTPS-адресом');
+    if (GAMES_PUBLIC_URL && !/^https:\/\//i.test(GAMES_PUBLIC_URL)) {
+        errors.push('GAMES_PUBLIC_URL должен быть HTTPS-адресом');
+    }
+    if (!ADMIN_IDS.length) {
+        console.warn('⚠️ ADMIN_IDS не задан: команды /stats, /grant и /refund отключены.');
+    }
+    return errors;
+}
+
+async function start() {
+    const errors = validateConfig();
+    if (errors.length) {
+        console.error('❌ Конфигурация не готова:\n- ' + errors.join('\n- '));
+        process.exitCode = 1;
+        return;
+    }
+
+    if (!process.env.SIGHT_USER || !process.env.SIGHT_SECRET) {
+        if (ALLOW_UNMODERATED_IMAGE_UPLOADS) {
+            console.warn('⚠️ Модерация изображений отключена через ALLOW_UNMODERATED_IMAGE_UPLOADS=true');
+        } else {
+            console.warn('⚠️ Sightengine не настроен: загрузка своих фонов будет отклоняться.');
+        }
+    }
+
+    initDb({
+        file: process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(DATA_DIR, 'gamefactory.db'),
+        startBalance: START_FREE_GAMES * COST_PER_GAME,
+        adminIds: ADMIN_IDS,
+        rewardPerRef: REWARD_PER_REF,
+        referralsPerMonth: envInt('REFERRALS_PER_MONTH', 10)
+    });
+    importLegacyUsers(path.join(__dirname, 'users.json'));
+
+    const port = envInt('PORT', 3000);
+    const server = app.listen(port, () => {
+        console.log(`🌐 HTTP-сервер слушает порт ${port}`);
+    });
+    server.on('error', (err) => {
+        console.error('❌ HTTP-сервер:', err.message);
+        process.exit(1);
+    });
+
+    bot.launch().catch((err) => {
+        console.error('❌ Telegram bot:', err.message);
+        process.exit(1);
+    });
+    console.log('🤖 Бот запущен');
+
+    let stopping = false;
+    const shutdown = async (signal) => {
+        if (stopping) return;
+        stopping = true;
+        console.log(`\n${signal}: остановка...`);
+        try { await bot.stop(signal); } catch (e) {}
+        await new Promise((resolve) => server.close(resolve));
+        try { closeDb(); } catch (e) {}
+        process.exit(0);
+    };
+    process.once('SIGINT', () => shutdown('SIGINT'));
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+}
+
 if (require.main === module) {
-    bot.launch();
+    start().catch((err) => {
+        console.error('❌ Запуск не удался:', err.stack || err.message);
+        process.exit(1);
+    });
 }
 
 module.exports = {
+    app,
+    bot,
+    start,
     generateAIGame,
     validateGameCode,
     repairGameCode,
     loadReference,
-    sanitizeReference,
-    buildGamePrompt,
-    fallbackPlan,
-    planGameRequest,
-    parsePlanJson,
-    normalizePlan,
-    reviewAgainstPlan,
-    injectCompat
+    sanitizeReference
 };

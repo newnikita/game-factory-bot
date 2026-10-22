@@ -96,6 +96,8 @@ test('скрытая игра не отдаётся через HTTP и восс�
     t.after(() => server.close());
 
     assert.equal((await fetch(`${base}/sandbox/${gameId}`)).status, 200);
+    const sandboxResponse = await fetch(`${base}/sandbox/${gameId}`);
+    assert.match(await sandboxResponse.text(), /devicePixelRatio/);
     assert.equal((await fetch(`${base}/play/${gameId}`)).status, 200);
 
     db.createComplaint({ gameId, reporterId: 2, reason: 'sexual' });

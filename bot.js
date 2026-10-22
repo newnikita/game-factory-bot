@@ -67,6 +67,7 @@ const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
     .filter((value) => Number.isSafeInteger(value) && value > 0);
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
+const MAX_DEVICE_PIXEL_RATIO = Math.min(Math.max(Number(process.env.MAX_DEVICE_PIXEL_RATIO) || 2, 1), 3);
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
 
 process.on('uncaughtException', (err) => console.error('❌ Неперехваченная ошибка:', err.stack || err.message));
@@ -183,6 +184,23 @@ function selectReferenceEngine(prompt) {
 
 const CONTROLS_MOBILE = "▶ УПРАВЛЕНИЕ ДЛЯ МОБИЛЬНЫХ: ИСКЛЮЧИТЕЛЬНО touch-события (или pointer-события). ЗАПРЕЩЕНЫ мышь и клавиатура. ЗАПРЕЩЕНЫ HTML-кнопки. Используй e.preventDefault().";
 const CONTROLS_PC = "▶ УПРАВЛЕНИЕ ДЛЯ ПК: Стандартное управление с клавиатуры или клики мышью. ЗАПРЕЩЕНЫ touch-события.";
+const MOBILE_PERFORMANCE = [
+    '▶ ПРОИЗВОДИТЕЛЬНОСТЬ НА ТЕЛЕФОНЕ (КРИТИЧНО):',
+    '- Целевой FPS — 60. Бюджет кадра маленький: никаких сотен gradient/fill вызовов.',
+    '- Ограничь devicePixelRatio: const dpr = Math.min(window.devicePixelRatio || 1, 2);',
+    '- Не создавай createLinearGradient/createRadialGradient внутри цикла отрисовки для каждого объекта. Создай градиент один раз или нарисуй объект в offscreen-canvas и переиспользуй через drawImage.',
+    '- shadowBlur — максимум для 1–2 объектов на кадр; для остальных используй заранее нарисованные спрайты свечения.',
+    '- Частиц не больше 80, врагов и снарядов — не больше 40 одновременно. Переиспользуй массивы и удаляй элементы на месте.',
+    '- Запрещены ctx.filter, тяжёлые globalCompositeOperation и создание новых массивов в каждом кадре.',
+    '- Используй delta time с ограничением: dt = Math.min(dt, 1 / 30).'
+].join('\n');
+const DESKTOP_PERFORMANCE = [
+    '▶ ПРОИЗВОДИТЕЛЬНОСТЬ:',
+    '- Создавай градиенты и спрайты один раз, а не в каждом кадре.',
+    '- Повторяющиеся объекты рисуй через offscreen-canvas и drawImage.',
+    '- Ограничь количество частиц и врагов разумным бюджетом.',
+    '- Используй delta time с ограничением: dt = Math.min(dt, 1 / 30).'
+].join('\n');
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const GEMINI_INPUT_PRICE_PER_M = Number(process.env.GEMINI_INPUT_PRICE_PER_M || 0.30);
@@ -216,7 +234,8 @@ const SYSTEM_INSTRUCTION = {
             "6. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
             "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
             "8. Визуальный уровень — как у современной 2D-игры: 2–3 слоя параллакса полупрозрачными силуэтами, частицы (искры, пыль, взрывы), градиенты через createLinearGradient/createRadialGradient, свечение через shadowBlur, screen shake при попаданиях.",
-            "9. У игрока, врагов, снарядов и декораций должны быть разные узнаваемые силуэты, цвета и анимация (покачивание, вращение, масштаб). Запрещено рисовать всё одинаковыми квадратами."
+            "9. У игрока, врагов, снарядов и декораций должны быть разные узнаваемые силуэты, цвета и анимация (покачивание, вращение, масштаб). Запрещено рисовать всё одинаковыми квадратами.",
+            "10. Производительность: 60 FPS на телефоне. Не создавай градиенты и тяжёлые объекты в цикле отрисовки, кэшируй спрайты в offscreen-canvas, ограничивай частицы и используй delta time."
         ].join('\n')
     }]
 };
@@ -236,7 +255,8 @@ const PLAN_INSTRUCTION = {
             "Прогрессия: ...",
             "Визуальный стиль: палитра, атмосфера, слои фона и эффекты ...",
             "Фишка: ...",
-            "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов."
+            "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов.",
+            "Бюджет: 60 FPS на телефоне, без сотен эффектов и объектов на экране."
         ].join('\n')
     }]
 };
@@ -428,6 +448,9 @@ function validateGameCode(code, platform) {
         if (/touch(start|move|end)/i.test(code)) warning('touch-события в ПК-версии — по условию их быть не должно');
     }
     if (!/resize|innerWidth|clientWidth|devicePixelRatio|width:\s*100%|100vw/i.test(code)) warning('нет обработки ресайза/адаптации под экран');
+    if (platform === 'mobile' && /canvas\.width\s*=\s*[^;]*devicePixelRatio/i.test(code) && !/Math\.min\s*\([^)]*devicePixelRatio/i.test(code)) {
+        critical('canvas.width использует неограниченный devicePixelRatio');
+    }
 
     if (!/меню|\bmenu\b|\bstart\b|старт/i.test(code)) warning('не найдено состояние Меню');
     if (!/game\s*over|gameover|оконч\w*\s*игр|конец\s*игр|поражени|проигрыш|неудач/i.test(code)) warning('не найдено состояние Game Over');
@@ -575,6 +598,7 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
         }
         promptLines.push(
             'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
+            platform === 'mobile' ? MOBILE_PERFORMANCE : DESKTOP_PERFORMANCE,
             '',
             'Идея для новой игры: ' + userPrompt
         );
@@ -802,6 +826,15 @@ app.get('/sandbox/:gameId', (req, res) => {
         html = fs.readFileSync(gamePath, 'utf8');
     } catch (error) {
         return res.status(500).type('text').send('Не удалось открыть игру');
+    }
+
+    const dprGuard = `<script>(function(){var cap=${MAX_DEVICE_PIXEL_RATIO};try{if((window.devicePixelRatio||1)>cap){Object.defineProperty(window,'devicePixelRatio',{get:function(){return cap;},configurable:true});}}catch(e){}})();</script>`;
+    if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<head[^>]*>/i, (match) => match + dprGuard);
+    } else if (/<body[^>]*>/i.test(html)) {
+        html = html.replace(/<body[^>]*>/i, (match) => match + dprGuard);
+    } else {
+        html = dprGuard + html;
     }
 
     res.setHeader('Content-Security-Policy', [

@@ -470,6 +470,50 @@ const CONFIG = { cols: 13, rows: 25, radius: 18, speed: 22, colors: ['#ff4757', 
 const DIAMETER = CONFIG.radius * 2; const ROW_HEIGHT = DIAMETER * Math.sin(Math.PI / 3); const CANVAS_WIDTH = CONFIG.cols * DIAMETER + CONFIG.radius; const CANVAS_HEIGHT = 860; const COLLISION_DIST = DIAMETER - 2; const CONNECT_DIST = DIAMETER + 6; const CANNON_X = CANVAS_WIDTH / 2; const CANNON_Y = CANVAS_HEIGHT - 35; const BARREL_LENGTH = 50; 
 const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d'); canvas.width = CANVAS_WIDTH; canvas.height = CANVAS_HEIGHT;
 
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints || 0) > 1;
+const MAX_PARTICLES = IS_MOBILE ? 60 : 160;
+function makeSprite(size, draw) {
+    const sprite = document.createElement('canvas');
+    sprite.width = size; sprite.height = size;
+    draw(sprite.getContext('2d'), size / 2);
+    return sprite;
+}
+const bubbleSprites = {};
+for (const color of CONFIG.colors) {
+    bubbleSprites[color] = makeSprite(DIAMETER, (g, c) => {
+        g.beginPath(); g.arc(c, c, CONFIG.radius - 1, 0, Math.PI * 2);
+        const grad = g.createRadialGradient(c - 6, c - 6, 4, c, c, CONFIG.radius);
+        grad.addColorStop(0, '#fff');
+        if (color.toLowerCase() === '#ffffff') { grad.addColorStop(0.5, '#f0f0f0'); grad.addColorStop(1, '#a0a0a0'); }
+        else { grad.addColorStop(0.4, color); grad.addColorStop(1, '#000'); }
+        g.fillStyle = grad; g.fill();
+        g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1; g.stroke();
+    });
+}
+const bombSprite = makeSprite(DIAMETER, (g, c) => {
+    g.beginPath(); g.arc(c, c, CONFIG.radius - 1, 0, Math.PI * 2);
+    const grad = g.createRadialGradient(c - 6, c - 6, 4, c, c, CONFIG.radius);
+    grad.addColorStop(0, '#555'); grad.addColorStop(0.5, '#111'); grad.addColorStop(1, '#000');
+    g.fillStyle = grad; g.fill();
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.stroke();
+    g.beginPath(); g.arc(c, c, 5, 0, Math.PI * 2);
+    g.fillStyle = '#ff2222'; g.shadowColor = '#ff4444'; g.shadowBlur = 10; g.fill();
+});
+const fireballSprite = makeSprite((CONFIG.radius + 2) * 2, (g, c) => {
+    g.beginPath(); g.arc(c, c, CONFIG.radius + 2, 0, Math.PI * 2);
+    const grad = g.createRadialGradient(c, c, 2, c, c, CONFIG.radius + 2);
+    grad.addColorStop(0, '#fff'); grad.addColorStop(0.3, '#ffeb3b'); grad.addColorStop(0.7, '#ff4757'); grad.addColorStop(1, 'transparent');
+    g.fillStyle = grad; g.fill();
+});
+const lightningSprite = makeSprite(DIAMETER, (g, c) => {
+    g.beginPath(); g.arc(c, c, CONFIG.radius, 0, Math.PI * 2);
+    const grad = g.createRadialGradient(c, c, 2, c, c, CONFIG.radius);
+    grad.addColorStop(0, '#fff'); grad.addColorStop(0.5, '#00d2d3'); grad.addColorStop(1, '#000');
+    g.fillStyle = grad; g.fill();
+    g.strokeStyle = '#fff'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(c - 8, c - 8); g.lineTo(c + 2, c); g.lineTo(c - 4, c + 4); g.lineTo(c + 8, c + 10); g.stroke();
+});
+
 let grid = []; let particles = []; let bullet = null; let nextBulletType = 'normal'; let nextBubbleColor = null; let angle = -Math.PI / 2; let score = 0; let globalDropOffset = 0; let gridOffsetPhase = 0; let predictedCell = null; let inMainMenu = true; let isPaused = false; let inShop = false; let isGameOver = false; let isVictory = false; let inLevelSelect = false; let isReloading = false; let recoilOffset = 0; 
 let currentLevel = 1; let unlockedLevel = 1; let combosMade = 0; let bombsBlown = 0; let sessionCoins = 0; let coins = 0; let upgradeAim = 0; let upgradeDrop = 0; let fireballs = 0; let lightnings = 0; let bestEndlessScore = 0;
 
@@ -534,6 +578,7 @@ function endBulletTurn() { bullet.moving = false; cleanFloatingBubbles(); global
 
 function update() {
     for (let i = particles.length - 1; i >= 0; i--) { let p = particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.5; p.life--; p.size *= 0.95; if (p.life <= 0) particles.splice(i, 1); }
+    if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
     if (isVictory || isGameOver) return; 
     if (recoilOffset > 0) { recoilOffset -= 2; if (recoilOffset < 0) recoilOffset = 0; }
     if (!bullet.moving) { bullet.x = CANNON_X + Math.cos(angle) * (BARREL_LENGTH - recoilOffset); bullet.y = CANNON_Y + Math.sin(angle) * (BARREL_LENGTH - recoilOffset); predictedCell = (bullet.type === 'normal' || bullet.type === 'bomb') ? calculateLanding(bullet.x, bullet.y) : null; } else { predictedCell = null; }
@@ -592,10 +637,10 @@ function draw() {
     }
 }
 
-function drawBubble3D(x, y, color) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, Math.PI*2); let isWhite = (color.toLowerCase() === '#ffffff'); let grad = ctx.createRadialGradient(x - 6, y - 6, 4, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); if (isWhite) { grad.addColorStop(0.5, '#f0f0f0'); grad.addColorStop(1, '#a0a0a0'); } else { grad.addColorStop(0.4, color); grad.addColorStop(1, '#000'); } ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1; ctx.stroke(); }
-function drawBomb(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, Math.PI*2); let grad = ctx.createRadialGradient(x - 6, y - 6, 4, x, y, CONFIG.radius); grad.addColorStop(0, '#555'); grad.addColorStop(0.5, '#111'); grad.addColorStop(1, '#000'); ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fillStyle = '#ff2222'; ctx.shadowColor = '#ff4444'; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0; }
-function drawFireball(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius + 2, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius+2); grad.addColorStop(0, '#fff'); grad.addColorStop(0.3, '#ffeb3b'); grad.addColorStop(0.7, '#ff4757'); grad.addColorStop(1, 'transparent'); ctx.fillStyle = grad; ctx.fill(); }
-function drawLightning(x, y) { ctx.beginPath(); ctx.arc(x, y, CONFIG.radius, 0, Math.PI*2); let grad = ctx.createRadialGradient(x, y, 2, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); grad.addColorStop(0.5, '#00d2d3'); grad.addColorStop(1, '#000'); ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x-8, y-8); ctx.lineTo(x+2, y); ctx.lineTo(x-4, y+4); ctx.lineTo(x+8, y+10); ctx.stroke(); }
+function drawBubble3D(x, y, color) { const sprite = bubbleSprites[color]; if (sprite) { ctx.drawImage(sprite, x - CONFIG.radius, y - CONFIG.radius); return; } ctx.beginPath(); ctx.arc(x, y, CONFIG.radius - 1, 0, Math.PI*2); let isWhite = (color.toLowerCase() === '#ffffff'); let grad = ctx.createRadialGradient(x - 6, y - 6, 4, x, y, CONFIG.radius); grad.addColorStop(0, '#fff'); if (isWhite) { grad.addColorStop(0.5, '#f0f0f0'); grad.addColorStop(1, '#a0a0a0'); } else { grad.addColorStop(0.4, color); grad.addColorStop(1, '#000'); } ctx.fillStyle = grad; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1; ctx.stroke(); }
+function drawBomb(x, y) { ctx.drawImage(bombSprite, x - CONFIG.radius, y - CONFIG.radius); }
+function drawFireball(x, y) { ctx.drawImage(fireballSprite, x - CONFIG.radius - 2, y - CONFIG.radius - 2); }
+function drawLightning(x, y) { ctx.drawImage(lightningSprite, x - CONFIG.radius, y - CONFIG.radius); }
 
 function loop() { 
     if (!isPaused && !inShop && !isGameOver && !inMainMenu && !inLevelSelect && document.getElementById('leaderboardScreen').style.display !== 'flex' && !isAdShowing) {

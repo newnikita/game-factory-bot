@@ -571,6 +571,40 @@
 
         let currentPiece; let nextPiece; let dropCounter = 0; let dropInterval = 1000; let lastTime = 0;
 
+        const blockSpriteCache = new Map();
+        function getBlockSprite(colorId, size) {
+            const theme = colors[colorId];
+            const key = theme.base + ':' + theme.glow + ':' + size;
+            if (blockSpriteCache.has(key)) return blockSpriteCache.get(key);
+            const sprite = document.createElement('canvas');
+            sprite.width = size; sprite.height = size;
+            const g = sprite.getContext('2d');
+            const border = Math.max(4, size * 0.15);
+            g.fillStyle = theme.base; g.fillRect(0, 0, size, size);
+            g.fillStyle = 'rgba(255, 255, 255, 0.4)'; g.beginPath(); g.moveTo(0, 0); g.lineTo(size, 0); g.lineTo(size - border, border); g.lineTo(border, border); g.fill();
+            g.fillStyle = 'rgba(255, 255, 255, 0.2)'; g.beginPath(); g.moveTo(0, 0); g.lineTo(border, border); g.lineTo(border, size - border); g.lineTo(0, size); g.fill();
+            g.fillStyle = 'rgba(0, 0, 0, 0.6)'; g.beginPath(); g.moveTo(0, size); g.lineTo(border, size - border); g.lineTo(size - border, size - border); g.lineTo(size, size); g.fill();
+            g.fillStyle = 'rgba(0, 0, 0, 0.4)'; g.beginPath(); g.moveTo(size, 0); g.lineTo(size - border, border); g.lineTo(size - border, size - border); g.lineTo(size, size); g.fill();
+            const grad = g.createLinearGradient(border, border, size - border, size - border);
+            grad.addColorStop(0, theme.glow); grad.addColorStop(1, theme.base);
+            g.fillStyle = grad; g.fillRect(border, border, size - border * 2, size - border * 2);
+            g.strokeStyle = 'rgba(255, 255, 255, 0.5)'; g.lineWidth = 1; g.beginPath(); g.moveTo(border, size - border); g.lineTo(border, border); g.lineTo(size - border, border); g.stroke();
+            g.strokeStyle = 'rgba(0, 0, 0, 0.8)'; g.lineWidth = 1; g.strokeRect(0, 0, size, size);
+            blockSpriteCache.set(key, sprite);
+            return sprite;
+        }
+        let gridSprite = null;
+        function getGridSprite() {
+            if (gridSprite) return gridSprite;
+            gridSprite = document.createElement('canvas');
+            gridSprite.width = canvas.width; gridSprite.height = canvas.height;
+            const g = gridSprite.getContext('2d');
+            g.strokeStyle = 'rgba(255, 255, 255, 0.1)'; g.lineWidth = 1;
+            for (let i = 0; i < COLS; i++) { g.beginPath(); g.moveTo(i * BLOCK_SIZE, 0); g.lineTo(i * BLOCK_SIZE, canvas.height); g.stroke(); }
+            for (let j = 0; j < ROWS; j++) { g.beginPath(); g.moveTo(0, j * BLOCK_SIZE); g.lineTo(canvas.width, j * BLOCK_SIZE); g.stroke(); }
+            return gridSprite;
+        }
+
         function drawBlock(context, x, y, colorId, size = BLOCK_SIZE, isGhost = false) {
             if (colorId === 0) return;
             const theme = colors[colorId]; const px = x * size; const py = y * size;
@@ -579,17 +613,7 @@
                 context.strokeRect(px + 2, py + 2, size - 4, size - 4); context.setLineDash([]);
                 context.fillStyle = theme.base; context.globalAlpha = 0.15; context.fillRect(px + 4, py + 4, size - 8, size - 8); context.globalAlpha = 1.0;
             } else {
-                context.fillStyle = theme.base; context.fillRect(px, py, size, size);
-                const border = Math.max(4, size * 0.15); 
-                context.fillStyle = 'rgba(255, 255, 255, 0.4)'; context.beginPath(); context.moveTo(px, py); context.lineTo(px + size, py); context.lineTo(px + size - border, py + border); context.lineTo(px + border, py + border); context.fill();
-                context.fillStyle = 'rgba(255, 255, 255, 0.2)'; context.beginPath(); context.moveTo(px, py); context.lineTo(px + border, py + border); context.lineTo(px + border, py + size - border); context.lineTo(px, py + size); context.fill();
-                context.fillStyle = 'rgba(0, 0, 0, 0.6)'; context.beginPath(); context.moveTo(px, py + size); context.lineTo(px + border, py + size - border); context.lineTo(px + size - border, py + size - border); context.lineTo(px + size, py + size); context.fill();
-                context.fillStyle = 'rgba(0, 0, 0, 0.4)'; context.beginPath(); context.moveTo(px + size, py); context.lineTo(px + size - border, py + border); context.lineTo(px + size - border, py + size - border); context.lineTo(px + size, py + size); context.fill();
-                let grad = context.createLinearGradient(px + border, py + border, px + size - border, py + size - border);
-                grad.addColorStop(0, theme.glow); grad.addColorStop(1, theme.base);
-                context.fillStyle = grad; context.fillRect(px + border, py + border, size - border * 2, size - border * 2);
-                context.strokeStyle = 'rgba(255, 255, 255, 0.5)'; context.lineWidth = 1; context.beginPath(); context.moveTo(px + border, py + size - border); context.lineTo(px + border, py + border); context.lineTo(px + size - border, py + border); context.stroke();
-                context.strokeStyle = 'rgba(0, 0, 0, 0.8)'; context.lineWidth = 1; context.strokeRect(px, py, size, size);
+                context.drawImage(getBlockSprite(colorId, size), px, py);
             }
         }
 
@@ -761,9 +785,7 @@
 
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)'; ctx.lineWidth = 1;
-            for(let i = 0; i < COLS; i++) { ctx.beginPath(); ctx.moveTo(i * BLOCK_SIZE, 0); ctx.lineTo(i * BLOCK_SIZE, canvas.height); ctx.stroke(); }
-            for(let j = 0; j < ROWS; j++) { ctx.beginPath(); ctx.moveTo(0, j * BLOCK_SIZE); ctx.lineTo(canvas.width, j * BLOCK_SIZE); ctx.stroke(); }
+            ctx.drawImage(getGridSprite(), 0, 0);
             for (let row = 0; row < ROWS; row++) for (let col = 0; col < COLS; col++) drawBlock(ctx, col, row, playField[row][col], BLOCK_SIZE, false);
             if (gameState === 'PLAYING' && currentPiece) {
                 const ghostY = getGhostY();

@@ -97,20 +97,41 @@
         4: '#e53935'       // Цвет врагов
     };
 
-    function drawPixelSprite(ctx, matrix, x, y, pixelSize, flipX = false) {
+    const spriteCanvasCache = new WeakMap();
+    function getSpriteCanvas(matrix) {
+        let sprite = spriteCanvasCache.get(matrix);
+        if (sprite) return sprite;
         const size = matrix.length;
-        const offsetX = x - (size * pixelSize) / 2;
-        const offsetY = y - (size * pixelSize) / 2;
-
+        sprite = document.createElement('canvas');
+        sprite.width = size; sprite.height = size;
+        const g = sprite.getContext('2d');
         for (let row = 0; row < size; row++) {
             for (let col = 0; col < size; col++) {
-                let colorCode = flipX ? matrix[row][size - 1 - col] : matrix[row][col];
+                const colorCode = matrix[row][col];
                 if (colorCode !== 0) {
-                    ctx.fillStyle = PALETTE[colorCode] || '#FFF';
-                    ctx.fillRect(offsetX + col * pixelSize, offsetY + row * pixelSize, pixelSize, pixelSize);
+                    g.fillStyle = PALETTE[colorCode] || '#FFF';
+                    g.fillRect(col, row, 1, 1);
                 }
             }
         }
+        spriteCanvasCache.set(matrix, sprite);
+        return sprite;
+    }
+
+    function drawPixelSprite(ctx, matrix, x, y, pixelSize, flipX = false) {
+        const size = matrix.length;
+        const sprite = getSpriteCanvas(matrix);
+        const scaled = size * pixelSize;
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        if (flipX) {
+            ctx.translate(x, y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(sprite, -scaled / 2, -scaled / 2, scaled, scaled);
+        } else {
+            ctx.drawImage(sprite, x - scaled / 2, y - scaled / 2, scaled, scaled);
+        }
+        ctx.restore();
     }
 
     // --- СОСТОЯНИЕ ИГРЫ ---
@@ -125,6 +146,8 @@
     let bullets = [];
     let enemies = [];
     let particles = [];
+    const MAX_ENEMIES = 30;
+    const MAX_PARTICLES = 120;
 
     // --- ЛОГИКА ---
     function spawnEnemy() {
@@ -200,7 +223,7 @@
         }
 
         // Враги
-        if (state.frame % Math.max(20, 60 - Math.floor(state.score / 2)) === 0) spawnEnemy();
+        if (enemies.length < MAX_ENEMIES && state.frame % Math.max(20, 60 - Math.floor(state.score / 2)) === 0) spawnEnemy();
 
         for (let i = enemies.length - 1; i >= 0; i--) {
             let e = enemies[i];
@@ -244,6 +267,7 @@
             p.x += p.vx; p.y += p.vy; p.life--;
             if (p.life <= 0) particles.splice(i, 1);
         }
+        if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
     }
 
     function draw() {

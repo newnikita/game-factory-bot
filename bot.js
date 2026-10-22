@@ -1519,7 +1519,66 @@ bot.command('legal', async (ctx) => {
 bot.command('stats', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     const stats = getStats();
-    await ctx.reply(`👑 Статистика\n\nПользователей: ${stats.users}\nИгр: ${stats.games}\nГенераций: ${stats.generations}\nПлатежей: ${stats.payments}\nОткрытых жалоб: ${stats.openComplaints}`);
+    const quality = stats.quality;
+    const qualityLines = quality && quality.count
+        ? [
+            '',
+            `Качество за ${quality.days} дней: ${quality.avgScore}/100 по ${quality.count} генерациям`,
+            `Ниже 80: ${quality.lowQuality}`,
+            quality.topIssues.length
+                ? 'Частые замечания: ' + quality.topIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
+                : 'Частых замечаний нет'
+        ]
+        : ['', 'Качество: пока нет данных'];
+    await ctx.reply([
+        '👑 Статистика',
+        '',
+        `Пользователей: ${stats.users}`,
+        `Игр: ${stats.games}`,
+        `Генераций: ${stats.generations}`,
+        `Платежей: ${stats.payments}`,
+        `Открытых жалоб: ${stats.openComplaints}`,
+        ...qualityLines
+    ].join('\n'));
+});
+
+bot.command('quality', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const gameId = String(ctx.message.text || '').trim().split(/\s+/)[1];
+    if (!gameId || !isSafeGameId(gameId) || !gameId.startsWith('ai_')) {
+        return ctx.reply('Использование: /quality <ai_...>');
+    }
+    const gamePath = path.join(aiGamesDir, `${gameId}.html`);
+    if (!fs.existsSync(gamePath)) return ctx.reply('Файл игры не найден.');
+    let code;
+    try {
+        code = fs.readFileSync(gamePath, 'utf8');
+    } catch (error) {
+        return ctx.reply('Не удалось прочитать файл игры.');
+    }
+    const platform = detectPlatform(code);
+    const validation = validateGameCode(code, platform);
+    const audit = auditGame(code, platform);
+    const criticals = validation.filter((item) => item.level === 'critical')
+        .concat(audit.issues.filter((item) => item.level === 'critical'));
+    const warnings = validation.filter((item) => item.level === 'warning')
+        .concat(audit.issues.filter((item) => item.level === 'warning'));
+    const lines = [
+        `🧪 Качество ${gameId}`,
+        `Технический балл: ${audit.score}/100 · платформа: ${platform}`,
+        `Критично: ${criticals.length} · предупреждений: ${warnings.length}`
+    ];
+    if (criticals.length) {
+        lines.push('', 'Критичные проблемы:');
+        criticals.slice(0, 5).forEach((item) => lines.push('• ' + item.msg));
+    } else {
+        lines.push('', 'Критичных проблем не найдено.');
+    }
+    if (warnings.length) {
+        lines.push('', 'Предупреждения:');
+        warnings.slice(0, 5).forEach((item) => lines.push('• ' + item.msg));
+    }
+    await ctx.reply(lines.join('\n').slice(0, 4000));
 });
 
 bot.command('reports', async (ctx) => {

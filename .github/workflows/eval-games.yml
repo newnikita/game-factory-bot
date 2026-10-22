@@ -1,0 +1,49 @@
+name: Eval games
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Сколько игр сгенерировать'
+        required: true
+        default: '3'
+      only:
+        description: 'Жанры через запятую (defense,runner,shooter,platformer,puzzle,breaker,arena,racing)'
+        required: false
+        default: ''
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Check Gemini key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Добавьте секрет репозитория GEMINI_API_KEY (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+      - name: Generate and playtest
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LIMIT: ${{ inputs.limit }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          args=(--limit "$LIMIT")
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          npm run eval:games -- "${args[@]}"
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-output
+          path: eval-output/
+          if-no-files-found: warn

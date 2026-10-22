@@ -57,7 +57,9 @@ function findChrome() {
         'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
         'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
         '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
         '/usr/bin/chromium',
+        '/opt/google/chrome/chrome',
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     ].filter(Boolean);
     return candidates.find((file) => fs.existsSync(file)) || null;

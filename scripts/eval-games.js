@@ -6,20 +6,24 @@ const https = require('https');
 const axios = require('axios');
 
 function installDnsFallback() {
-    dns.setServers(['8.8.8.8', '1.1.1.1']);
     const cache = new Map();
+    const remember = (hostname, addresses, options, callback) => {
+        cache.set(hostname, addresses);
+        if (options && options.all) callback(null, addresses.map((address) => ({ address, family: 4 })));
+        else callback(null, addresses[0], 4);
+    };
     const lookup = (hostname, options, callback) => {
         const cached = cache.get(hostname);
-        if (cached) {
-            return options && options.all
-                ? callback(null, cached.map((address) => ({ address, family: 4 })))
-                : callback(null, cached[0], 4);
-        }
+        if (cached) return remember(hostname, cached, options, callback);
         dns.resolve4(hostname, (error, addresses) => {
-            if (error || !addresses || !addresses.length) return callback(error || new Error('DNS: нет A-записи'));
-            cache.set(hostname, addresses);
-            if (options && options.all) callback(null, addresses.map((address) => ({ address, family: 4 })));
-            else callback(null, addresses[0], 4);
+            if (!error && addresses && addresses.length) return remember(hostname, addresses, options, callback);
+            dns.setServers(['8.8.8.8', '1.1.1.1']);
+            dns.resolve4(hostname, (fallbackError, fallbackAddresses) => {
+                if (fallbackError || !fallbackAddresses || !fallbackAddresses.length) {
+                    return callback(fallbackError || error || new Error('DNS: нет A-записи'));
+                }
+                remember(hostname, fallbackAddresses, options, callback);
+            });
         });
     };
     axios.defaults.httpsAgent = new https.Agent({ lookup, keepAlive: true });

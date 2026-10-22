@@ -734,6 +734,31 @@ function sandboxGameUrl(gameId) {
     return `${base}/sandbox/${encodeURIComponent(gameId)}`;
 }
 
+function injectDprGuard(html) {
+    const guard = `<script>(function(){var cap=${MAX_DEVICE_PIXEL_RATIO};try{if((window.devicePixelRatio||1)>cap){Object.defineProperty(window,'devicePixelRatio',{get:function(){return cap;},configurable:true});}}catch(e){}})();</script>`;
+    if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (match) => match + guard);
+    if (/<body[^>]*>/i.test(html)) return html.replace(/<body[^>]*>/i, (match) => match + guard);
+    return guard + html;
+}
+
+function applySandboxHeaders(res) {
+    res.setHeader('Content-Security-Policy', [
+        'sandbox allow-scripts allow-pointer-lock allow-orientation-lock',
+        "default-src 'none'",
+        "script-src 'unsafe-inline' 'unsafe-eval'",
+        "style-src 'unsafe-inline'",
+        "img-src data: https: http:",
+        "media-src data:",
+        "font-src data:",
+        "connect-src 'none'",
+        "form-action 'none'",
+        "base-uri 'none'"
+    ].join('; '));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+}
+
 app.get('/', (req, res) => res.type('text').send('Фабрика Игр: Статус OK'));
 app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
 
@@ -828,31 +853,42 @@ app.get('/sandbox/:gameId', (req, res) => {
         return res.status(500).type('text').send('Не удалось открыть игру');
     }
 
-    const dprGuard = `<script>(function(){var cap=${MAX_DEVICE_PIXEL_RATIO};try{if((window.devicePixelRatio||1)>cap){Object.defineProperty(window,'devicePixelRatio',{get:function(){return cap;},configurable:true});}}catch(e){}})();</script>`;
-    if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/<head[^>]*>/i, (match) => match + dprGuard);
-    } else if (/<body[^>]*>/i.test(html)) {
-        html = html.replace(/<body[^>]*>/i, (match) => match + dprGuard);
-    } else {
-        html = dprGuard + html;
+    html = injectDprGuard(html);
+    applySandboxHeaders(res);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.type('html').send(html);
+});
+
+app.get('/test-games/', (req, res) => {
+    const dir = path.join(__dirname, 'test-games');
+    const files = fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter((file) => /^[a-z0-9-]+\.html$/i.test(file)).sort()
+        : [];
+    const links = files.map((file) =>
+        `<li><a href="/test-games/${encodeURIComponent(file)}">${escapeHtml(file)}</a></li>`).join('');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.type('html').send(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Тестовые игры</title></head><body><h1>Тестовые игры</h1><p>Проверка мобильной производительности.</p><ul>${links || '<li>Пока нет игр</li>'}</ul></body></html>`);
+});
+
+app.get('/test-games/:file', (req, res) => {
+    const file = String(req.params.file || '');
+    if (!/^[a-z0-9-]+\.html$/i.test(file)) return res.status(404).type('text').send('Игра не найдена');
+
+    const gamePath = path.join(__dirname, 'test-games', file);
+    if (!fs.existsSync(gamePath)) return res.status(404).type('text').send('Игра не найдена');
+
+    let html;
+    try {
+        html = fs.readFileSync(gamePath, 'utf8');
+    } catch (error) {
+        return res.status(500).type('text').send('Не удалось открыть игру');
     }
 
-    res.setHeader('Content-Security-Policy', [
-        'sandbox allow-scripts allow-pointer-lock allow-orientation-lock',
-        "default-src 'none'",
-        "script-src 'unsafe-inline' 'unsafe-eval'",
-        "style-src 'unsafe-inline'",
-        "img-src data: https: http:",
-        "media-src data:",
-        "font-src data:",
-        "connect-src 'none'",
-        "form-action 'none'",
-        "base-uri 'none'"
-    ].join('; '));
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
-    res.setHeader('Cache-Control', 'private, max-age=300');
+    html = injectDprGuard(html);
+    applySandboxHeaders(res);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.type('html').send(html);
 });
 

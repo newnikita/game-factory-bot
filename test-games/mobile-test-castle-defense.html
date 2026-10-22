@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Защитник Ворот</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; touch-action: none; outline: none; }
+        body, html { width: 100%; height: 100%; position: fixed; overflow: hidden; display: flex; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: white; background: url('https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1080&auto=format&fit=crop') center/cover no-repeat; }
+        
+        #game-container { position: relative; width: 100%; height: 100%; max-width: 1000px; max-height: 700px; overflow: hidden; background-color: rgba(10, 5, 20, 0.8); box-shadow: 0 0 30px rgba(0, 0, 0, 0.7); border-radius: 8px; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0, 0, 0, 0.7); z-index: 10; text-align: center; }
+        .hidden { display: none !important; }
+
+        .game-title { font-size: 8vmin; margin-bottom: 2vmin; color: #FFDDC1; text-shadow: 0 0 10px #FFDDC1, 0 0 20px #FFDDC1; }
+        .game-subtitle { font-size: 4vmin; margin-bottom: 4vmin; color: #FFF; text-shadow: 0 0 5px #FFF; }
+        .menu-option { padding: 2vmin 6vmin; font-size: 3.5vmin; font-weight: bold; cursor: pointer; text-transform: uppercase; margin: 1.5vmin; background: linear-gradient(45deg, #a0522d, #d2691e); border: 2px solid #FFDDC1; border-radius: 10px; box-shadow: 0 0 15px rgba(255, 221, 193, 0.5); transition: transform 0.1s; }
+        .menu-option:active { transform: scale(0.95); }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="menu" class="overlay">
+        <div class="game-title">Защитник Ворот</div>
+        <div class="menu-option" data-action="start">Начать Оборону</div>
+    </div>
+
+    <div id="pause-screen" class="overlay hidden">
+        <div class="game-title">ПАУЗА</div>
+        <div class="menu-option" data-action="resume">Продолжить</div>
+    </div>
+
+    <div id="game-over" class="overlay hidden">
+        <div class="game-title">ВОРОТА ПАЛИ</div>
+        <div class="game-subtitle" id="final-score">Волн пережито: 0</div>
+        <div class="menu-option" data-action="restart">Перезапустить</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    let width, height;
+    let gameScale = 1;
+
+    const GAME_STATE = {
+        MENU: 'MENU',
+        PLAYING: 'PLAYING',
+        PAUSED: 'PAUSED',
+        GAMEOVER: 'GAMEOVER'
+    };
+    let state = {
+        mode: GAME_STATE.MENU,
+        score: 0,
+        wave: 0,
+        combo: 0,
+        lastHitByPlayer: false,
+        lastFrameTime: 0,
+        deltaTime: 0,
+        frame: 0,
+        screenShake: { x: 0, y: 0, duration: 0, intensity: 0 }
+    };
+
+    let touch = { x: 0, y: 0, isDown: false };
+    let archerTarget = { x: 0, y: 0 };
+
+    let archer = { x: 0, y: 0, angle: 0, shootCooldown: 0, maxShootCooldown: 25, animationFrame: 0, animationTimer: 0 };
+    let gates = { x: 0, y: 0, hp: 100, maxHp: 100, width: 100, height: 150 };
+    let arrows = [];
+    let dragons = [];
+    let particles = [];
+
+    const MAX_DRAGONS = 15;
+    const MAX_PARTICLES = 80;
+    const ARROW_SPEED = 15;
+    const PARTICLE_LIFETIME = 30;
+    const DRAGON_SPAWN_INTERVAL_BASE = 180;
+    const WAVE_DURATION = 3000;
+    const DRAGON_HIT_RADIUS = 30;
+    const GATE_HIT_RADIUS = 40;
+
+    const offscreenCanvas = {};
+    const gradients = {};
+
+    function initCachedAssets() {
+        gradients.sky = ctx.createLinearGradient(0, 0, 0, height);
+        gradients.sky.addColorStop(0, '#3a0020');
+        gradients.sky.addColorStop(0.3, '#6a0030');
+        gradients.sky.addColorStop(0.6, '#a03040');
+        gradients.sky.addColorStop(1, '#ff8040');
+
+        offscreenCanvas.archerBody = document.createElement('canvas');
+        offscreenCanvas.archerBow = document.createElement('canvas');
+        offscreenCanvas.archerArm = document.createElement('canvas');
+
+        offscreenCanvas.gateFull = document.createElement('canvas');
+        offscreenCanvas.gateDamaged = document.createElement('canvas');
+        offscreenCanvas.gateCritical = document.createElement('canvas');
+
+        offscreenCanvas.dragonBody = document.createElement('canvas');
+        offscreenCanvas.dragonWingUp = document.createElement('canvas');
+        offscreenCanvas.dragonWingDown = document.createElement('canvas');
+
+        drawArcherOntoOffscreen();
+        drawGatesOntoOffscreen();
+        drawDragonOntoOffscreen();
+    }
+
+    function drawArcherOntoOffscreen() {
+        const bodyWidth = 20 * gameScale, bodyHeight = 40 * gameScale;
+        offscreenCanvas.archerBody.width = bodyWidth * dpr;
+        offscreenCanvas.archerBody.height = bodyHeight * dpr;
+        const ac = offscreenCanvas.archerBody.getContext('2d');
+        ac.scale(dpr, dpr);
+        ac.fillStyle = '#4a2a1a';
+        ac.beginPath();
+        ac.moveTo(bodyWidth * 0.5, 0);
+        ac.lineTo(bodyWidth, bodyHeight * 0.3);
+        ac.lineTo(bodyWidth * 0.7, bodyHeight);
+        ac.lineTo(bodyWidth * 0.3, bodyHeight);
+        ac.lineTo(0, bodyHeight * 0.3);
+        ac.closePath();
+        ac.fill();
+        ac.strokeStyle = '#2a1a0a';
+        ac.lineWidth = 2 * gameScale;
+        ac.stroke();
+
+        const armWidth = 10 * gameScale, armHeight = 30 * gameScale;
+        offscreenCanvas.archerArm.width = armWidth * dpr;
+        offscreenCanvas.archerArm.height = armHeight * dpr;
+        const armc = offscreenCanvas.archerArm.getContext('2d');
+        armc.scale(dpr, dpr);
+        armc.fillStyle = '#6a4a3a';
+        armc.beginPath();
+        armc.ellipse(armWidth * 0.5, armHeight * 0.5, armWidth * 0.5, armHeight * 0.5, 0, 0, Math.PI * 2);
+        armc.fill();
+        armc.strokeStyle = '#4a2a1a';
+        armc.lineWidth = 1 * gameScale;
+        armc.stroke();
+
+        const bowLength = 50 * gameScale;
+        offscreenCanvas.archerBow.width = bowLength * dpr;
+        offscreenCanvas.archerBow.height = bowLength * dpr;
+        const bowc = offscreenCanvas.archerBow.getContext('2d');
+        bowc.scale(dpr, dpr);
+        bowc.translate(bowLength * 0.5, bowLength * 0.5);
+        bowc.rotate(Math.PI / 2);
+        bowc.fillStyle = '#7a5a3a';
+        bowc.beginPath();
+        bowc.arc(0, 0, bowLength * 0.4, Math.PI * 0.7, Math.PI * 1.3);
+        bowc.lineTo(0, bowLength * 0.4);
+        bowc.closePath();
+        bowc.fill();
+        bowc.strokeStyle = '#5a3a1a';
+        bowc.lineWidth = 2 * gameScale;
+        bowc.stroke();
+    }
+
+    function drawGatesOntoOffscreen() {
+        const gateFullWidth = gates.width, gateFullHeight = gates.height;
+
+        const gcFull = offscreenCanvas.gateFull.getContext('2d');
+        offscreenCanvas.gateFull.width = gateFullWidth * dpr;
+        offscreenCanvas.gateFull.height = gateFullHeight * dpr;
+        gcFull.scale(dpr, dpr);
+        gcFull.fillStyle = '#8B4513';
+        gcFull.fillRect(0, 0, gateFullWidth, gateFullHeight);
+        gcFull.strokeStyle = '#5A2C0A';
+        gcFull.lineWidth = 4 * gameScale;
+        gcFull.strokeRect(0, 0, gateFullWidth, gateFullHeight);
+        for (let i = 0; i < 3; i++) {
+            gcFull.fillStyle = '#A0522D';
+            gcFull.fillRect(gateFullWidth * 0.1 + i * gateFullWidth * 0.3, 0, gateFullWidth * 0.2, gateFullHeight);
+            gcFull.strokeStyle = '#5A2C0A';
+            gcFull.lineWidth = 2 * gameScale;
+            gcFull.strokeRect(gateFullWidth * 0.1 + i * gateFullWidth * 0.3, 0, gateFullWidth * 0.2, gateFullHeight);
+        }
+        gcFull.fillStyle = '#5A2C0A';
+        gcFull.fillRect(0, gateFullHeight * 0.3, gateFullWidth, gateFullHeight * 0.1);
+        gcFull.fillRect(0, gateFullHeight * 0.6, gateFullWidth, gateFullHeight * 0.1);
+
+        const gcDamaged = offscreenCanvas.gateDamaged.getContext('2d');
+        offscreenCanvas.gateDamaged.width = gateFullWidth * dpr;
+        offscreenCanvas.gateDamaged.height = gateFullHeight * dpr;
+        gcDamaged.scale(dpr, dpr);
+        gcDamaged.drawImage(offscreenCanvas.gateFull, 0, 0, gateFullWidth, gateFullHeight);
+        gcDamaged.fillStyle = 'rgba(150, 50, 0, 0.5)';
+        gcDamaged.fillRect(0, 0, gateFullWidth, gateFullHeight);
+        gcDamaged.strokeStyle = '#301000';
+        gcDamaged.lineWidth = 2 * gameScale;
+        gcDamaged.beginPath();
+        gcDamaged.moveTo(gateFullWidth * 0.2, gateFullHeight * 0.2);
+        gcDamaged.lineTo(gateFullWidth * 0.4, gateFullHeight * 0.1);
+        gcDamaged.lineTo(gateFullWidth * 0.3, gateFullHeight * 0.4);
+        gcDamaged.lineTo(gateFullWidth * 0.5, gateFullHeight * 0.3);
+        gcDamaged.stroke();
+
+        const gcCritical = offscreenCanvas.gateCritical.getContext('2d');
+        offscreenCanvas.gateCritical.width = gateFullWidth * dpr;
+        offscreenCanvas.gateCritical.height = gateFullHeight * dpr;
+        gcCritical.scale(dpr, dpr);
+        gcCritical.drawImage(offscreenCanvas.gateDamaged, 0, 0, gateFullWidth, gateFullHeight);
+        gcCritical.fillStyle = 'rgba(100, 20, 0, 0.7)';
+        gcCritical.fillRect(0, 0, gateFullWidth, gateFullHeight);
+        gcCritical.strokeStyle = '#100000';
+        gcCritical.lineWidth = 3 * gameScale;
+        gcCritical.beginPath();
+        gcCritical.moveTo(gateFullWidth * 0.1, gateFullHeight * 0.5);
+        gcCritical.lineTo(gateFullWidth * 0.6, gateFullHeight * 0.1);
+        gcCritical.lineTo(gateFullWidth * 0.8, gateFullHeight * 0.4);
+        gcCritical.lineTo(gateFullWidth * 0.4, gateFullHeight * 0.9);
+        gcCritical.lineTo(gateFullWidth * 0.2, gateFullHeight * 0.7);
+        gcCritical.stroke();
+    }
+
+    function drawDragonOntoOffscreen() {
+        const dragonBaseSize = 60 * gameScale;
+        offscreenCanvas.dragonBody.width = dragonBaseSize * dpr;
+        offscreenCanvas.dragonBody.height = dragonBaseSize * dpr;
+        offscreenCanvas.dragonWingUp.width = dragonBaseSize * dpr;
+        offscreenCanvas.dragonWingUp.height = dragonBaseSize * dpr;
+        offscreenCanvas.dragonWingDown.width = dragonBaseSize * dpr;
+        offscreenCanvas.dragonWingDown.height = dragonBaseSize * dpr;
+
+        const dcBody = offscreenCanvas.dragonBody.getContext('2d');
+        dcBody.scale(dpr, dpr);
+        const bodyGradient = dcBody.createLinearGradient(0, 0, dragonBaseSize * 0.8, dragonBaseSize * 0.5);
+        bodyGradient.addColorStop(0, '#600000');
+        bodyGradient.addColorStop(0.5, '#900000');
+        bodyGradient.addColorStop(1, '#c00000');
+        dcBody.fillStyle = bodyGradient;
+        dcBody.beginPath();
+        dcBody.ellipse(dragonBaseSize * 0.5, dragonBaseSize * 0.5, dragonBaseSize * 0.4, dragonBaseSize * 0.2, 0, 0, Math.PI * 2);
+        dcBody.fill();
+        dcBody.strokeStyle = '#300000';
+        dcBody.lineWidth = 2 * gameScale;
+        dcBody.stroke();
+        dcBody.beginPath();
+        dcBody.arc(dragonBaseSize * 0.8, dragonBaseSize * 0.4, dragonBaseSize * 0.15, 0, Math.PI * 2);
+        dcBody.fill();
+        dcBody.stroke();
+        dcBody.fillStyle = 'yellow';
+        dcBody.shadowColor = 'orange';
+        dcBody.shadowBlur = 5 * gameScale;
+        dcBody.beginPath();
+        dcBody.arc(dragonBaseSize * 0.85, dragonBaseSize * 0.35, dragonBaseSize * 0.03, 0, Math.PI * 2);
+        dcBody.fill();
+        dcBody.shadowBlur = 0;
+
+        const dcWingUp = offscreenCanvas.dragonWingUp.getContext('2d');
+        dcWingUp.scale(dpr, dpr);
+        dcWingUp.fillStyle = '#600000';
+        dcWingUp.beginPath();
+        dcWingUp.moveTo(0, dragonBaseSize * 0.5);
+        dcWingUp.quadraticCurveTo(dragonBaseSize * 0.3, dragonBaseSize * 0.1, dragonBaseSize * 0.6, dragonBaseSize * 0.2);
+        dcWingUp.quadraticCurveTo(dragonBaseSize * 0.4, dragonBaseSize * 0.4, 0, dragonBaseSize * 0.5);
+        dcWingUp.fill();
+        dcWingUp.strokeStyle = '#300000';
+        dcWingUp.lineWidth = 2 * gameScale;
+        dcWingUp.stroke();
+
+        const dcWingDown = offscreenCanvas.dragonWingDown.getContext('2d');
+        dcWingDown.scale(dpr, dpr);
+        dcWingDown.fillStyle = '#600000';
+        dcWingDown.beginPath();
+        dcWingDown.moveTo(0, dragonBaseSize * 0.5);
+        dcWingDown.quadraticCurveTo(dragonBaseSize * 0.3, dragonBaseSize * 0.9, dragonBaseSize * 0.6, dragonBaseSize * 0.8);
+        dcWingDown.quadraticCurveTo(dragonBaseSize * 0.4, dragonBaseSize * 0.6, 0, dragonBaseSize * 0.5);
+        dcWingDown.fill();
+        dcWingDown.strokeStyle = '#300000';
+        dcWingDown.lineWidth = 2 * gameScale;
+        dcWingDown.stroke();
+    }
+
+    function spawnDragon() {
+        if (dragons.length >= MAX_DRAGONS) return;
+
+        let type = Math.random() < (0.2 + state.wave * 0.05) ? 'fast' : 'normal';
+        let speed = (type === 'fast' ? 2 : 1) * (1 + state.wave * 0.1);
+        let size = (type === 'fast' ? 0.8 : 1) + Math.random() * 0.3;
+
+        let side = Math.random() < 0.5 ? -1 : 1;
+        let startX = side === -1 ? -100 * gameScale : width + 100 * gameScale;
+        let startY = height * 0.2 + Math.random() * height * 0.4;
+
+        dragons.push({
+            x: startX, y: startY,
+            speed: speed,
+            hp: type === 'fast' ? 1 : 2,
+            maxHp: type === 'fast' ? 1 : 2,
+            size: size,
+            type: type,
+            animationFrame: Math.floor(Math.random() * 20),
+            flipX: side === 1,
+            targetY: gates.y - gates.height / 2 + Math.random() * gates.height,
+            targetX: gates.x + (side === -1 ? gates.width / 2 : -gates.width / 2)
+        });
+    }
+
+    function shootArrow() {
+        if (archer.shootCooldown > 0) return;
+
+        let startX = archer.x + Math.cos(archer.angle) * (20 * gameScale);
+        let startY = archer.y + Math.sin(archer.angle) * (20 * gameScale);
+
+        arrows.push({
+            x: startX, y: startY,
+            vx: Math.cos(archer.angle) * ARROW_SPEED * gameScale,
+            vy: Math.sin(archer.angle) * ARROW_SPEED * gameScale,
+            life: 100,
+            size: 10 * gameScale
+        });
+
+        archer.shootCooldown = archer.maxShootCooldown;
+        state.lastHitByPlayer = false;
+    }
+
+    function createParticle(x, y, color, count = 1, minVx = -3, maxVx = 3, minVy = -3, maxVy = 3, minSize = 2, maxSize = 5) {
+        for (let i = 0; i < count; i++) {
+            if (particles.length >= MAX_PARTICLES) {
+                particles.shift();
+            }
+            particles.push({
+                x: x, y: y,
+                vx: (Math.random() * (maxVx - minVx) + minVx) * gameScale,
+                vy: (Math.random() * (maxVy - minVy) + minVy) * gameScale,
+                life: PARTICLE_LIFETIME,
+                maxLife: PARTICLE_LIFETIME,
+                color: color,
+                size: (Math.random() * (maxSize - minSize) + minSize) * gameScale
+            });
+        }
+    }
+
+    function triggerScreenShake(intensity = 5, duration = 10) {
+        state.screenShake.intensity = intensity * gameScale;
+        state.screenShake.duration = duration;
+    }
+
+    function update() {
+        const now = performance.now();
+        state.deltaTime = (now - state.lastFrameTime) / 1000;
+        state.lastFrameTime = now;
+        state.deltaTime = Math.min(state.deltaTime, 1 / 30);
+
+        if (state.mode !== GAME_STATE.PLAYING) return;
+
+        if (state.screenShake.duration > 0) {
+            state.screenShake.x = (Math.random() - 0.5) * 2 * state.screenShake.intensity;
+            state.screenShake.y = (Math.random() - 0.5) * 2 * state.screenShake.intensity;
+            state.screenShake.duration--;
+        } else {
+            state.screenShake.x = 0;
+            state.screenShake.y = 0;
+        }
+
+        archer.animationTimer++;
+        if (archer.animationTimer % 5 === 0) {
+            archer.animationFrame = (archer.animationFrame + 1) % 20;
+        }
+
+        archer.angle = Math.atan2(archerTarget.y - archer.y, archerTarget.x - archer.x);
+        if (touch.isDown) {
+            shootArrow();
+        }
+        if (archer.shootCooldown > 0) archer.shootCooldown--;
+
+        for (let i = arrows.length - 1; i >= 0; i--) {
+            let a = arrows[i];
+            a.x += a.vx * state.deltaTime * 60;
+            a.y += a.vy * state.deltaTime * 60;
+            a.life--;
+
+            if (state.frame % 3 === 0) {
+                createParticle(a.x, a.y, 'rgba(255, 220, 150, 0.8)', 1, -1, 1, -1, 1, 1, 3);
+            }
+
+            let hitDragon = false;
+            for (let j = dragons.length - 1; j >= 0; j--) {
+                let d = dragons[j];
+                let dist = Math.hypot(a.x - d.x, a.y - d.y);
+                if (dist < DRAGON_HIT_RADIUS * d.size) {
+                    d.hp--;
+                    createParticle(a.x, a.y, 'rgba(255, 100, 0, 0.8)', 5, -5, 5, -5, 5, 3, 8);
+                    arrows.splice(i, 1);
+                    hitDragon = true;
+                    state.lastHitByPlayer = true;
+                    state.combo++;
+                    state.score += 10 + state.combo;
+                    if (d.hp <= 0) {
+                        createParticle(d.x, d.y, 'rgba(255, 0, 0, 0.8)', 15, -8, 8, -8, 8, 5, 12);
+                        dragons.splice(j, 1);
+                        state.score += 50 + state.combo * 5;
+                    }
+                    break;
+                }
+            }
+            if (hitDragon) continue;
+
+            if (a.life <= 0 || a.x < -50 || a.x > width + 50 || a.y < -50 || a.y > height + 50) {
+                arrows.splice(i, 1);
+                state.combo = 0;
+            }
+        }
+
+        if (state.frame % Math.max(1, Math.floor(DRAGON_SPAWN_INTERVAL_BASE / (1 + state.wave * 0.5))) === 0) {
+            spawnDragon();
+        }
+
+        for (let i = dragons.length - 1; i >= 0; i--) {
+            let d = dragons[i];
+            let angleToGate = Math.atan2(d.targetY - d.y, d.targetX - d.x);
+            d.x += Math.cos(angleToGate) * d.speed * gameScale * state.deltaTime * 60;
+            d.y += Math.sin(angleToGate) * d.speed * gameScale * state.deltaTime * 60;
+
+            d.animationFrame = (d.animationFrame + 1) % 20;
+
+            let distToGate = Math.hypot(d.x - gates.x, d.y - gates.y);
+            if (distToGate < GATE_HIT_RADIUS * gameScale) {
+                gates.hp -= 10;
+                triggerScreenShake(8, 20);
+                createParticle(d.x, d.y, 'rgba(150, 50, 0, 0.8)', 10, -5, 5, -5, 5, 4, 10);
+                dragons.splice(i, 1);
+                state.combo = 0;
+
+                if (gates.hp <= 0) {
+                    gameOver();
+                }
+            }
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx * state.deltaTime * 60;
+            p.y += p.vy * state.deltaTime * 60;
+            p.life--;
+            if (p.life <= 0) {
+                particles.splice(i, 1);
+            }
+        }
+
+        state.frame++;
+        if (state.frame > WAVE_DURATION && dragons.length === 0) {
+            state.wave++;
+            state.frame = 0;
+            gates.hp = Math.min(gates.hp + 20, gates.maxHp);
+            if (state.wave >= 5) {
+                state.mode = GAME_STATE.GAMEOVER;
+                document.getElementById('final-score').innerText = `Вы выжили 5 волн!\nВаш счет: ${state.score}`;
+                document.getElementById('game-over').classList.remove('hidden');
+            }
+        }
+    }
+
+    function drawParallaxBackground() {
+        ctx.fillStyle = gradients.sky;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.fillStyle = '#300040';
+        ctx.beginPath();
+        ctx.moveTo(0, height * 0.7);
+        ctx.quadraticCurveTo(width * 0.2, height * 0.5, width * 0.4, height * 0.7);
+        ctx.quadraticCurveTo(width * 0.6, height * 0.4, width * 0.8, height * 0.6);
+        ctx.quadraticCurveTo(width * 0.9, height * 0.75, width, height * 0.7);
+        ctx.lineTo(width, height);
+        ctx.lineTo(0, height);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#400030';
+        ctx.beginPath();
+        ctx.moveTo(0, height * 0.8);
+        ctx.quadraticCurveTo(width * 0.15, height * 0.6, width * 0.3, height * 0.8);
+        ctx.quadraticCurveTo(width * 0.5, height * 0.5, width * 0.7, height * 0.75);
+        ctx.quadraticCurveTo(width * 0.85, height * 0.9, width, height * 0.8);
+        ctx.lineTo(width, height);
+        ctx.lineTo(0, height);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#201010';
+        ctx.fillRect(0, height * 0.85, width, height * 0.15);
+    }
+
+    function drawArcher(ctx, archerObj) {
+        ctx.save();
+        ctx.translate(archerObj.x, archerObj.y);
+        ctx.rotate(archerObj.angle);
+
+        const bodyWidth = offscreenCanvas.archerBody.width / dpr;
+        const bodyHeight = offscreenCanvas.archerBody.height / dpr;
+        ctx.drawImage(offscreenCanvas.archerBody, -bodyWidth * 0.5, -bodyHeight * 0.5, bodyWidth, bodyHeight);
+
+        const armWidth = offscreenCanvas.archerArm.width / dpr;
+        const armHeight = offscreenCanvas.archerArm.height / dpr;
+        ctx.drawImage(offscreenCanvas.archerArm, -armWidth * 0.5, -armHeight * 0.5 + (10 * gameScale), armWidth, armHeight);
+
+        const bowLength = offscreenCanvas.archerBow.width / dpr;
+        ctx.drawImage(offscreenCanvas.archerBow, 0, -bowLength * 0.5, bowLength, bowLength);
+
+        ctx.restore();
+    }
+
+    function drawGates(ctx, gatesObj) {
+        ctx.save();
+        ctx.translate(gatesObj.x, gatesObj.y);
+
+        let gateImage;
+        if (gatesObj.hp / gatesObj.maxHp > 0.6) {
+            gateImage = offscreenCanvas.gateFull;
+        } else if (gatesObj.hp / gatesObj.maxHp > 0.3) {
+            gateImage = offscreenCanvas.gateDamaged;
+        } else {
+            gateImage = offscreenCanvas.gateCritical;
+        }
+        ctx.drawImage(gateImage, -gatesObj.width / 2, -gatesObj.height / 2, gatesObj.width, gatesObj.height);
+
+        const barWidth = gatesObj.width * 0.8;
+        const barHeight = 8 * gameScale;
+        const hpPercent = gatesObj.hp / gatesObj.maxHp;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(-barWidth / 2, gatesObj.height / 2 + 10 * gameScale, barWidth, barHeight);
+        ctx.fillStyle = hpPercent > 0.5 ? '#00FF00' : (hpPercent > 0.2 ? '#FFA500' : '#FF0000');
+        ctx.fillRect(-barWidth / 2, gatesObj.height / 2 + 10 * gameScale, barWidth * hpPercent, barHeight);
+        ctx.strokeStyle = '#FFF';
+        ctx.lineWidth = 1 * gameScale;
+        ctx.strokeRect(-barWidth / 2, gatesObj.height / 2 + 10 * gameScale, barWidth, barHeight);
+
+        ctx.restore();
+    }
+
+    function drawDragon(ctx, dragonObj) {
+        ctx.save();
+        ctx.translate(dragonObj.x, dragonObj.y);
+        if (dragonObj.flipX) {
+            ctx.scale(-1, 1);
+        }
+        ctx.scale(dragonObj.size, dragonObj.size);
+
+        const baseSize = offscreenCanvas.dragonBody.width / dpr;
+
+        const wingOffset = Math.sin(dragonObj.animationFrame * 0.2) * (10 * gameScale);
+        const wingImage = dragonObj.animationFrame % 10 < 5 ? offscreenCanvas.dragonWingUp : offscreenCanvas.dragonWingDown;
+
+        ctx.drawImage(wingImage, -baseSize * 0.3, -baseSize * 0.2 + wingOffset, baseSize, baseSize);
+
+        ctx.drawImage(offscreenCanvas.dragonBody, -baseSize * 0.5, -baseSize * 0.5, baseSize, baseSize);
+        
+        const barWidth = baseSize * 0.6;
+        const barHeight = 4 * gameScale;
+        const hpPercent = dragonObj.hp / dragonObj.maxHp;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(-barWidth / 2, -baseSize * 0.7, barWidth, barHeight);
+        ctx.fillStyle = hpPercent > 0.5 ? '#00FF00' : '#FF0000';
+        ctx.fillRect(-barWidth / 2, -baseSize * 0.7, barWidth * hpPercent, barHeight);
+
+        ctx.restore();
+    }
+
+    function drawArrow(ctx, arrowObj) {
+        ctx.save();
+        ctx.translate(arrowObj.x, arrowObj.y);
+        ctx.rotate(Math.atan2(arrowObj.vy, arrowObj.vx));
+
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(-arrowObj.size / 2, -arrowObj.size / 8, arrowObj.size, arrowObj.size / 4);
+
+        ctx.fillStyle = '#C0C0C0';
+        ctx.beginPath();
+        ctx.moveTo(arrowObj.size / 2, 0);
+        ctx.lineTo(arrowObj.size / 2 + arrowObj.size / 3, -arrowObj.size / 4);
+        ctx.lineTo(arrowObj.size / 2 + arrowObj.size / 3, arrowObj.size / 4);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    function drawParticles(ctx) {
+        for (let i = 0; i < particles.length; i++) {
+            let p = particles[i];
+            ctx.save();
+            ctx.globalAlpha = p.life / p.maxLife;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    function drawHUD() {
+        ctx.font = `${20 * gameScale}px 'Segoe UI', sans-serif`;
+        ctx.fillStyle = '#FFF';
+        ctx.shadowColor = 'black';
+        ctx.shadowBlur = 5 * gameScale;
+        ctx.textAlign = 'left';
+        ctx.fillText(`Счет: ${state.score}`, 20 * gameScale, 30 * gameScale);
+        ctx.fillText(`Волна: ${state.wave + 1}`, 20 * gameScale, 60 * gameScale);
+        if (state.combo > 0) {
+            ctx.textAlign = 'center';
+            ctx.fillStyle = 'gold';
+            ctx.fillText(`Комбо x${state.combo}!`, width / 2, 30 * gameScale);
+        }
+
+        const pauseAreaSize = 50 * gameScale;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.fillRect(width - pauseAreaSize, 0, pauseAreaSize, pauseAreaSize);
+        ctx.fillStyle = '#FFF';
+        ctx.fillText('||', width - pauseAreaSize / 2, pauseAreaSize / 2 + 7 * gameScale);
+
+        ctx.shadowBlur = 0;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, width, height);
+
+        ctx.save();
+        ctx.translate(state.screenShake.x, state.screenShake.y);
+
+        drawParallaxBackground();
+        drawGates(ctx, gates);
+
+        dragons.forEach(d => drawDragon(ctx, d));
+        arrows.forEach(a => drawArrow(ctx, a));
+        drawArcher(ctx, archer);
+        drawParticles(ctx);
+
+        ctx.restore();
+
+        drawHUD();
+    }
+
+    function startGame() {
+        state.mode = GAME_STATE.PLAYING;
+        state.score = 0;
+        state.wave = 0;
+        state.combo = 0;
+        state.frame = 0;
+        state.lastHitByPlayer = false;
+        gates.hp = gates.maxHp;
+        arrows = [];
+        dragons = [];
+        particles = [];
+        state.screenShake = { x: 0, y: 0, duration: 0, intensity: 0 };
+
+        document.getElementById('menu').classList.add('hidden');
+        document.getElementById('pause-screen').classList.add('hidden');
+        document.getElementById('game-over').classList.add('hidden');
+    }
+
+    function gameOver() {
+        state.mode = GAME_STATE.GAMEOVER;
+        document.getElementById('final-score').innerText = `Волн пережито: ${state.wave}\nВаш счет: ${state.score}`;
+        document.getElementById('game-over').classList.remove('hidden');
+    }
+
+    function handlePointerDown(e) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        touch.x = (e.clientX || e.touches[0].clientX) - rect.left;
+        touch.y = (e.clientY || e.touches[0].clientY) - rect.top;
+        archerTarget.x = touch.x;
+        archerTarget.y = touch.y;
+        touch.isDown = true;
+
+        const pauseAreaSize = 50 * gameScale;
+        if (touch.x > width - pauseAreaSize && touch.y < pauseAreaSize) {
+            if (state.mode === GAME_STATE.PLAYING) {
+                state.mode = GAME_STATE.PAUSED;
+                document.getElementById('pause-screen').classList.remove('hidden');
+            }
+            return;
+        }
+
+        if (state.mode === GAME_STATE.MENU || state.mode === GAME_STATE.PAUSED || state.mode === GAME_STATE.GAMEOVER) {
+            const overlays = document.querySelectorAll('.overlay:not(.hidden)');
+            overlays.forEach(overlay => {
+                const options = overlay.querySelectorAll('.menu-option');
+                options.forEach(option => {
+                    const optionRect = option.getBoundingClientRect();
+                    if (touch.x >= optionRect.left - rect.left &&
+                        touch.x <= optionRect.right - rect.left &&
+                        touch.y >= optionRect.top - rect.top &&
+                        touch.y <= optionRect.bottom - rect.top) {
+                        
+                        const action = option.dataset.action;
+                        if (action === 'start' || action === 'restart') {
+                            startGame();
+                        } else if (action === 'resume') {
+                            state.mode = GAME_STATE.PLAYING;
+                            document.getElementById('pause-screen').classList.add('hidden');
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    function handlePointerMove(e) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        touch.x = (e.clientX || e.touches[0].clientX) - rect.left;
+        touch.y = (e.clientY || e.touches[0].clientY) - rect.top;
+        archerTarget.x = touch.x;
+        archerTarget.y = touch.y;
+    }
+
+    function handlePointerUp(e) {
+        e.preventDefault();
+        touch.isDown = false;
+    }
+
+    canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+    canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
+    canvas.addEventListener('pointerup', handlePointerUp, { passive: false });
+    canvas.addEventListener('pointercancel', handlePointerUp, { passive: false });
+
+    function resizeGame() {
+        const gameContainer = document.getElementById('game-container');
+        width = canvas.width = gameContainer.clientWidth * dpr;
+        height = canvas.height = gameContainer.clientHeight * dpr;
+
+        canvas.style.width = gameContainer.clientWidth + 'px';
+        canvas.style.height = gameContainer.clientHeight + 'px';
+
+        gameScale = height / 700;
+
+        archer.x = width * 0.15;
+        archer.y = height * 0.8;
+        gates.x = width * 0.5;
+        gates.y = height * 0.7;
+        gates.width = 100 * gameScale;
+        gates.height = 150 * gameScale;
+
+        initCachedAssets();
+
+        if (!touch.isDown) {
+            archerTarget.x = width * 0.7;
+            archerTarget.y = height * 0.5;
+        } else {
+            archerTarget.x = touch.x;
+            archerTarget.y = touch.y;
+        }
+    }
+
+    window.addEventListener('resize', resizeGame);
+
+    function loop(currentTime) {
+        requestAnimationFrame(loop);
+        if (!state.lastFrameTime) state.lastFrameTime = currentTime;
+        update();
+        draw();
+    }
+
+    resizeGame();
+    loop();
+</script>
+
+</html>

@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { Telegraf, session, Markup } = require('telegraf');
 const fs = require('fs');
 const path = require('path');
@@ -25,6 +25,12 @@ const {
     recordGeneration,
     recordGame,
     getGame,
+    createComplaint,
+    getComplaint,
+    listOpenComplaints,
+    hideGame,
+    restoreGame,
+    dismissComplaint,
     logEvent,
     getStats,
     importLegacyUsers
@@ -203,12 +209,14 @@ const SYSTEM_INSTRUCTION = {
             "Отвечай ТОЛЬКО полным кодом одного самодостаточного HTML-файла: от <!DOCTYPE html> до </html>. Запрещены markdown-блоки, пояснения и комментарии в коде.",
             "АБСОЛЮТНЫЕ ПРАВИЛА:",
             "1. Игра запускается мгновенно. Запрещены экраны загрузки, прелоадеры и обращения к элементу loading-screen.",
-            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL. Графику рисуй процедурно на Canvas, персонажей и объекты — пиксель-артом (массивы из 0 и цифр-цветов через fillRect).",
+            "2. Всё в одном файле: CSS в <style>, JS в <script>. Запрещены внешние <script src>, библиотеки, движки, шрифты по ссылкам, картинки и аудиофайлы по URL. Графику рисуй процедурно на Canvas. Не используй примитивные пиксель-арт спрайты и сетки 8×8: персонажи, враги и объекты — выразительные векторные формы (круги, полигоны, скруглённые прямоугольники), градиенты, тени, свечение, частицы и плавная анимация.",
             "3. Запрещены localStorage, Яндекс SDK (YaGames), лидерборды, словари локализаций i18n и HTML-элементы <button>. Меню, кнопки и HUD рисуй на самом canvas либо через div-оверлеи с обработкой ввода по координатам.",
             "4. Обязательные состояния: Меню (старт) → Игра → Пауза → Game Over → Рестарт.",
             "5. Ресайз: обрабатывай изменение размера окна, игра корректно заполняет экран и на ПК, и на телефоне.",
             "6. В CSS тела обязателен дословно этот фон: background: url('{{AI_BG_IMAGE}}') center/cover no-repeat;",
-            "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula]."
+            "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
+            "8. Визуальный уровень — как у современной 2D-игры: 2–3 слоя параллакса полупрозрачными силуэтами, частицы (искры, пыль, взрывы), градиенты через createLinearGradient/createRadialGradient, свечение через shadowBlur, screen shake при попаданиях.",
+            "9. У игрока, врагов, снарядов и декораций должны быть разные узнаваемые силуэты, цвета и анимация (покачивание, вращение, масштаб). Запрещено рисовать всё одинаковыми квадратами."
         ].join('\n')
     }]
 };
@@ -218,7 +226,7 @@ const PLAN_INSTRUCTION = {
         text: [
             "Ты — геймдизайнер браузерных HTML5-игр.",
             "Составь краткий план игры по идее пользователя. Не пиши код.",
-            "Формат — ровно 8 строк, без markdown и нумерации:",
+            "Формат — ровно 9 строк, без markdown и нумерации:",
             "Жанр: ...",
             "Ядро цикла: ...",
             "Управление: ...",
@@ -226,6 +234,7 @@ const PLAN_INSTRUCTION = {
             "Правила победы: ...",
             "Правила поражения: ...",
             "Прогрессия: ...",
+            "Визуальный стиль: палитра, атмосфера, слои фона и эффекты ...",
             "Фишка: ...",
             "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов."
         ].join('\n')
@@ -552,7 +561,7 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
                 '=== КОНЕЦ ЭТАЛОНА ===',
                 '',
                 '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
-                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, отрисовку на Canvas и структуру состояний (меню/игра/пауза/game over/рестарт).',
+                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, структуру состояний (меню/игра/пауза/game over/рестарт). Визуальный стиль не копируй: сделай графику современнее и богаче, чем в эталоне.',
                 ''
             );
         }
@@ -705,7 +714,11 @@ app.get('/', (req, res) => res.type('text').send('Фабрика Игр: Ста�
 app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
 
 app.get('/healthz', (req, res) => {
-    res.json({ ok: true, uptime: Math.round(process.uptime()) });
+    res.json({
+        ok: true,
+        uptime: Math.round(process.uptime()),
+        version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev'
+    });
 });
 
 app.get('/readyz', (req, res) => {
@@ -752,6 +765,7 @@ app.get('/play/:gameId', (req, res) => {
     if (!fs.existsSync(gamePath)) return res.status(404).send('Игра не найдена');
 
     const game = getGame(gameId);
+    if (game && game.status === 'hidden') return res.status(404).send('Игра не найдена');
     const title = escapeHtml(sanitizeGameTitle(game && game.title, 'Игра'));
     const iframeSrc = escapeHtml(sandboxGameUrl(gameId));
 
@@ -779,6 +793,9 @@ app.get('/sandbox/:gameId', (req, res) => {
 
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
     if (!fs.existsSync(gamePath)) return res.status(404).type('text').send('Игра не найдена');
+
+    const game = getGame(gameId);
+    if (game && game.status === 'hidden') return res.status(404).type('text').send('Игра не найдена');
 
     let html;
     try {
@@ -811,6 +828,8 @@ app.get('/ai_games/:file', (req, res) => {
     if (!match) return res.status(404).send('Игра не найдена');
     const gamePath = path.join(aiGamesDir, `${match[1]}.html`);
     if (!fs.existsSync(gamePath)) return res.status(404).send('Игра не найдена');
+    const game = getGame(match[1]);
+    if (game && game.status === 'hidden') return res.status(404).send('Игра не найдена');
     return res.redirect(301, publicGameUrl(match[1]));
 });
 
@@ -887,6 +906,100 @@ const AI_IDEAS = [
     'арканоид, где ты разрушаешь астероиды и собираешь редкие минералы',
     'тетрис с инопланетными блоками и гравитационными аномалиями'
 ];
+const COMPLAINT_REASONS = {
+    sexual: '🔞 Сексуальный контент',
+    violence: '🩸 Насилие',
+    hate: '💢 Оскорбления',
+    illegal: '⚠️ Опасный контент',
+    broken: '🛠 Не работает',
+    other: '✍️ Другое'
+};
+
+function complaintReasonLabel(reason) {
+    return Object.prototype.hasOwnProperty.call(COMPLAINT_REASONS, reason)
+        ? COMPLAINT_REASONS[reason]
+        : String(reason);
+}
+
+function complaintStatusLabel(complaint) {
+    if (complaint.status === 'open') return 'на рассмотрении';
+    if (complaint.status === 'dismissed') return 'отклонена';
+    if (complaint.action === 'hide_game') return 'игра скрыта';
+    return 'закрыта';
+}
+
+function complaintCard(complaint, { note = null, status = null } = {}) {
+    const lines = [
+        `🚩 <b>Жалоба #${complaint.id}</b>`,
+        UI_DIVIDER,
+        `🎮 <b>${escapeHtml(sanitizeGameTitle(complaint.game_title, 'Игра'))}</b>`,
+        `<code>${escapeHtml(complaint.game_id)}</code>`,
+        `👤 Автор игры: <code>${complaint.owner_id || '—'}</code>`,
+        `🙋 Жалобщик: <code>${complaint.reporter_id}</code>`,
+        `📌 Причина: <b>${escapeHtml(complaintReasonLabel(complaint.reason))}</b>`,
+        `🗓 ${escapeHtml(complaint.created_at)}`,
+        `📊 Статус: <b>${status || complaintStatusLabel(complaint)}</b>`
+    ];
+    if (complaint.details) lines.push('', `💬 ${escapeHtml(complaint.details)}`);
+    if (note) lines.push('', note);
+    return lines.join('\n');
+}
+
+function complaintKeyboard(complaint) {
+    if (complaint.status === 'open') {
+        return Markup.inlineKeyboard([[
+            Markup.button.callback('🙈 Скрыть игру', `mod_hide_${complaint.id}`),
+            Markup.button.callback('✅ Отклонить', `mod_dismiss_${complaint.id}`)
+        ]]);
+    }
+    if (complaint.status === 'resolved' && complaint.action === 'hide_game') {
+        return Markup.inlineKeyboard([[
+            Markup.button.callback('↩️ Вернуть игру', `mod_restore_${complaint.id}_${complaint.game_id}`)
+        ]]);
+    }
+    return Markup.inlineKeyboard([]);
+}
+
+async function notifyAdminsWithKeyboard(text, keyboard) {
+    for (const adminId of ADMIN_IDS) {
+        try {
+            await bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML', ...keyboard });
+        } catch (error) {
+            // Админ мог не начать диалог с ботом.
+        }
+    }
+}
+
+async function submitComplaint(ctx, { gameId, reason, details = null, edit = false }) {
+    const reply = async (text) => {
+        if (edit && ctx.callbackQuery) {
+            return ctx.editMessageText(text).catch(() => ctx.reply(text));
+        }
+        return ctx.reply(text);
+    };
+
+    const game = getGame(gameId);
+    if (!game) return reply('❌ Игра не найдена.');
+    if (game.status === 'hidden') return reply('❌ Игра уже скрыта модератором.');
+    if (!tryConsumeRateLimit(`complaint:${ctx.from.id}`, 5, 24 * 60 * 60 * 1000)) {
+        return reply('❌ Слишком много жалоб за сутки. Попробуй позже.');
+    }
+
+    const result = createComplaint({ gameId, reporterId: ctx.from.id, reason, details });
+    if (!result.created) {
+        return reply(result.reason === 'duplicate'
+            ? 'Ты уже жаловался на эту игру. Жалоба ещё на рассмотрении.'
+            : '❌ Не удалось отправить жалобу.');
+    }
+
+    logEvent('complaint_created', ctx.from.id, {
+        gameId,
+        complaintId: result.complaint.id,
+        reason
+    });
+    await notifyAdminsWithKeyboard(complaintCard(result.complaint), complaintKeyboard(result.complaint));
+    return reply(`✅ Жалоба #${result.complaint.id} принята. Мы проверим игру.`);
+}
 
 function planMeta(plan) {
     return PLAN_META[plan.id] || { emoji: '💎', label: plan.title, short: gamesLabel(plan.games) };
@@ -1318,7 +1431,21 @@ bot.command('legal', async (ctx) => {
 bot.command('stats', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     const stats = getStats();
-    await ctx.reply(`👑 Статистика\n\nПользователей: ${stats.users}\nИгр: ${stats.games}\nГенераций: ${stats.generations}\nПлатежей: ${stats.payments}`);
+    await ctx.reply(`👑 Статистика\n\nПользователей: ${stats.users}\nИгр: ${stats.games}\nГенераций: ${stats.generations}\nПлатежей: ${stats.payments}\nОткрытых жалоб: ${stats.openComplaints}`);
+});
+
+bot.command('reports', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const complaints = listOpenComplaints(10);
+    if (!complaints.length) return ctx.reply('✅ Открытых жалоб нет.');
+    const rows = complaints.map((complaint) => {
+        const title = sanitizeGameTitle(complaint.game_title, 'Игра').slice(0, 30);
+        return [Markup.button.callback(`#${complaint.id} · ${title}`, `mod_view_${complaint.id}`)];
+    });
+    await ctx.reply(
+        `🚩 <b>Открытые жалобы: ${complaints.length}</b>\nВыбери жалобу, чтобы посмотреть детали.`,
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) }
+    );
 });
 
 bot.command('grant', async (ctx) => {
@@ -1358,6 +1485,128 @@ bot.command('refund', async (ctx) => {
         await notifyAdmins(`🚨 Ошибка возврата ${chargeId}: ${error.message}`);
         await ctx.reply(`Не удалось выполнить возврат: ${error.message}`);
     }
+});
+
+bot.action(/^report_(ai_[0-9]{10,20})$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    const game = getGame(gameId);
+    if (!game) return ctx.answerCbQuery('❌ Игра не найдена', { show_alert: true });
+    if (game.status === 'hidden') return ctx.answerCbQuery('❌ Игра уже скрыта', { show_alert: true });
+
+    const entries = Object.entries(COMPLAINT_REASONS);
+    const rows = [];
+    for (let i = 0; i < entries.length; i += 2) {
+        rows.push(entries.slice(i, i + 2).map(([code, label]) =>
+            Markup.button.callback(label, `rr_${code}_${gameId}`)));
+    }
+    rows.push([Markup.button.callback('⬅️ Отмена', 'main_menu')]);
+
+    await ctx.reply([
+        '🚩 <b>Пожаловаться на игру</b>',
+        UI_DIVIDER,
+        'Выбери причину. Жалоба уйдёт модераторам.',
+        '<i>Ложные жалобы замедляют проверку реальных нарушений.</i>'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) });
+});
+
+bot.action(/^rr_([a-z]+)_(ai_[0-9]{10,20})$/, async (ctx) => {
+    const [, reason, gameId] = ctx.match;
+    if (!Object.prototype.hasOwnProperty.call(COMPLAINT_REASONS, reason)) {
+        return ctx.answerCbQuery('❌ Неизвестная причина', { show_alert: true });
+    }
+
+    if (reason === 'other') {
+        const game = getGame(gameId);
+        if (!game) return ctx.answerCbQuery('❌ Игра не найдена', { show_alert: true });
+        if (game.status === 'hidden') return ctx.answerCbQuery('❌ Игра уже скрыта', { show_alert: true });
+        ctx.session.step = 'report_details';
+        ctx.session.gameData.reportGameId = gameId;
+        return ctx.editMessageText([
+            '✍️ <b>Опиши проблему</b>',
+            UI_DIVIDER,
+            'Отправь одним сообщением, что не так с игрой (до 500 символов).'
+        ].join('\n'), {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Отмена', 'main_menu')]])
+        });
+    }
+
+    await ctx.answerCbQuery();
+    await submitComplaint(ctx, { gameId, reason, edit: true });
+});
+
+bot.action(/^mod_view_(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('Нет доступа', { show_alert: true });
+    const complaint = getComplaint(Number(ctx.match[1]));
+    if (!complaint) return ctx.answerCbQuery('Жалоба не найдена', { show_alert: true });
+    await ctx.answerCbQuery();
+    await ctx.reply(complaintCard(complaint), {
+        parse_mode: 'HTML',
+        ...complaintKeyboard(complaint)
+    });
+});
+
+bot.action(/^mod_hide_(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('Нет доступа', { show_alert: true });
+    const complaint = getComplaint(Number(ctx.match[1]));
+    if (!complaint) return ctx.answerCbQuery('Жалоба не найдена', { show_alert: true });
+    if (complaint.status !== 'open') return ctx.answerCbQuery('Жалоба уже обработана', { show_alert: true });
+    if (!hideGame(complaint.game_id, ctx.from.id)) {
+        return ctx.answerCbQuery('Игра уже скрыта', { show_alert: true });
+    }
+
+    logEvent('game_hidden', ctx.from.id, { gameId: complaint.game_id, complaintId: complaint.id });
+    await ctx.answerCbQuery('Игра скрыта');
+    const updated = getComplaint(complaint.id);
+    await ctx.editMessageText(complaintCard(updated), {
+        parse_mode: 'HTML',
+        ...complaintKeyboard(updated)
+    }).catch(() => {});
+
+    if (updated.owner_id) {
+        try {
+            await bot.telegram.sendMessage(
+                Number(updated.owner_id),
+                '⚠️ Твоя игра скрыта модератором после жалобы. Если считаешь это ошибкой, напиши в поддержку.'
+            );
+        } catch (error) {}
+    }
+});
+
+bot.action(/^mod_dismiss_(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('Нет доступа', { show_alert: true });
+    const complaint = getComplaint(Number(ctx.match[1]));
+    if (!complaint) return ctx.answerCbQuery('Жалоба не найдена', { show_alert: true });
+    if (!dismissComplaint(complaint.id, ctx.from.id)) {
+        return ctx.answerCbQuery('Жалоба уже обработана', { show_alert: true });
+    }
+
+    logEvent('complaint_dismissed', ctx.from.id, { gameId: complaint.game_id, complaintId: complaint.id });
+    await ctx.answerCbQuery('Жалоба отклонена');
+    const updated = getComplaint(complaint.id);
+    await ctx.editMessageText(complaintCard(updated), {
+        parse_mode: 'HTML',
+        ...complaintKeyboard(updated)
+    }).catch(() => {});
+});
+
+bot.action(/^mod_restore_(\d+)_(ai_[0-9]{10,20})$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('Нет доступа', { show_alert: true });
+    const complaint = getComplaint(Number(ctx.match[1]));
+    const gameId = ctx.match[2];
+    if (!complaint) return ctx.answerCbQuery('Жалоба не найдена', { show_alert: true });
+    if (!restoreGame(gameId)) return ctx.answerCbQuery('Игра уже доступна', { show_alert: true });
+
+    logEvent('game_restored', ctx.from.id, { gameId, complaintId: complaint.id });
+    await ctx.answerCbQuery('Игра возвращена');
+    const updated = getComplaint(complaint.id);
+    await ctx.editMessageText(complaintCard(updated, {
+        status: 'игра возвращена',
+        note: '↩️ <b>Игра снова доступна.</b>'
+    }), {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([])
+    }).catch(() => {});
 });
 
 bot.action('start_creation', async (ctx) => {
@@ -1722,7 +1971,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
             [Markup.button.callback('✏️ Улучшить', `improve_ai_${gameId}`)],
-            [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`)],
+            [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
             [Markup.button.callback('🔁 Перегенерировать', 'regen_ai')],
             [Markup.button.callback('💳 Купить ещё', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
@@ -1795,6 +2044,9 @@ bot.action(/^improve_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
     if (!game || Number(game.telegram_id) !== Number(ctx.from.id)) {
         return ctx.answerCbQuery('❌ Это не твоя игра.', { show_alert: true });
     }
+    if (game.status === 'hidden') {
+        return ctx.answerCbQuery('❌ Игра скрыта модератором.', { show_alert: true });
+    }
     if (!fs.existsSync(path.join(aiGamesDir, `${gameId}.html`))) {
         return ctx.answerCbQuery('❌ Файл игры не найден.', { show_alert: true });
     }
@@ -1854,6 +2106,9 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
     const game = getGame(gameId);
     if (!game || Number(game.telegram_id) !== Number(userId)) {
         return bot.telegram.editMessageText(chatId, msgId, null, '❌ Игра не найдена.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
+    }
+    if (game.status === 'hidden') {
+        return bot.telegram.editMessageText(chatId, msgId, null, '❌ Игра скрыта модератором.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Меню', 'main_menu')]])).catch(() => {});
     }
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
     if (!fs.existsSync(gamePath)) {
@@ -1979,7 +2234,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
             [Markup.button.callback('✏️ Улучшить ещё', `improve_ai_${gameId}`)],
-            [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`)],
+            [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
         const fresh = findUser(userId) || user;
@@ -2058,6 +2313,23 @@ bot.action('regen_ai', async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
+    if (ctx.session?.step === 'report_details') {
+        const gameId = ctx.session.gameData.reportGameId;
+        if (!gameId || !isSafeGameId(gameId)) {
+            ctx.session.step = null;
+            return ctx.reply('❌ Игра не найдена. Открой её заново из меню.');
+        }
+        if (String(ctx.message.text || '').trim().startsWith('/')) {
+            return ctx.reply('Опиши проблему обычным текстом. Или нажми «Отмена».');
+        }
+        const details = sanitizeText(ctx.message.text, 500);
+        if (!details) return ctx.reply('❌ Добавь хотя бы короткое описание.');
+        ctx.session.step = null;
+        ctx.session.gameData.reportGameId = null;
+        await submitComplaint(ctx, { gameId, reason: 'other', details });
+        return;
+    }
+
     if (ctx.session?.step === 'awaiting_ai_prompt') {
         const validation = validatePrompt(ctx.message.text);
         if (!validation.ok) {
@@ -2236,50 +2508,75 @@ async function finishGameGeneration(ctx) {
     await ctx.reply(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 }
 
+function buildZipBuffer(entries) {
+    return new Promise((resolve, reject) => {
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        const chunks = [];
+        archive.on('data', (chunk) => chunks.push(chunk));
+        archive.on('warning', (error) => {
+            if (error.code === 'ENOENT') {
+                console.warn('[Архив] Предупреждение:', error.message);
+                return;
+            }
+            reject(error);
+        });
+        archive.on('error', reject);
+        archive.on('end', () => resolve(Buffer.concat(chunks)));
+        for (const entry of entries) archive.append(entry.data, { name: entry.name });
+        archive.finalize().catch(reject);
+    });
+}
+
 bot.action(/^dl_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
     const gameId = ctx.match[1];
     if (!isSafeGameId(gameId)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
 
-    const zipPath = path.join(os.tmpdir(), `${gameId}_${Date.now()}_${crypto.randomInt(0, 1000000)}.zip`);
     const gamePath = path.join(aiGamesDir, `${gameId}.html`);
-
     if (!fs.existsSync(gamePath)) return ctx.answerCbQuery('❌ Не найдено!', { show_alert: true });
 
     const game = getGame(gameId);
-    if (game && Number(game.telegram_id) !== Number(ctx.from.id) && !isAdmin(ctx.from.id)) {
+    if (!game || game.status === 'hidden') {
+        return ctx.answerCbQuery('❌ Игра недоступна.', { show_alert: true });
+    }
+    if (Number(game.telegram_id) !== Number(ctx.from.id) && !isAdmin(ctx.from.id)) {
         return ctx.answerCbQuery('❌ Это не твоя игра.', { show_alert: true });
     }
 
+    let html;
     try {
-        const html = fs.readFileSync(gamePath, 'utf8');
-        const bgMatch = html.match(/\/uploads\/(bg_ai_[0-9a-f_]+\.jpg)/);
-        const archive = archiver('zip', { zlib: { level: 9 } });
-        const output = fs.createWriteStream(zipPath);
+        html = fs.readFileSync(gamePath, 'utf8');
+    } catch (error) {
+        console.error('[Архив AI] Не удалось прочитать файл:', error.message);
+        return ctx.answerCbQuery('❌ Не удалось прочитать игру.', { show_alert: true });
+    }
 
-        await new Promise((resolve, reject) => {
-            output.on('close', resolve);
-            output.on('error', reject);
-            archive.on('error', reject);
-            archive.pipe(output);
+    const bgMatch = html.match(/\/uploads\/(bg_ai_[0-9a-f_]+\.jpg)/);
+    const bgPath = bgMatch ? path.join(uploadsDir, bgMatch[1]) : null;
+    const hasBg = Boolean(bgPath && fs.existsSync(bgPath));
+    const entries = [{
+        name: 'index.html',
+        data: hasBg ? html.replace(/\/uploads\//g, '') : html
+    }];
+    if (hasBg) entries.push({ name: bgMatch[1], data: fs.readFileSync(bgPath) });
 
-            if (bgMatch && fs.existsSync(path.join(uploadsDir, bgMatch[1]))) {
-                archive.file(path.join(uploadsDir, bgMatch[1]), { name: bgMatch[1] });
-                archive.append(html.replace(/\/uploads\//g, ''), { name: 'index.html' });
-            } else {
-                archive.append(html, { name: 'index.html' });
-            }
-            archive.finalize();
-        });
+    let zipBuffer = null;
+    try {
+        zipBuffer = await buildZipBuffer(entries);
+    } catch (error) {
+        console.error('[Архив AI] Не удалось собрать ZIP:', error.stack || error.message);
+    }
 
-        logEvent('game_downloaded', ctx.from.id, { gameId, source: 'ai' });
-        await ctx.replyWithDocument({ source: zipPath, filename: 'ai_game.zip' });
-    } catch (e) {
-        console.error('[Архив AI] Ошибка:', e.message);
-        await ctx.reply('❌ Не удалось собрать архив.');
-    } finally {
-        if (fs.existsSync(zipPath)) {
-            try { fs.unlinkSync(zipPath); } catch (e) {}
+    try {
+        if (zipBuffer) {
+            await ctx.replyWithDocument({ source: zipBuffer, filename: 'ai_game.zip' });
+        } else {
+            await ctx.replyWithDocument({ source: Buffer.from(html, 'utf8'), filename: 'index.html' });
         }
+        logEvent('game_downloaded', ctx.from.id, { gameId, source: 'ai' });
+    } catch (error) {
+        console.error('[Архив AI] Не удалось отправить файл:', error.stack || error.message);
+        await notifyAdmins(`🚨 Не удалось отправить архив ${gameId}: ${String(error.message || error).slice(0, 300)}`);
+        await ctx.reply('❌ Не удалось отправить архив. Мы уже проверяем причину.').catch(() => {});
     }
 });
 

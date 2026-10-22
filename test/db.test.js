@@ -152,6 +152,62 @@ test('recordGame сохраняет параметры сборки шаблон
     assert.equal(game.telegram_id, 1);
 });
 
+test('жалоба создаётся один раз и скрывает игру', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.ensureUser(2);
+    const gameId = 'ai_1234567890123';
+    db.recordGame({ id: gameId, telegramId: 1, title: 'Тестовая игра' });
+
+    const first = db.createComplaint({ gameId, reporterId: 2, reason: 'sexual', details: 'Проверка' });
+    assert.equal(first.created, true);
+    assert.equal(first.complaint.status, 'open');
+    assert.equal(first.complaint.game_title, 'Тестовая игра');
+    assert.equal(first.complaint.owner_id, 1);
+
+    const duplicate = db.createComplaint({ gameId, reporterId: 2, reason: 'violence' });
+    assert.equal(duplicate.created, false);
+    assert.equal(duplicate.reason, 'duplicate');
+
+    assert.equal(db.getStats().openComplaints, 1);
+    assert.equal(db.listOpenComplaints().length, 1);
+
+    assert.equal(db.hideGame(gameId, 999), true);
+    assert.equal(db.getGame(gameId).status, 'hidden');
+    assert.equal(db.getStats().openComplaints, 0);
+    const resolved = db.getComplaint(first.complaint.id);
+    assert.equal(resolved.status, 'resolved');
+    assert.equal(resolved.action, 'hide_game');
+    assert.equal(resolved.resolved_by, 999);
+
+    assert.equal(db.hideGame(gameId, 999), false);
+    assert.equal(db.restoreGame(gameId), true);
+    assert.equal(db.getGame(gameId).status, 'ready');
+    assert.equal(db.restoreGame(gameId), false);
+});
+
+test('жалоба отклоняется и не создаётся для несуществующей игры', () => {
+    freshDb();
+    const gameId = 'ai_1234567890124';
+    db.recordGame({ id: gameId, telegramId: 1, title: 'Игра' });
+
+    const missing = db.createComplaint({ gameId: 'ai_1234567890125', reporterId: 2, reason: 'other' });
+    assert.equal(missing.created, false);
+    assert.equal(missing.reason, 'game_not_found');
+
+    const created = db.createComplaint({ gameId, reporterId: 2, reason: 'broken' });
+    assert.equal(db.dismissComplaint(created.complaint.id, 777), true);
+    assert.equal(db.dismissComplaint(created.complaint.id, 777), false);
+    const dismissed = db.getComplaint(created.complaint.id);
+    assert.equal(dismissed.status, 'dismissed');
+    assert.equal(dismissed.action, 'dismiss');
+    assert.equal(dismissed.resolved_by, 777);
+    assert.equal(db.getStats().openComplaints, 0);
+
+    const again = db.createComplaint({ gameId, reporterId: 2, reason: 'other' });
+    assert.equal(again.created, true);
+});
+
 test('backupDb создаёт согласованную копию базы', () => {
     db.closeDb();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gf-backup-'));

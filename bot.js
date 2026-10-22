@@ -51,7 +51,7 @@ const {
     tryConsumeRateLimit
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
-const { buildDesignBrief } = require('./lib/game-design');
+const { buildDesignBrief, detectGenre } = require('./lib/game-design');
 const { auditGame } = require('./lib/game-quality');
 
 function envInt(name, fallback) {
@@ -70,6 +70,7 @@ const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
 const MAX_DEVICE_PIXEL_RATIO = Math.min(Math.max(Number(process.env.MAX_DEVICE_PIXEL_RATIO) || 2, 1), 3);
+const PROMPT_VERSION = 'v2-genre-recipes';
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
 
 process.on('uncaughtException', (err) => console.error('❌ Неперехваченная ошибка:', err.stack || err.message));
@@ -1527,7 +1528,10 @@ bot.command('stats', async (ctx) => {
             `Ниже 80: ${quality.lowQuality}`,
             quality.topIssues.length
                 ? 'Частые замечания: ' + quality.topIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
-                : 'Частых замечаний нет'
+                : 'Частых замечаний нет',
+            ...(quality.byVersion.length > 1
+                ? ['Версии: ' + quality.byVersion.map((item) => `${item.version} ${item.avgScore}/100 (${item.count})`).join(', ')]
+                : [])
         ]
         : ['', 'Качество: пока нет данных'];
     await ctx.reply([
@@ -1973,7 +1977,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             status: 'running',
             model: 'gemini-2.5-flash'
         });
-        logEvent('generation_started', userId, { generationId, platform });
+        logEvent('generation_started', userId, { generationId, platform, promptVersion: PROMPT_VERSION, genre: detectGenre(cleanPrompt) });
 
         const planResult = await generateGamePlan(cleanPrompt, platform);
         const generated = await generateAIGame(cleanPrompt, platform, { plan: planResult.plan });
@@ -2019,6 +2023,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         }
         logEvent('generation_quality', userId, {
             generationId,
+            promptVersion: PROMPT_VERSION,
             score: finalAudit.score,
             issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
         });
@@ -2322,7 +2327,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             status: 'running',
             model: 'gemini-2.5-flash'
         });
-        logEvent('generation_started', userId, { generationId, gameId, kind: 'improve' });
+        logEvent('generation_started', userId, { generationId, gameId, kind: 'improve', promptVersion: PROMPT_VERSION });
 
         const improved = await improveAIGame(originalCode, cleanInstruction, platform);
         if (!improved || !improved.code) throw new Error('Модель не вернула полный файл');
@@ -2365,6 +2370,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
         }
         logEvent('improvement_quality', userId, {
             generationId,
+            promptVersion: PROMPT_VERSION,
             score: finalAudit.score,
             issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
         });

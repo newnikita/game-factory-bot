@@ -15,7 +15,7 @@
         }
         canvas {
             display: block;
-            background: rgba(0, 0, 0, 0.4);
+            background: rgba(3, 6, 18, 0.82);
             width: 100%;
             height: 100%;
         }
@@ -454,10 +454,12 @@
         ].sort((a, b) => a.zIndex - b.zIndex);
 
         // Pre-fill rain pool
+        rainPool.length = 0;
         for (let i = 0; i < maxRainParticles; i++) {
             rainPool.push(new RainParticle());
         }
         // Pre-fill spark pool
+        sparkPool.length = 0;
         for (let i = 0; i < maxSparks; i++) {
             sparkPool.push(new SparkParticle());
         }
@@ -629,6 +631,18 @@
         }
     }
 
+    function drawRain() {
+        if (rainPool.length === 0) return;
+        ctx.strokeStyle = 'rgba(173, 216, 230, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const p of rainPool) {
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x + p.vx * 0.5, p.y + p.length);
+        }
+        ctx.stroke();
+    }
+
     function drawGame() {
         ctx.clearRect(0, 0, width / dpr, height / dpr);
 
@@ -651,13 +665,13 @@
         player.draw();
 
         // Draw rain particles
-        rainPool.forEach(p => p.draw());
+        drawRain();
 
         // Draw spark particles
         sparkPool.forEach(p => p.draw());
 
         // Draw UI
-        ctx.font = `bold ${24 * dpr}px 'Electrolize', sans-serif`;
+        ctx.font = `bold 24px 'Electrolize', sans-serif`;
         ctx.textAlign = 'left';
         ctx.fillStyle = '#FFFFFF';
         ctx.shadowColor = 'rgba(0, 255, 255, 0.8)';
@@ -691,20 +705,20 @@
         ctx.shadowColor = 'rgba(0, 255, 255, 1)';
         ctx.shadowBlur = 15;
         ctx.fillStyle = '#00FFFF';
-        ctx.font = `bold ${48 * dpr}px 'Electrolize', sans-serif`;
+        ctx.font = `bold 48px 'Electrolize', sans-serif`;
         ctx.textAlign = 'center';
         ctx.fillText(title, width / (2 * dpr), height / (2 * dpr) - 50);
 
         ctx.shadowColor = 'rgba(255, 255, 0, 0.8)';
         ctx.shadowBlur = 10;
         ctx.fillStyle = '#FFFF00';
-        ctx.font = `bold ${24 * dpr}px 'Electrolize', sans-serif`;
+        ctx.font = `bold 24px 'Electrolize', sans-serif`;
         ctx.fillText(subtitle, width / (2 * dpr), height / (2 * dpr) + 10);
 
         ctx.shadowColor = 'rgba(0, 255, 0, 0.8)';
         ctx.shadowBlur = 10;
         ctx.fillStyle = '#00FF00';
-        ctx.font = `bold ${32 * dpr}px 'Electrolize', sans-serif`;
+        ctx.font = `bold 32px 'Electrolize', sans-serif`;
         ctx.fillText(actionText, width / (2 * dpr), height / (2 * dpr) + 100);
         ctx.shadowBlur = 0;
     }

@@ -11,7 +11,7 @@
         #game-container { position: relative; width: 100%; height: 100%; max-width: 1280px; max-height: 720px; background-color: #000000; overflow: hidden; }
         canvas { display: block; width: 100%; height: 100%; }
         
-        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0, 0, 0, 0.8); z-index: 10; text-align: center; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0, 0, 0, 0.8); z-index: 10; text-align: center; pointer-events: none; }
         .hidden { display: none !important; }
         
         h1 { font-size: calc(2vw + 20px); margin-bottom: 20px; color: #00FFFF; text-shadow: 0 0 10px #00FFFF, 0 0 20px #00FFFF; text-transform: uppercase; }
@@ -65,7 +65,7 @@
         x: 0, y: 0
     };
 
-    const offscreenCanvasCache = {};
+    let offscreenCanvasCache = {};
 
     function getOffscreenCanvas(id, desiredWidth, desiredHeight, drawFunction) {
         if (!offscreenCanvasCache[id]) {
@@ -439,7 +439,7 @@
             ctx.translate(this.x, this.y);
             ctx.rotate(this.oscillation * 0.5); 
             ctx.shadowColor = this.color;
-            ctx.shadowBlur = 15;
+            ctx.shadowBlur = 8;
             ctx.drawImage(enemyShape, -this.radius, -this.radius);
             ctx.restore();
         }
@@ -451,6 +451,11 @@
         MAX_PARTICLES: 80,
 
         add: function(x, y, vx, vy, color, size, life, decay = 1) {
+            if (this.active.length >= this.MAX_PARTICLES) {
+                const oldest = this.active.shift();
+                oldest.active = false;
+                this.pool.push(oldest);
+            }
             let p;
             if (this.pool.length > 0) {
                 p = this.pool.pop();
@@ -479,15 +484,15 @@
         },
 
         draw: function(ctx) {
+            if (this.active.length === 0) return;
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
             for (const p of this.active) {
-                ctx.save();
                 ctx.globalAlpha = p.life / p.maxLife;
                 ctx.fillStyle = p.color;
-                ctx.shadowColor = p.color;
-                ctx.shadowBlur = 5;
                 ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
-                ctx.restore();
             }
+            ctx.restore();
         },
         clear: function() {
             this.pool.push(...this.active);
@@ -529,15 +534,34 @@
             this.color2 = color2;
             this.nebulae = [];
             for (let i = 0; i < count; i++) {
+                const radius = Math.random() * 200 + 100;
                 this.nebulae.push({
                     x: Math.random() * width,
                     y: Math.random() * height,
-                    radius: Math.random() * 200 + 100,
+                    radius,
                     alpha: Math.random() * 0.1 + 0.05,
                     vx: (Math.random() - 0.5) * 5,
-                    vy: (Math.random() - 0.5) * 5
+                    vy: (Math.random() - 0.5) * 5,
+                    sprite: this.createSprite(radius)
                 });
             }
+        }
+
+        createSprite(radius) {
+            const size = Math.max(2, Math.ceil(radius));
+            const sprite = document.createElement('canvas');
+            sprite.width = size;
+            sprite.height = size;
+            const g = sprite.getContext('2d');
+            const center = size / 2;
+            const gradient = g.createRadialGradient(center, center, 0, center, center, center);
+            gradient.addColorStop(0, this.color1);
+            gradient.addColorStop(1, this.color2);
+            g.fillStyle = gradient;
+            g.beginPath();
+            g.arc(center, center, center, 0, Math.PI * 2);
+            g.fill();
+            return sprite;
         }
 
         update() {
@@ -556,14 +580,8 @@
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             for (const n of this.nebulae) {
-                const gradient = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.radius);
-                gradient.addColorStop(0, this.color1);
-                gradient.addColorStop(1, this.color2);
-                ctx.fillStyle = gradient;
                 ctx.globalAlpha = n.alpha;
-                ctx.beginPath();
-                ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
-                ctx.fill();
+                ctx.drawImage(n.sprite, n.x - n.radius, n.y - n.radius, n.radius * 2, n.radius * 2);
             }
             ctx.restore();
         }
@@ -647,7 +665,7 @@
 
     let enemySpawnTimer = 0;
     const ENEMY_SPAWN_INTERVAL = 1.5;
-    const MAX_ENEMIES = 40;
+    const MAX_ENEMIES = 24;
 
     function updateGame(dt) {
         gameTimer += dt;
@@ -756,7 +774,7 @@
         ctx.shadowBlur = 10;
 
         ctx.fillStyle = '#FFFFFF';
-        ctx.font = `${Math.round(height * 0.04)}px 'Roboto Mono'`;
+        ctx.font = `${Math.round(height * 0.032)}px 'Roboto Mono'`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         ctx.fillText(`SCORE: ${score}`, width * 0.03, height * 0.03);
@@ -766,7 +784,7 @@
         const displaySeconds = Math.floor(Math.max(0, timeLeft) % 60).toString().padStart(2, '0');
         
         ctx.textAlign = 'center';
-        ctx.fillText(`TIME: ${displayMinutes}:${displaySeconds}`, width / 2, height * 0.03);
+        ctx.fillText(`TIME: ${displayMinutes}:${displaySeconds}`, width * 0.55, height * 0.03);
 
         const barWidth = width * 0.2;
         const barHeight = height * 0.02;
@@ -777,25 +795,15 @@
         ctx.lineWidth = 2;
         ctx.strokeRect(barX, barY, barWidth, barHeight);
 
-        const gradient = ctx.createLinearGradient(barX, 0, barX + barWidth, 0);
-        gradient.addColorStop(0, '#FF0000');
-        gradient.addColorStop(Math.min(hpRatio, 1), '#00FF00');
-        ctx.fillStyle = gradient;
+        ctx.fillStyle = hpRatio > 0.5 ? '#00FF00' : (hpRatio > 0.2 ? '#FFA500' : '#FF0000');
         ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
         
         ctx.restore();
     }
 
     function drawPauseButton() {
-        ctx.save();
-        const btnSize = Math.min(width, height) * 0.05;
-        const btnX = width * 0.97 - btnSize / 2;
-        const btnY = height * 0.03 + btnSize * 1.5;
-
-        UI.add('pauseBtn', '||', btnX, btnY, btnSize, btnSize, pauseGame);
-        UI.draw(ctx, UI.buttons.find(b => b.id === 'pauseBtn'));
-        UI.clear();
-        ctx.restore();
+        const button = UI.buttons.find(b => b.id === 'pauseBtn');
+        if (button) UI.draw(ctx, button);
     }
 
     function loop(currentTime) {
@@ -807,7 +815,6 @@
 
         ctx.clearRect(0, 0, width, height);
         ctx.save();
-        ctx.scale(dpr, dpr);
 
         switch (gameState) {
             case GAME_STATES.MENU:
@@ -877,6 +884,7 @@
 
         // Re-setup UI buttons for current screen size
         if (gameState === GAME_STATES.MENU) setupMenuUIButtons();
+        else if (gameState === GAME_STATES.PLAYING) setupGameUIButtons();
         else if (gameState === GAME_STATES.PAUSED) setupPauseUIButtons();
         else if (gameState === GAME_STATES.GAMEOVER) setupGameOverUIButtons();
     }
@@ -984,6 +992,8 @@
 
     function setupGameUIButtons() {
         UI.clear();
+        const btnSize = Math.min(width, height) * 0.05;
+        UI.add('pauseBtn', '||', width * 0.97 - btnSize / 2, height * 0.03 + btnSize * 1.5, btnSize, btnSize, pauseGame);
     }
 
     function setupPauseUIButtons() {

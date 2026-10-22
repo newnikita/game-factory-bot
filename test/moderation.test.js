@@ -57,6 +57,7 @@ function callbackUpdate(userId, data, messageId) {
 
 function textUpdate(userId, text, messageId) {
     updateId += 1;
+    const command = text.startsWith('/') ? text.split(/\s+/)[0] : '';
     return {
         update_id: updateId,
         message: {
@@ -64,7 +65,8 @@ function textUpdate(userId, text, messageId) {
             date: Math.floor(Date.now() / 1000),
             chat: { id: userId, type: 'private', first_name: `User${userId}` },
             from: { id: userId, is_bot: false, first_name: `User${userId}` },
-            text
+            text,
+            entities: command ? [{ type: 'bot_command', offset: 0, length: command.length }] : undefined
         }
     };
 }
@@ -165,8 +167,38 @@ test('причина «Другое» сохраняет текст жалобы
         String(call.payload.text).includes('Игра зависает после старта')));
 });
 
-test('архив AI-игры собирается и отправляется', async (t) => {
-    const gameId = 'ai_4234567890123';
+test('админ может проверить качество игры командой /quality', async () => {
+    const gameId = 'ai_5234567890123';
+    db.recordGame({ id: gameId, telegramId: 45, title: 'Проверка качества' });
+    fs.writeFileSync(
+        path.join(dataDir, 'ai_games', `${gameId}.html`),
+        '<!DOCTYPE html><html><head><style>.overlay{position:absolute;inset:0;z-index:10}</style></head><body><canvas></canvas><div class="overlay"></div><script>document.querySelector("canvas").getContext("2d");</script></body></html>'
+    );
+    apiCalls.length = 0;
+
+    await bot.handleUpdate(textUpdate(999, `/quality ${gameId}`, 50));
+    const reply = apiCalls.find((call) =>
+        call.method === 'sendMessage' &&
+        call.payload.chat_id === 999 &&
+        String(call.payload.text).includes('Технический балл'));
+    assert.ok(reply);
+    assert.match(reply.payload.text, /Критичные проблемы|overlay/i);
+});
+
+test('/stats показывает средний балл качества за 7 дней', async () => {
+    db.logEvent('generation_quality', 1, { score: 80, issues: ['double_dpr_scale'] });
+    apiCalls.length = 0;
+
+    await bot.handleUpdate(textUpdate(999, '/stats', 51));
+    const reply = apiCalls.find((call) =>
+        call.method === 'sendMessage' &&
+        call.payload.chat_id === 999 &&
+        String(call.payload.text).includes('Статистика'));
+    assert.ok(reply);
+    assert.match(reply.payload.text, /Качество за 7 дней: \d+\/100/);
+});
+
+test('архив AI-игры собирается и отправляется', async (t) => {    const gameId = 'ai_4234567890123';
     db.ensureUser(44);
     db.recordGame({ id: gameId, telegramId: 44, title: 'Архивная игра' });
     fs.writeFileSync(

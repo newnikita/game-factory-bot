@@ -10,7 +10,8 @@
     "start": "node bot.js",
     "test": "node --test test/*.test.js",
     "check": "node --check bot.js",
-    "backup": "node scripts/backup.js"
+    "backup": "node scripts/backup.js",
+    "eval:games": "node scripts/eval-games.js"
   },
   "keywords": [],
   "author": "",
@@ -24,5 +25,8 @@
     "express": "^5.2.1",
     "fs-extra": "^11.3.4",
     "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.16.0"
   }
 }

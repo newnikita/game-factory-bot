@@ -51,6 +51,8 @@ const {
     tryConsumeRateLimit
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
+const { buildDesignBrief } = require('./lib/game-design');
+const { auditGame } = require('./lib/game-quality');
 
 function envInt(name, fallback) {
     const value = Number.parseInt(process.env[name], 10);
@@ -235,7 +237,12 @@ const SYSTEM_INSTRUCTION = {
             "7. Перед </html> добавь ровно одну строку вида [BG: два-три англ слова для фона], например [BG: space nebula].",
             "8. Визуальный уровень — как у современной 2D-игры: 2–3 слоя параллакса полупрозрачными силуэтами, частицы (искры, пыль, взрывы), градиенты через createLinearGradient/createRadialGradient, свечение через shadowBlur, screen shake при попаданиях.",
             "9. У игрока, врагов, снарядов и декораций должны быть разные узнаваемые силуэты, цвета и анимация (покачивание, вращение, масштаб). Запрещено рисовать всё одинаковыми квадратами.",
-            "10. Производительность: 60 FPS на телефоне. Не создавай градиенты и тяжёлые объекты в цикле отрисовки, кэшируй спрайты в offscreen-canvas, ограничивай частицы и используй delta time."
+            "10. Производительность: 60 FPS на телефоне. Не создавай градиенты и тяжёлые объекты в цикле отрисовки, кэшируй спрайты в offscreen-canvas, ограничивай частицы и используй delta time.",
+            "11. Глубина: не ограничивайся одним бесконечным циклом. Нужны прогрессия (волны/уровни), 3 типа врагов или препятствий, 2–3 улучшения/усилителя, финальная цель или босс и внятная кривая сложности.",
+            "12. UX: крупная кнопка старта, одна строка с управлением, пауза, экран Game Over со счётом и кнопкой «Заново». Игрок должен понимать цель без внешней инструкции.",
+            "13. Визуальная система: палитра 5–6 цветов, 3 слоя фона с параллаксом, объекты из 2–3 геометрических слоёв с обводкой и бликом, единый HUD. Фото-фон — только подложка, поверх него нужен плотный градиент/силуэты.",
+            "14. Технические ловушки: не смешивай CSS-пиксели и backing-пиксели canvas; не присваивай значения переменным const; лимит частиц должен реально соблюдаться в функции спавна; полноэкранный оверлей не должен перекрывать ввод без pointer-events:none.",
+            "15. Перед ответом мысленно запусти игру на экране 390×844: старт нажимается, все объекты в кадре, HUD читается, частицы и враги не растут без предела."
         ].join('\n')
     }]
 };
@@ -249,11 +256,11 @@ const PLAN_INSTRUCTION = {
             "Жанр: ...",
             "Ядро цикла: ...",
             "Управление: ...",
-            "Объекты: ...",
+            "Объекты и враги: 3 типа с разным поведением ...",
             "Правила победы: ...",
             "Правила поражения: ...",
-            "Прогрессия: ...",
-            "Визуальный стиль: палитра, атмосфера, слои фона и эффекты ...",
+            "Прогрессия и сложность: волны/уровни, улучшения, финальная цель или босс ...",
+            "Визуальная система: палитра 5–6 цветов, 3 слоя фона, силуэты объектов, стиль HUD ...",
             "Фишка: ...",
             "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов.",
             "Бюджет: 60 FPS на телефоне, без сотен эффектов и объектов на экране."
@@ -290,7 +297,9 @@ async function generateGamePlan(userPrompt, platform = 'pc') {
     const prompt = [
         'Идея игры: ' + userPrompt,
         'Платформа: ' + (platform === 'mobile' ? 'мобильная' : 'ПК'),
-        'Управление: ' + controlsPrompt
+        'Управление: ' + controlsPrompt,
+        '',
+        buildDesignBrief(userPrompt, platform)
     ].join('\n');
     try {
         const response = await axios.post(
@@ -567,6 +576,44 @@ async function repairGameCode(code, issues, platform, options = {}) {
     return { code: current, issues: currentIssues };
 }
 
+function buildGenerationPrompt(userPrompt, platform = 'pc', options = {}) {
+    const plan = String(options.plan || '').trim();
+    const selectedFile = options.selectedFile || selectReferenceEngine(userPrompt);
+    const referenceCode = options.referenceCode !== undefined ? options.referenceCode : loadReference(selectedFile);
+    const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
+
+    const promptLines = [];
+    if (referenceCode) {
+        promptLines.push(
+            `=== ЭТАЛОН КОДА (${selectedFile}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ ===`,
+            referenceCode,
+            '=== КОНЕЦ ЭТАЛОНА ===',
+            '',
+            '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
+            'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, структуру состояний (меню/игра/пауза/game over/рестарт). Визуальный стиль не копируй: сделай графику современнее и богаче, чем в эталоне.',
+            ''
+        );
+    }
+    if (plan) {
+        promptLines.push(
+            '=== ПЛАН ИГРЫ (СЛЕДУЙ ЕМУ) ===',
+            plan,
+            '=== КОНЕЦ ПЛАНА ===',
+            ''
+        );
+    }
+    promptLines.push(
+        'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
+        platform === 'mobile' ? MOBILE_PERFORMANCE : DESKTOP_PERFORMANCE,
+        '',
+        buildDesignBrief(userPrompt, platform),
+        '',
+        'Идея для новой игры: ' + userPrompt,
+        'Перед ответом проверь: старт нажимается, canvas не 0×0, все объекты в кадре, частицы и враги не растут без предела.'
+    );
+    return promptLines.join('\n');
+}
+
 async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetries = 5) {
     const plan = String(options.plan || '').trim();
     try {
@@ -574,35 +621,7 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
 
         const selectedFile = selectReferenceEngine(userPrompt);
         const referenceCode = loadReference(selectedFile);
-        const controlsPrompt = platform === 'mobile' ? CONTROLS_MOBILE : CONTROLS_PC;
-
-        const promptLines = [];
-        if (referenceCode) {
-            promptLines.push(
-                `=== ЭТАЛОН КОДА (${selectedFile}) — ДЛЯ СПРАВКИ ПО МЕХАНИКЕ ===`,
-                referenceCode,
-                '=== КОНЕЦ ЭТАЛОНА ===',
-                '',
-                '⚠️ ПОСТОРОННИЙ КОД В ЭТАЛОНЕ НЕ ПЕРЕНОСИ: Yandex SDK (YaGames), localStorage, словари i18n, экран загрузки и getElementById("loading-screen"), HTML-элементы <button>.',
-                'Копируй из эталона ТОЛЬКО: игровой цикл requestAnimationFrame, физику и коллизии, структуру состояний (меню/игра/пауза/game over/рестарт). Визуальный стиль не копируй: сделай графику современнее и богаче, чем в эталоне.',
-                ''
-            );
-        }
-        if (plan) {
-            promptLines.push(
-                '=== ПЛАН ИГРЫ (СЛЕДУЙ ЕМУ) ===',
-                plan,
-                '=== КОНЕЦ ПЛАНА ===',
-                ''
-            );
-        }
-        promptLines.push(
-            'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
-            platform === 'mobile' ? MOBILE_PERFORMANCE : DESKTOP_PERFORMANCE,
-            '',
-            'Идея для новой игры: ' + userPrompt
-        );
-        const fullPrompt = promptLines.join('\n');
+        const fullPrompt = buildGenerationPrompt(userPrompt, platform, { plan, selectedFile, referenceCode });
 
         const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
         let fullCode = '';
@@ -1915,6 +1934,9 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         } catch (e) {}
 
         let issues = validateGameCode(gameCode, platform);
+        const audit = auditGame(gameCode, platform);
+        const auditCriticals = audit.issues.filter(i => i.level === 'critical');
+        if (auditCriticals.length) issues = issues.concat(auditCriticals);
         const criticals = issues.filter(i => i.level === 'critical');
         if (criticals.length) {
             console.error('[Валидация] Критично:', criticals.map(i => i.msg).join(' | '));
@@ -1932,6 +1954,15 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
         }
         if (issues.length) console.warn('[Валидация] Замечания:', issues.map(i => i.msg).join(' | '));
+        const finalAudit = auditGame(gameCode, platform);
+        if (finalAudit.issues.length) {
+            console.warn('[Аудит] Замечания:', finalAudit.issues.map(i => i.msg).join(' | '));
+        }
+        logEvent('generation_quality', userId, {
+            generationId,
+            score: finalAudit.score,
+            issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
+        });
 
         try {
             await bot.telegram.editMessageText(chatId, msgId, null, [
@@ -2249,6 +2280,9 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
         } catch (e) {}
 
         let issues = validateGameCode(gameCode, platform);
+        const audit = auditGame(gameCode, platform);
+        const auditCriticals = audit.issues.filter(i => i.level === 'critical');
+        if (auditCriticals.length) issues = issues.concat(auditCriticals);
         const criticals = issues.filter(i => i.level === 'critical');
         if (criticals.length) {
             console.error('[Улучшение] Критично:', criticals.map(i => i.msg).join(' | '));
@@ -2266,6 +2300,15 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
         }
         if (issues.length) console.warn('[Улучшение] Замечания:', issues.map(i => i.msg).join(' | '));
+        const finalAudit = auditGame(gameCode, platform);
+        if (finalAudit.issues.length) {
+            console.warn('[Улучшение] Аудит:', finalAudit.issues.map(i => i.msg).join(' | '));
+        }
+        logEvent('improvement_quality', userId, {
+            generationId,
+            score: finalAudit.score,
+            issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
+        });
 
         tmpPath = path.join(aiGamesDir, `.${gameId}.${Date.now()}.tmp`);
         fs.writeFileSync(tmpPath, gameCode);
@@ -2831,7 +2874,10 @@ module.exports = {
     bot,
     start,
     generateAIGame,
+    generateGamePlan,
+    buildGenerationPrompt,
     validateGameCode,
+    auditGame,
     repairGameCode,
     loadReference,
     sanitizeReference

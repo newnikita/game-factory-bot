@@ -8,4 +8,5 @@ gamefactory.db
 gamefactory.db-shm
 gamefactory.db-wal
 backups/
+eval-output/
 *.log

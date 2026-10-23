@@ -110,7 +110,7 @@ function start() {
     if (started) return;
     started = true;
     document.getElementById('start-btn').style.display = 'none';
-    setTimeout(() => { document.getElementById('game-over').style.display = 'block'; }, 4000);
+    setTimeout(() => { document.getElementById('game-over').style.display = 'block'; }, OVERLAY_DELAY);
 }
 document.addEventListener('pointerdown', start);
 function loop() {
@@ -122,37 +122,66 @@ loop();
 </script>
 </body></html>`;
 
-test('browserCheck снимает игровой кадр, а не экран проигрыша', async (t) => {
+function frameGame(overlayDelay) {
+    return PLAY_FRAME_GAME.replace('OVERLAY_DELAY', String(overlayDelay));
+}
+
+async function runBrowserCheck(t, overlayDelay) {
     const chrome = findChrome();
     if (!chrome) {
         t.skip('Chrome не найден — проверка кадра пропущена');
-        return;
+        return null;
     }
     let puppeteer;
     try {
         puppeteer = require('puppeteer-core');
     } catch (error) {
         t.skip('puppeteer-core не установлен');
-        return;
+        return null;
     }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gf-eval-'));
+    const html = frameGame(overlayDelay);
     const htmlPath = path.join(dir, 'game.html');
-    fs.writeFileSync(htmlPath, PLAY_FRAME_GAME);
+    fs.writeFileSync(htmlPath, html);
 
     const browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     try {
-        const result = await browserCheck(browser, PLAY_FRAME_GAME, htmlPath);
-        assert.ok(result.playShot, 'игровой кадр должен быть снят');
-        assert.equal(result.screenshotKind, 'play');
-        assert.ok(result.after.visibleOverlays > 0, 'к концу прогона экран проигрыша уже показан');
-
-        const shotPath = path.join(dir, 'game.png');
-        assert.ok(fs.existsSync(shotPath));
-        const pixel = await readPixel(browser, shotPath, 60, 60);
-        assert.ok(pixel.g > 120 && pixel.r < 120, `кадр должен быть игровым (зелёный фон), а не экраном проигрыша: ${JSON.stringify(pixel)}`);
-    } finally {
+        const result = await browserCheck(browser, html, htmlPath);
+        return { result, shotPath: path.join(dir, 'game.png'), browser, dir };
+    } catch (error) {
         await browser.close();
         fs.rmSync(dir, { recursive: true, force: true });
+        throw error;
+    }
+}
+
+test('browserCheck снимает игровой кадр, а не экран проигрыша', async (t) => {
+    const run = await runBrowserCheck(t, 9000);
+    if (!run) return;
+    try {
+        assert.ok(run.result.playShot, 'игровой кадр должен быть снят');
+        assert.equal(run.result.screenshotKind, 'play');
+        assert.ok(fs.existsSync(run.shotPath));
+        const pixel = await readPixel(run.browser, run.shotPath, 60, 60);
+        assert.ok(pixel.g > 120 && pixel.r < 120, `кадр должен быть игровым (зелёный фон): ${JSON.stringify(pixel)}`);
+    } finally {
+        await run.browser.close();
+        fs.rmSync(run.dir, { recursive: true, force: true });
+    }
+});
+
+test('browserCheck прячет оверлей проигрыша и всё равно снимает игру', async (t) => {
+    const run = await runBrowserCheck(t, 4000);
+    if (!run) return;
+    try {
+        assert.ok(run.result.playShot, 'игровой кадр должен быть снят');
+        assert.equal(run.result.screenshotKind, 'overlay-hidden');
+        assert.ok(run.result.after.visibleOverlays > 0, 'экран проигрыша показан');
+        const pixel = await readPixel(run.browser, run.shotPath, 60, 60);
+        assert.ok(pixel.g > 120 && pixel.r < 120, `кадр должен быть игровым, а не белым оверлеем: ${JSON.stringify(pixel)}`);
+    } finally {
+        await run.browser.close();
+        fs.rmSync(run.dir, { recursive: true, force: true });
     }
 });
 

@@ -219,6 +219,20 @@ async function canvasRect(page) {
     });
 }
 
+async function dragGesture(page, rect) {
+    const startX = rect.left + rect.width * 0.2;
+    const startY = rect.top + rect.height * 0.8;
+    await page.mouse.move(startX, startY).catch(() => {});
+    await page.mouse.down().catch(() => {});
+    for (let step = 1; step <= 8; step++) {
+        await page.mouse
+            .move(startX + rect.width * 0.05 * step, startY - rect.height * 0.04 * step)
+            .catch(() => {});
+        await sleep(60);
+    }
+    await page.mouse.up().catch(() => {});
+}
+
 async function interact(page, capture) {
     const actions = [];
     const shoot = typeof capture === 'function' ? capture : async () => {};
@@ -226,18 +240,19 @@ async function interact(page, capture) {
     if (target) {
         await page.touchscreen.tap(target.x, target.y).catch(() => {});
         actions.push(`кнопка старта «${target.label}»`);
-        await sleep(2000);
-        await shoot();
-        await sleep(400);
+        await sleep(1500);
     }
     const rect = await canvasRect(page).catch(() => null);
     if (rect) {
-        for (const [index, [rx, ry]] of CANVAS_TAP_POINTS.entries()) {
+        for (const [rx, ry] of CANVAS_TAP_POINTS) {
             await page.touchscreen.tap(rect.left + rect.width * rx, rect.top + rect.height * ry).catch(() => {});
             await sleep(200);
-            if (index === 0) await shoot();
         }
         actions.push('точки по холсту');
+        await dragGesture(page, rect);
+        actions.push('жест затягивания');
+        await sleep(2500);
+        await shoot();
         for (let round = 0; round < 3; round++) {
             for (const [rx, ry] of [[0.2, 0.6], [0.2, 0.75], [0.35, 0.6]]) {
                 await page.touchscreen.tap(rect.left + rect.width * rx, rect.top + rect.height * ry).catch(() => {});
@@ -561,6 +576,7 @@ async function run() {
                 patched: quality.patched,
                 repaired: quality.repaired,
                 polished: quality.polished,
+                polishModel: quality.polishModel || null,
                 issues: quality.issueCodes,
                 visualIssues: quality.visualIssues || []
             };

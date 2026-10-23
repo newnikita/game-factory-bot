@@ -616,6 +616,7 @@ async function runQualityPipeline(code, options = {}) {
         patched: false,
         repaired: false,
         polished: false,
+        polishModel: null,
         criticRepaired: false,
         critic: null,
         criticScore: null,
@@ -723,7 +724,11 @@ async function runQualityPipeline(code, options = {}) {
                     issues: [...critic.issues, ...visualIssues]
                 };
                 try {
-                    const polished = await polishGameCode(currentCode, polishCritic, { platform, keepBackground: true });
+                    const polished = await polishGameCode(currentCode, polishCritic, {
+                        platform,
+                        keepBackground: true,
+                        models: gemini.criticModels(options.model || null)
+                    });
                     if (!polished.code || !/<\/html>/i.test(polished.code)) {
                         console.log('[Качество] Полиш отклонён: модель вернула неполный HTML');
                     } else {
@@ -738,6 +743,7 @@ async function runQualityPipeline(code, options = {}) {
                             currentCode = polished.code;
                             current = after;
                             report.polished = true;
+                            report.polishModel = polished.model || null;
                             console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score})`);
                         }
                     }
@@ -2365,6 +2371,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             visualScore: quality.visualScore === undefined ? null : quality.visualScore,
             patched: quality.patched,
             polished: quality.polished,
+            polishModel: quality.polishModel === undefined ? null : quality.polishModel,
             issues: quality.issueCodes,
             visualIssues: quality.visualIssues || []
         });

@@ -60,7 +60,7 @@ const {
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { planRefund, REFUND_MODES } = require('./lib/refunds');
 const { legalValues, renderLegal, readinessReport, loadConfig, isPersistentDataDir } = require('./lib/readiness');
-const { renderLanding, renderRobots, renderSitemap } = require('./lib/landing');
+const { renderLanding, renderLegalIndex, renderLegalDocument, renderRobots, renderSitemap } = require('./lib/landing');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -1297,12 +1297,11 @@ function readLegalDocs() {
 }
 
 app.get('/legal', (req, res) => {
-    const files = fs.readdirSync(legalDir).filter((file) => file.endsWith('.md')).sort();
-    const items = files.map((file) => {
-        const title = file.replace(/\.md$/i, '').replace(/[-_]/g, ' ');
-        return `<li><a href="/legal/${encodeURIComponent(file)}">${escapeHtml(title)}</a></li>`;
-    }).join('');
-    res.type('html').send(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Правила и документы</title></head><body><h1>Правила и документы</h1><ul>${items}</ul></body></html>`);
+    const html = renderLegalIndex({ support: legalValues(process.env, APP_CONFIG) });
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.type('html').send(html);
 });
 
 app.get('/legal/:file', (req, res, next) => {
@@ -1310,10 +1309,15 @@ app.get('/legal/:file', (req, res, next) => {
     if (!/^[a-zA-Z0-9._-]+\.md$/.test(name) || name.includes('..')) return next();
     const filePath = path.join(legalDir, name);
     if (!fs.existsSync(filePath)) return next();
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Cache-Control', 'public, max-age=600');
-    res.send(renderLegal(fs.readFileSync(filePath, 'utf8'), legalValues(process.env, APP_CONFIG)));
+    res.send(renderLegalDocument({
+        file: name,
+        text: renderLegal(fs.readFileSync(filePath, 'utf8'), legalValues(process.env, APP_CONFIG)),
+        support: legalValues(process.env, APP_CONFIG)
+    }));
 });
 
 app.use('/legal', express.static(legalDir, {

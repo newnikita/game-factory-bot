@@ -14,7 +14,7 @@ process.env.ADMIN_IDS = '999';
 
 const db = require('../lib/db');
 const { app } = require('../bot');
-const { renderLanding, renderRobots, renderSitemap, botLink } = require('../lib/landing');
+const { renderLanding, renderLegalIndex, renderLegalDocument, renderMarkdown, renderRobots, renderSitemap, botLink } = require('../lib/landing');
 
 db.initDb({ file: path.join(dataDir, 'test.db'), importLegacy: false, startBalance: 50, adminIds: [999] });
 
@@ -80,4 +80,50 @@ test('sitemap.xml перечисляет публичные страницы', a
     assert.match(text, /<urlset/);
     assert.match(text, /<loc>[^<]*\/legal<\/loc>/);
     assert.match(renderSitemap('https://example.com', ['/']), /<loc>https:\/\/example\.com\/<\/loc>/);
+});
+
+test('страница документов перечисляет все документы с русскими названиями', async () => {
+    const response = await fetch(`${base}/legal`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Публичная оферта/);
+    assert.match(html, /Политика возвратов/);
+    assert.match(html, /\/legal\/offer\.md/);
+    assert.match(html, /\/legal\/license\.md/);
+    assert.ok(!html.includes('>offer<'), 'название файла не должно быть единственным подписью');
+    assert.match(renderLegalIndex({ support: {} }), /Публичная оферта/);
+});
+
+test('документ отдаётся разметкой, а не простыней текста', async () => {
+    const response = await fetch(`${base}/legal/offer.md`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<h1>/);
+    assert.match(html, /<h2>/);
+    assert.match(html, /<p>/);
+    assert.match(html, /<strong>/);
+});
+
+test('markdown переводит списки, заголовки и переносы строк', () => {
+    const html = renderMarkdown('# Заголовок\n\nПараграф.\n\n- пункт один\n- пункт два\n');
+    assert.match(html, /<h1>Заголовок<\/h1>/);
+    assert.match(html, /<p>Параграф\.<\/p>/);
+    assert.match(html, /<ul>\s*<li>пункт один<\/li>\s*<li>пункт два<\/li>\s*<\/ul>/);
+});
+
+test('markdown экранирует html и не выполняет javascript-ссылки', () => {
+    const html = renderMarkdown('Текст <script>alert(1)</script> и [ссылка](javascript:alert(1)).');
+    assert.ok(!html.includes('<script>'));
+    assert.ok(!html.includes('javascript:'));
+    assert.match(html, /&lt;script&gt;/);
+});
+
+test('значения реквизитов в документе экранируются', () => {
+    const html = renderLegalDocument({
+        file: 'offer.md',
+        text: 'Оператор: <img src=x onerror=alert(1)>',
+        support: { '[email]': '<script>alert(1)</script>' }
+    });
+    assert.ok(!html.includes('<img src=x'));
+    assert.ok(!html.includes('<script>alert(1)</script>'));
 });

@@ -667,6 +667,7 @@ async function run() {
         avgRubric,
         avgVisionScore: avgVision,
         visionSelfReview: withVision.filter((p) => p.vision && p.vision.selfReview).length,
+        visionUnavailable: completed.filter((p) => !p.vision).length,
         avgCriticGap: withVision.length && modelCritic.length ? avgCritic - avgVision : 0,
         effectiveCriticGap: withVision.length && withEffective.length ? avgEffectiveCritic - avgVision : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,

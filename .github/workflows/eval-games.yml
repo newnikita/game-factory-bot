@@ -98,7 +98,7 @@ jobs:
               ["Оценка по аудиту", (s.avgAuditCritic || 0) + " (" + (s.criticUnavailable || 0) + " игр)"],
               ["Рубрика критика", s.avgRubric || 0],
               ["Эффективная оценка", s.avgEffectiveCritic || 0],
-              ["Vision", s.avgVisionScore || 0],
+              ["Vision", (s.avgVisionScore || 0) + " (" + (s.visionUnavailable || 0) + " без оценки)"],
               ["Vision своей модели", s.visionSelfReview || 0],
               ["Разрыв критик↔vision", s.avgCriticGap || 0],
               ["Разрыв эффектив↔vision", s.effectiveCriticGap || 0],

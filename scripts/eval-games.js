@@ -41,12 +41,15 @@ const PROMPTS = [
 ];
 
 function parseArgs(argv) {
-    const args = { limit: 3, out: 'eval-output', browser: true, only: null };
+    const args = { limit: 3, out: 'eval-output', browser: true, only: null, engines: false, baseline: null, failBelow: 0 };
     for (let i = 2; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--limit') args.limit = Number(argv[++i]) || args.limit;
         else if (arg === '--out') args.out = argv[++i] || args.out;
         else if (arg === '--no-browser') args.browser = false;
+        else if (arg === '--engines') args.engines = true;
+        else if (arg === '--baseline') args.baseline = argv[++i] || null;
+        else if (arg === '--fail-below') args.failBelow = Number(argv[++i]) || 0;
         else if (arg === '--only') args.only = String(argv[++i] || '').split(',').map(s => s.trim()).filter(Boolean);
     }
     return args;
@@ -151,6 +154,7 @@ async function probeState(page) {
 async function interact(page) {
     const points = [
         { x: 195, y: 420 },
+        { x: 195, y: 500 },
         { x: 195, y: 650 },
         { x: 195, y: 750 },
         { x: 100, y: 420 }
@@ -214,6 +218,48 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     return result;
 }
 
+async function reviewScreenshotFile(bot, filePath, brief) {
+    if (!fs.existsSync(filePath)) return null;
+    try {
+        const buffer = fs.readFileSync(filePath);
+        const { reviewScreenshot } = require('../lib/game-vision');
+        return await reviewScreenshot(buffer, { brief, platform: 'mobile' });
+    } catch (error) {
+        console.error('[Vision] Ревью скриншота не удалось:', error.message);
+        return null;
+    }
+}
+
+async function runEngines(browser, bot, outDir) {
+    const hybrid = require('../lib/hybrid');
+    const results = [];
+    const genres = ['platformer'];
+    for (const genre of genres) {
+        const engine = hybrid.getEngine(genre);
+        if (!engine) continue;
+        const record = { id: `engine_${genre}`, genre };
+        try {
+            const specResult = await hybrid.generateSpec('Платформер про лесного духа, который собирает светлячков');
+            record.spec = specResult.spec;
+            const html = engine.render(specResult.spec, {});
+            const htmlPath = path.join(outDir, `${record.id}.html`);
+            fs.writeFileSync(htmlPath, html);
+            record.bytes = Buffer.byteLength(html);
+            record.audit = bot.auditGame(html, 'mobile');
+            if (browser) {
+                record.runtime = await browserCheck(browser, html, htmlPath);
+                record.vision = await reviewScreenshotFile(bot, record.runtime.screenshot, 'Платформер про лесного духа');
+            }
+            console.log(`engine ${genre}: audit=${record.audit.score} errors=${record.runtime ? record.runtime.pageErrors.length + record.runtime.errors.length : 'n/a'}`);
+        } catch (error) {
+            record.error = String(error && error.stack || error);
+            console.error(`engine ${genre} FAILED:`, error.message);
+        }
+        results.push(record);
+    }
+    return results;
+}
+
 async function run() {
     const args = parseArgs(process.argv);
     installDnsFallback();
@@ -254,7 +300,9 @@ async function run() {
     const report = {
         startedAt: new Date().toISOString(),
         model: 'gemini-2.5-flash',
+        promptVersion: 'v3-quality-pipeline',
         prompts: [],
+        engines: [],
         summary: {}
     };
 
@@ -270,39 +318,38 @@ async function run() {
             if (!generated || !generated.code) throw new Error('модель не вернула полный HTML');
             record.generatedTokens = { input: generated.inputTokens, output: generated.outputTokens };
 
-            let code = generated.code;
-            const initialIssues = bot.validateGameCode(code, 'mobile');
-            const initialAudit = bot.auditGame(code, 'mobile');
-            record.initialValidation = {
-                critical: initialIssues.filter(i => i.level === 'critical').map(i => i.msg),
-                warnings: initialIssues.filter(i => i.level === 'warning').map(i => i.msg)
-            };
-            record.initialAudit = initialAudit;
+            const initial = bot.collectQualityIssues(generated.code, 'mobile');
+            record.initialAudit = { score: initial.technicalScore, issues: initial.issues.map((i) => i.msg) };
 
-            const criticalIssues = initialIssues.filter(i => i.level === 'critical')
-                .concat(initialAudit.issues.filter(i => i.level === 'critical'));
-            if (criticalIssues.length) {
-                const repaired = await bot.repairGameCode(code, criticalIssues, 'mobile');
-                code = repaired.code;
-            }
+            const quality = await bot.runQualityPipeline(generated.code, {
+                platform: 'mobile',
+                brief: prompt.text,
+                plan: plan.plan
+            });
 
-            const finalIssues = bot.validateGameCode(code, 'mobile');
-            const finalAudit = bot.auditGame(code, 'mobile');
-            record.finalValidation = {
-                critical: finalIssues.filter(i => i.level === 'critical').map(i => i.msg),
-                warnings: finalIssues.filter(i => i.level === 'warning').map(i => i.msg)
+            const code = quality.code;
+            record.pipeline = {
+                score: quality.score,
+                technicalScore: quality.technicalScore,
+                criticScore: quality.criticScore,
+                patched: quality.patched,
+                repaired: quality.repaired,
+                polished: quality.polished,
+                issues: quality.issueCodes
             };
-            record.finalAudit = finalAudit;
+            record.finalAudit = { score: quality.technicalScore, issues: quality.issues.map((i) => i.msg) };
             record.bytes = Buffer.byteLength(code);
             record.htmlPath = path.join(outDir, `${prompt.id}.html`);
             fs.writeFileSync(record.htmlPath, code);
 
             if (browser) {
                 record.runtime = await browserCheck(browser, code, record.htmlPath);
+                record.vision = await reviewScreenshotFile(bot, record.runtime.screenshot, prompt.text);
             }
             record.durationMs = Date.now() - started;
-            console.log(`audit=${finalAudit.score} crit=${record.finalValidation.critical.length} warn=${record.finalValidation.warnings.length}` +
-                (record.runtime ? ` fps=${record.runtime.fps?.rafPerSec} errors=${record.runtime.pageErrors.length + record.runtime.errors.length} changed=${record.runtime.changed}` : ''));
+            console.log(`score=${quality.score} tech=${quality.technicalScore} critic=${quality.criticScore} ` +
+                (record.runtime ? `fps=${record.runtime.fps?.rafPerSec} errors=${record.runtime.pageErrors.length + record.runtime.errors.length} changed=${record.runtime.changed} ` : '') +
+                (record.vision ? `vision=${record.vision.score}` : ''));
         } catch (error) {
             record.error = String(error && error.stack || error);
             record.durationMs = Date.now() - started;
@@ -311,13 +358,25 @@ async function run() {
         report.prompts.push(record);
     }
 
+    if (args.engines) {
+        report.engines = await runEngines(browser, bot, outDir);
+    }
+
     if (browser) await browser.close();
 
-    const completed = report.prompts.filter((p) => !p.error && p.finalAudit);
+    const completed = report.prompts.filter((p) => !p.error && p.pipeline);
+    const withVision = completed.filter((p) => p.vision);
     report.summary = {
         requested: prompts.length,
         completed: completed.length,
-        avgAuditScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.finalAudit.score, 0) / completed.length) : 0,
+        avgScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.score, 0) / completed.length) : 0,
+        avgTechnical: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.technicalScore, 0) / completed.length) : 0,
+        avgCritic: completed.length && completed.some((p) => p.pipeline.criticScore !== null)
+            ? Math.round(completed.reduce((sum, p) => sum + (p.pipeline.criticScore || 0), 0) / completed.length)
+            : 0,
+        avgVisionScore: withVision.length ? Math.round(withVision.reduce((sum, p) => sum + p.vision.score, 0) / withVision.length) : 0,
+        patched: completed.filter((p) => p.pipeline.patched).length,
+        polished: completed.filter((p) => p.pipeline.polished).length,
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
         avgRafPerSec: completed.filter(p => p.runtime && p.runtime.fps)
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
@@ -329,6 +388,27 @@ async function run() {
     fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
     console.log(`\nОтчёт: ${reportPath}`);
     console.log(JSON.stringify(report.summary, null, 2));
+
+    let exitCode = 0;
+    if (args.failBelow && report.summary.avgScore < args.failBelow) {
+        console.error(`\n❌ Регрессия: средний score ${report.summary.avgScore} ниже порога ${args.failBelow}`);
+        exitCode = 1;
+    }
+    if (args.baseline && fs.existsSync(args.baseline)) {
+        try {
+            const baseline = JSON.parse(fs.readFileSync(args.baseline, 'utf8'));
+            const base = (baseline.summary && baseline.summary.avgScore) || 0;
+            const delta = report.summary.avgScore - base;
+            console.log(`\nBaseline: ${base} → сейчас ${report.summary.avgScore} (Δ ${delta >= 0 ? '+' : ''}${delta})`);
+            if (delta < 0) {
+                console.error('❌ Качество упало относительно baseline.');
+                exitCode = 1;
+            }
+        } catch (error) {
+            console.error('Не удалось прочитать baseline:', error.message);
+        }
+    }
+    process.exit(exitCode);
 }
 
 run().catch((error) => {

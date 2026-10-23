@@ -11,6 +11,22 @@ on:
         description: 'Жанры через запятую (defense,runner,shooter,platformer,puzzle,breaker,arena,racing)'
         required: false
         default: ''
+      engines:
+        description: 'Прогнать детерминированные движки (гибрид AI+движок)'
+        required: false
+        default: 'true'
+      fail_below:
+        description: 'Упасть, если средний score ниже порога (0 — не проверять)'
+        required: false
+        default: '0'
+      baseline_run_id:
+        description: 'ID прошлого запуска для A/B-сравнения (пусто — без baseline)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   eval:
@@ -23,6 +39,12 @@ jobs:
           node-version: '24'
           cache: 'npm'
       - run: npm ci
+      - name: Locate Chrome
+        run: |
+          for path in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium; do
+            if [ -x "$path" ]; then echo "CHROME_PATH=$path" >> "$GITHUB_ENV"; exit 0; fi
+          done
+          echo "::error::Chrome не найден на раннере." && exit 1
       - name: Check Gemini key
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -31,15 +53,51 @@ jobs:
             echo "::error::Добавьте секрет репозитория GEMINI_API_KEY (Settings → Secrets and variables → Actions)."
             exit 1
           fi
+      - name: Download baseline report
+        if: inputs.baseline_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: eval-output
+          path: baseline
+          run-id: ${{ inputs.baseline_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate and playtest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LIMIT: ${{ inputs.limit }}
           ONLY: ${{ inputs.only }}
+          ENGINES: ${{ inputs.engines }}
+          FAIL_BELOW: ${{ inputs.fail_below }}
         run: |
           args=(--limit "$LIMIT")
           if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          if [ "$ENGINES" = "true" ]; then args+=(--engines); fi
+          if [ -n "$FAIL_BELOW" ] && [ "$FAIL_BELOW" != "0" ]; then args+=(--fail-below "$FAIL_BELOW"); fi
+          if [ -f baseline/report.json ]; then args+=(--baseline baseline/report.json); fi
           npm run eval:games -- "${args[@]}"
+      - name: Publish summary
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("eval-output/report.json")) { console.log("Нет отчёта"); process.exit(0); }
+            const report = JSON.parse(fs.readFileSync("eval-output/report.json", "utf8"));
+            const s = report.summary || {};
+            const rows = [
+              ["Прогон", report.promptVersion || "?"],
+              ["Игр", (s.completed || 0) + "/" + (s.requested || 0)],
+              ["Средний score", s.avgScore || 0],
+              ["Технический", s.avgTechnical || 0],
+              ["Критик", s.avgCritic || 0],
+              ["Vision", s.avgVisionScore || 0],
+              ["Пропатчено", s.patched || 0],
+              ["Отполировано", s.polished || 0],
+              ["Ошибок в рантайме", s.runtimeErrors || 0],
+              ["FPS (raf/s)", Math.round((s.avgRafPerSec || 0) * 10) / 10]
+            ];
+            const body = rows.map(([k, v]) => "| " + k + " | " + v + " |").join("\n");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "## Eval games\n\n| Метрика | Значение |\n|---|---|\n" + body + "\n");
+          '
       - name: Upload eval artifacts
         if: always()
         uses: actions/upload-artifact@v4

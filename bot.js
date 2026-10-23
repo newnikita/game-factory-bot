@@ -33,6 +33,10 @@ const {
     dismissComplaint,
     logEvent,
     getStats,
+    getQualityStats,
+    rateGame,
+    getGameRating,
+    getRatingStats,
     importLegacyUsers
 } = require('./lib/db');
 const {
@@ -51,8 +55,12 @@ const {
     tryConsumeRateLimit
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
-const { buildDesignBrief, detectGenre } = require('./lib/game-design');
+const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame } = require('./lib/game-quality');
+const { patchGameCode, polishGameCode } = require('./lib/game-patch');
+const { reviewCode, criticToIssues } = require('./lib/game-vision');
+const hybrid = require('./lib/hybrid');
+const gemini = require('./lib/gemini');
 
 function envInt(name, fallback) {
     const value = Number.parseInt(process.env[name], 10);
@@ -70,7 +78,10 @@ const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
 const MAX_DEVICE_PIXEL_RATIO = Math.min(Math.max(Number(process.env.MAX_DEVICE_PIXEL_RATIO) || 2, 1), 3);
-const PROMPT_VERSION = 'v2-genre-recipes';
+const PROMPT_VERSION = 'v3-quality-pipeline';
+const QUALITY_CRITIC_ENABLED = String(process.env.QUALITY_CRITIC_ENABLED || 'true') === 'true';
+const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 80));
+const QUALITY_POLISH_ENABLED = String(process.env.QUALITY_POLISH_ENABLED || 'true') === 'true';
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
 
 process.on('uncaughtException', (err) => console.error('❌ Неперехваченная ошибка:', err.stack || err.message));
@@ -205,7 +216,6 @@ const DESKTOP_PERFORMANCE = [
     '- Используй delta time с ограничением: dt = Math.min(dt, 1 / 30).'
 ].join('\n');
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const GEMINI_INPUT_PRICE_PER_M = Number(process.env.GEMINI_INPUT_PRICE_PER_M || 0.30);
 const GEMINI_OUTPUT_PRICE_PER_M = Number(process.env.GEMINI_OUTPUT_PRICE_PER_M || 2.50);
 
@@ -286,10 +296,25 @@ const IMPROVE_SYSTEM_INSTRUCTION = {
 };
 
 function stripCodeMarkers(text) {
-    const marker = String.fromCharCode(96, 96, 96);
-    let out = text.replace(new RegExp(marker + 'html', 'gi'), '');
-    out = out.replace(new RegExp(marker, 'g'), '');
-    return out.trim();
+    return gemini.stripCodeMarkers(text);
+}
+
+const RATING_FEEDBACK_TTL_MS = 10 * 60 * 1000;
+let ratingFeedbackCache = { at: 0, byGenre: null };
+
+function getRatingFeedback(prompt) {
+    const now = Date.now();
+    if (now - ratingFeedbackCache.at > RATING_FEEDBACK_TTL_MS) {
+        let byGenre = null;
+        try {
+            byGenre = getRatingStats(30).byGenre;
+        } catch (error) {
+            console.error('[Оценки] Не удалось собрать статистику:', error.message);
+        }
+        ratingFeedbackCache = { at: now, byGenre };
+    }
+    if (!ratingFeedbackCache.byGenre) return null;
+    return buildRatingFeedback({ byGenre: ratingFeedbackCache.byGenre }, prompt);
 }
 
 async function generateGamePlan(userPrompt, platform = 'pc') {
@@ -300,25 +325,22 @@ async function generateGamePlan(userPrompt, platform = 'pc') {
         'Платформа: ' + (platform === 'mobile' ? 'мобильная' : 'ПК'),
         'Управление: ' + controlsPrompt,
         '',
-        buildDesignBrief(userPrompt, platform)
+        buildDesignBrief(userPrompt, platform, { feedback: getRatingFeedback(userPrompt) })
     ].join('\n');
     try {
-        const response = await axios.post(
-            `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
-            {
-                systemInstruction: PLAN_INSTRUCTION,
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                safetySettings: SAFETY_SETTINGS,
-                generationConfig: { temperature: 0.5, topK: 40, topP: 0.9, maxOutputTokens: 1200 }
-            },
-            { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
-        );
-        const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-        const usage = response.data.usageMetadata || {};
+        const result = await gemini.generate({
+            systemInstruction: PLAN_INSTRUCTION,
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            safetySettings: SAFETY_SETTINGS,
+            generationConfig: { temperature: 0.5, topK: 40, topP: 0.9, maxOutputTokens: 1200 },
+            timeout: 60000
+        });
         return {
-            plan: stripCodeMarkers(text).slice(0, 4000),
-            inputTokens: Number(usage.promptTokenCount) || 0,
-            outputTokens: Number(usage.candidatesTokenCount) || 0
+            plan: stripCodeMarkers(result.text).slice(0, 4000),
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            model: result.model,
+            fallbackUsed: result.fallbackUsed
         };
     } catch (e) {
         console.error('[План] Не удалось составить план:', e.message);
@@ -553,18 +575,14 @@ async function repairGameCode(code, issues, platform, options = {}) {
             current
         ].join('\n');
         try {
-            const response = await axios.post(
-                `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`,
-                {
-                    systemInstruction: preserveBackground ? IMPROVE_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION,
-                    contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
-                    safetySettings: SAFETY_SETTINGS,
-                    generationConfig: { temperature: 0.3, topK: 40, topP: 0.9, maxOutputTokens: 65536 }
-                },
-                { headers: { 'Content-Type': 'application/json' }, timeout: 300000 }
-            );
-            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-            let repaired = stripCodeMarkers(text);
+            const result = await gemini.generate({
+                systemInstruction: preserveBackground ? IMPROVE_SYSTEM_INSTRUCTION : SYSTEM_INSTRUCTION,
+                contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
+                safetySettings: SAFETY_SETTINGS,
+                generationConfig: { temperature: 0.3, topK: 40, topP: 0.9, maxOutputTokens: 65536 },
+                timeout: 300000
+            });
+            let repaired = stripCodeMarkers(result.text);
             if (!repaired || !/<\/html>/i.test(repaired)) continue;
             if (preserveBackground) repaired = normalizeImprovedCode(repaired, options.originalCode || code);
             current = repaired;
@@ -575,6 +593,128 @@ async function repairGameCode(code, issues, platform, options = {}) {
         }
     }
     return { code: current, issues: currentIssues };
+}
+
+function collectQualityIssues(code, platform) {
+    const validation = validateGameCode(code, platform);
+    const audit = auditGame(code, platform);
+    const issues = validation.concat(audit.issues);
+    return {
+        issues,
+        criticals: issues.filter((issue) => issue.level === 'critical'),
+        audit,
+        technicalScore: audit.score
+    };
+}
+
+async function runQualityPipeline(code, options = {}) {
+    const platform = options.platform || 'pc';
+    const report = {
+        code,
+        patched: false,
+        repaired: false,
+        polished: false,
+        criticRepaired: false,
+        critic: null,
+        criticScore: null,
+        technicalScore: 0,
+        score: 0,
+        issues: []
+    };
+
+    let currentCode = code;
+    let current = collectQualityIssues(currentCode, platform);
+    report.technicalScore = current.technicalScore;
+
+    if (current.criticals.length) {
+        try {
+            const patched = await patchGameCode(currentCode, current.criticals, { platform });
+            if (patched.patched) {
+                const after = collectQualityIssues(patched.code, platform);
+                if (!after.criticals.length) {
+                    currentCode = patched.code;
+                    current = after;
+                    report.patched = true;
+                    console.log('[Качество] Точечный патч закрыл замечания');
+                }
+            }
+        } catch (error) {
+            console.error('[Качество] Патч не удался:', error.message);
+        }
+    }
+
+    if (current.criticals.length) {
+        try {
+            const repaired = await repairGameCode(currentCode, current.issues, platform);
+            const after = collectQualityIssues(repaired.code, platform);
+            if (!after.criticals.length) {
+                currentCode = repaired.code;
+                current = after;
+                report.repaired = true;
+            }
+        } catch (error) {
+            console.error('[Качество] Ремонт не удался:', error.message);
+        }
+    }
+
+    if (QUALITY_CRITIC_ENABLED) {
+        try {
+            const critic = await reviewCode(currentCode, {
+                brief: options.brief || '',
+                plan: options.plan || '',
+                platform
+            });
+            report.critic = critic;
+            report.criticScore = critic.score;
+
+            const criticIssues = criticToIssues(critic);
+            if (criticIssues.some((issue) => issue.level === 'critical')) {
+                try {
+                    const repaired = await repairGameCode(currentCode, criticIssues, platform);
+                    const after = collectQualityIssues(repaired.code, platform);
+                    if (!after.criticals.length) {
+                        currentCode = repaired.code;
+                        current = after;
+                        report.criticRepaired = true;
+                    }
+                } catch (error) {
+                    console.error('[Качество] Ремонт по критику не удался:', error.message);
+                }
+            }
+
+            if (QUALITY_POLISH_ENABLED && critic.score < QUALITY_CRITIC_MIN_SCORE) {
+                try {
+                    const polished = await polishGameCode(currentCode, critic, { platform, keepBackground: true });
+                    if (polished.code && /<\/html>/i.test(polished.code)) {
+                        const after = collectQualityIssues(polished.code, platform);
+                        if (!after.criticals.length && after.technicalScore >= current.technicalScore) {
+                            currentCode = polished.code;
+                            current = after;
+                            report.polished = true;
+                            console.log('[Качество] Полиш-пасс применён');
+                        }
+                    }
+                } catch (error) {
+                    console.error('[Качество] Полиш не удался:', error.message);
+                }
+            }
+        } catch (error) {
+            console.error('[Качество] Критик не ответил:', error.message);
+        }
+    }
+
+    report.code = currentCode;
+    report.technicalScore = current.technicalScore;
+    report.issues = current.issues.map((issue) => ({
+        level: issue.level,
+        code: issue.code || null,
+        msg: issue.msg
+    }));
+    report.issueCodes = report.issues.map((issue) => issue.code || issue.msg).slice(0, 12);
+    report.score = report.criticScore === null
+        ? current.technicalScore
+        : Math.round(current.technicalScore * 0.6 + report.criticScore * 0.4);
+    return report;
 }
 
 function buildGenerationPrompt(userPrompt, platform = 'pc', options = {}) {
@@ -607,7 +747,7 @@ function buildGenerationPrompt(userPrompt, platform = 'pc', options = {}) {
         'ПРАВИЛА УПРАВЛЕНИЯ: ' + controlsPrompt,
         platform === 'mobile' ? MOBILE_PERFORMANCE : DESKTOP_PERFORMANCE,
         '',
-        buildDesignBrief(userPrompt, platform),
+        buildDesignBrief(userPrompt, platform, { feedback: getRatingFeedback(userPrompt) }),
         '',
         'Идея для новой игры: ' + userPrompt,
         'Перед ответом проверь: старт нажимается, canvas не 0×0, все объекты в кадре, частицы и враги не растут без предела.'
@@ -624,32 +764,33 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
         const referenceCode = loadReference(selectedFile);
         const fullPrompt = buildGenerationPrompt(userPrompt, platform, { plan, selectedFile, referenceCode });
 
-        const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
         let fullCode = '';
         let history = [{ role: 'user', parts: [{ text: fullPrompt }] }];
         let isFinished = false;
         let inputTokens = 0;
         let outputTokens = 0;
+        let usedModel = null;
+        let fallbackUsed = false;
 
         for (let chunk = 0; chunk < 5 && !isFinished; chunk++) {
             let attemptSuccess = false;
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 try {
-                    const payload = {
+                    const result = await gemini.generate({
                         systemInstruction: SYSTEM_INSTRUCTION,
                         contents: history,
                         safetySettings: SAFETY_SETTINGS,
-                        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 65536 }
-                    };
-                    const response = await axios.post(url, payload, {
-                        headers: { 'Content-Type': 'application/json' },
-                        timeout: 300000
+                        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 65536 },
+                        timeout: 300000,
+                        onRetry: ({ attempt: retryAttempt, delay, model }) => {
+                            console.error(`[Генерация] Модель ${model} не ответила, повтор ${retryAttempt} через ${delay} мс`);
+                        }
                     });
-                    const chunkText = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-                    if (!chunkText) throw new Error('Пустой ответ модели');
-                    const usage = response.data.usageMetadata || {};
-                    inputTokens += Number(usage.promptTokenCount) || 0;
-                    outputTokens += Number(usage.candidatesTokenCount) || 0;
+                    const chunkText = result.text;
+                    inputTokens += result.usage.inputTokens;
+                    outputTokens += result.usage.outputTokens;
+                    usedModel = result.model;
+                    fallbackUsed = fallbackUsed || result.fallbackUsed;
                     fullCode += chunkText;
 
                     if (!stripCodeMarkers(fullCode).includes('</html>')) {
@@ -677,7 +818,8 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
             code: stripCodeMarkers(fullCode),
             inputTokens,
             outputTokens,
-            model: 'gemini-2.5-flash'
+            model: usedModel || gemini.PRIMARY_MODEL,
+            fallbackUsed
         };
     } catch (e) {
         console.error('[Генерация] Ошибка:', e.message);
@@ -702,24 +844,22 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
         'ТЕКУЩИЙ КОД:',
         currentCode
     ].join('\n');
-    const url = `${GEMINI_ENDPOINT}?key=${process.env.GEMINI_API_KEY}`;
     let inputTokens = 0;
     let outputTokens = 0;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const response = await axios.post(url, {
+            const result = await gemini.generate({
                 systemInstruction: IMPROVE_SYSTEM_INSTRUCTION,
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 safetySettings: SAFETY_SETTINGS,
-                generationConfig: { temperature: 0.4, topK: 40, topP: 0.9, maxOutputTokens: 65536 }
-            }, { headers: { 'Content-Type': 'application/json' }, timeout: 300000 });
-            const text = (response.data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-            const usage = response.data.usageMetadata || {};
-            inputTokens += Number(usage.promptTokenCount) || 0;
-            outputTokens += Number(usage.candidatesTokenCount) || 0;
-            const code = stripCodeMarkers(text);
+                generationConfig: { temperature: 0.4, topK: 40, topP: 0.9, maxOutputTokens: 65536 },
+                timeout: 300000
+            });
+            inputTokens += result.usage.inputTokens;
+            outputTokens += result.usage.outputTokens;
+            const code = stripCodeMarkers(result.text);
             if (!code || !/<\/html>/i.test(code)) throw new Error('Модель вернула неполный файл');
-            return { code, inputTokens, outputTokens, model: 'gemini-2.5-flash' };
+            return { code, inputTokens, outputTokens, model: result.model, fallbackUsed: result.fallbackUsed };
         } catch (err) {
             const status = err.response ? err.response.status : null;
             const retryable = !status || status === 429 || status >= 500;
@@ -1534,6 +1674,17 @@ bot.command('stats', async (ctx) => {
                 : [])
         ]
         : ['', 'Качество: пока нет данных'];
+    const ratings = stats.ratings;
+    const ratingLines = ratings && ratings.votes
+        ? [
+            '',
+            `Оценки за ${ratings.days} дней: ${ratings.votes} голосов, средняя ${ratings.avg}/5 (${ratings.ratedGames} игр)`,
+            ...ratings.byGenre.slice(0, 5).map((item) => `  ${item.genre}: ${item.avg}/5 (${item.votes})`),
+            ratings.bottom.length && ratings.bottom[0].avg < 4
+                ? 'Худшие: ' + ratings.bottom.slice(0, 3).map((item) => `${item.title} ${item.avg}`).join(', ')
+                : ''
+        ].filter(Boolean)
+        : [];
     await ctx.reply([
         '👑 Статистика',
         '',
@@ -1542,8 +1693,40 @@ bot.command('stats', async (ctx) => {
         `Генераций: ${stats.generations}`,
         `Платежей: ${stats.payments}`,
         `Открытых жалоб: ${stats.openComplaints}`,
-        ...qualityLines
+        ...qualityLines,
+        ...ratingLines
     ].join('\n'));
+});
+
+bot.command('ratings', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const stats = getRatingStats(30);
+    if (!stats.votes) return ctx.reply('👑 Оценок пока нет.');
+    const lines = [
+        '👑 <b>Оценки игр за 30 дней</b>',
+        '',
+        `Голосов: ${stats.votes}, средняя ${stats.avg}/5, игр с оценками: ${stats.ratedGames}`
+    ];
+    if (stats.byGenre.length) {
+        lines.push('', '<b>По жанрам:</b>');
+        for (const item of stats.byGenre) lines.push(`• ${item.genre}: ${item.avg}/5 (${item.votes})`);
+    }
+    if (stats.top.length) {
+        lines.push('', '<b>Лучшие:</b>');
+        for (const item of stats.top) lines.push(`• ${item.title} — ${item.avg}/5 (${item.votes})`);
+    }
+    if (stats.bottom.length) {
+        lines.push('', '<b>Слабые места:</b>');
+        for (const item of stats.bottom) lines.push(`• ${item.title} — ${item.avg}/5 (${item.votes})`);
+        const weakWithPrompt = stats.bottom.filter((item) => item.prompt && Number(item.avg) < 4);
+        if (weakWithPrompt.length) {
+            lines.push('', '<b>Что просил игрок (связка с промптом):</b>');
+            for (const item of weakWithPrompt.slice(0, 3)) {
+                lines.push(`• ${escapeHtml(item.prompt.slice(0, 120))}`);
+            }
+        }
+    }
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
 });
 
 bot.command('quality', async (ctx) => {
@@ -1780,11 +1963,45 @@ bot.action(/^platform_(mobile|pc)$/, async (ctx) => {
         [Markup.button.callback('🔴 Бабл Шутер', 'engine_bubble'), Markup.button.callback('🧱 Арканоид', 'engine_arkanoid')],
         [Markup.button.callback('🧩 Тетрис', 'engine_tetris'), Markup.button.callback('🚀 Платформер', 'engine_platformer')],
         [Markup.button.callback('🔫 Шутер', 'engine_shooter'), Markup.button.callback('✨ ИИ-Генератор', 'engine_ai')],
-        [Markup.button.callback('⬅️ Назад', 'start_creation')]
+        [Markup.button.callback('⚡ Движок + ИИ', 'engine_hybrid'), Markup.button.callback('⬅️ Назад', 'start_creation')]
     ];
     await ctx.editMessageText([
         '2️⃣ <b>Выбери движок</b>',
-        '<i>Шаблоны собираются мгновенно. ИИ — по твоему описанию.</i>'
+        '<i>Шаблоны собираются мгновенно. ИИ — по твоему описанию.</i>',
+        '',
+        '⚡ <b>Движок + ИИ</b> — нейросеть придумывает мир и героев, а проверенный движок отвечает за физику и 60 FPS. Быстрее и стабильнее.'
+    ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
+bot.action('engine_hybrid', async (ctx) => {
+    const user = tgUser(ctx);
+    if (user.banned) {
+        return ctx.answerCbQuery('Аккаунт заблокирован.', { show_alert: true });
+    }
+    if (userGames(user) < 1) {
+        return ctx.editMessageText([
+            '💎 <b>Игры закончились</b>',
+            UI_DIVIDER,
+            'Купи пакет или пригласи друга — и продолжай создавать.'
+        ].join('\n'), { parse_mode: 'HTML', ...paywallKeyboard() });
+    }
+    ctx.session.gameData.engine = 'hybrid';
+    ctx.session.step = 'awaiting_ai_prompt';
+
+    const kb = [
+        [Markup.button.callback('🎲 Случайная идея', 'random_ai_idea')],
+        [Markup.button.callback('⬅️ Назад', 'start_creation')]
+    ];
+    await ctx.editMessageText([
+        '⚡ <b>Движок + ИИ</b>',
+        `<i>Стоимость: ${gamesLabel(1)}</i>`,
+        UI_DIVIDER,
+        'Опиши игру — я подберу движок по жанру.',
+        '',
+        '<b>Пример:</b>',
+        '<i>«платформер про лесного духа, который собирает светлячков»</i>',
+        '',
+        '<i>Сейчас движок есть для платформера; для остальных жанров соберём игру обычным ИИ-генератором.</i>'
     ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
 });
 
@@ -1830,7 +2047,7 @@ bot.action('random_ai_idea', async (ctx) => {
     await handleAIGeneration(ctx.chat.id, ctx.callbackQuery.message.message_id, idea, ctx);
 });
 
-bot.action(/^engine_(?!ai$)([a-z_]+)$/, async (ctx) => {
+bot.action(/^engine_(?!ai$|hybrid$)([a-z_]+)$/, async (ctx) => {
     const engine = sanitizeEngine(ctx.match[1], ENGINE_NAMES);
     if (!engine) return ctx.answerCbQuery('❌ Движок не найден.', { show_alert: true });
     const user = tgUser(ctx);
@@ -1968,23 +2185,55 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
     }, 3500);
 
     try {
+        const genre = detectGenre(cleanPrompt);
+        const hybridRequested = ctx.session?.gameData?.engine === 'hybrid';
+        const hybridEngine = hybrid.getEngine(genre);
+
         recordGeneration({
             id: generationId,
             telegramId: userId,
             prompt: cleanPrompt,
             platform,
-            engine: 'ai',
+            engine: hybridRequested && hybridEngine ? 'hybrid' : 'ai',
             status: 'running',
-            model: 'gemini-2.5-flash'
+            model: 'gemini-2.5-flash',
+            genre
         });
-        logEvent('generation_started', userId, { generationId, platform, promptVersion: PROMPT_VERSION, genre: detectGenre(cleanPrompt) });
+        logEvent('generation_started', userId, { generationId, platform, promptVersion: PROMPT_VERSION, genre });
 
-        const planResult = await generateGamePlan(cleanPrompt, platform);
-        const generated = await generateAIGame(cleanPrompt, platform, { plan: planResult.plan });
-        if (!generated || !generated.code) throw new Error('Генерация оборвалась: модель не вернула полный файл');
-        const totalInputTokens = generated.inputTokens + planResult.inputTokens;
-        const totalOutputTokens = generated.outputTokens + planResult.outputTokens;
-        let gameCode = generated.code;
+        let planResult = { plan: '', inputTokens: 0, outputTokens: 0 };
+        let gameCode = '';
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
+        let generatedModel = 'gemini-2.5-flash';
+        let gameTitle = cleanPrompt;
+        let usedHybrid = false;
+
+        if (hybridRequested && hybridEngine) {
+            usedHybrid = true;
+            try {
+                await bot.telegram.editMessageText(chatId, msgId, null, [
+                    '⚙️ <b>Собираю игру на движке...</b>',
+                    UI_DIVIDER,
+                    '<i>Нейросеть придумывает мир, персонажей и врагов, движок отвечает за физику и 60 FPS.</i>'
+                ].join('\n'), { parse_mode: 'HTML' });
+            } catch (e) {}
+            const specResult = await hybrid.generateSpec(cleanPrompt);
+            gameCode = hybridEngine.render(specResult.spec, {});
+            gameTitle = specResult.spec.title || cleanPrompt;
+            totalInputTokens = specResult.usage.inputTokens;
+            totalOutputTokens = specResult.usage.outputTokens;
+            generatedModel = specResult.model;
+            logEvent('hybrid_generated', userId, { generationId, genre, title: gameTitle });
+        } else {
+            planResult = await generateGamePlan(cleanPrompt, platform);
+            const generated = await generateAIGame(cleanPrompt, platform, { plan: planResult.plan });
+            if (!generated || !generated.code) throw new Error('Генерация оборвалась: модель не вернула полный файл');
+            totalInputTokens = generated.inputTokens + planResult.inputTokens;
+            totalOutputTokens = generated.outputTokens + planResult.outputTokens;
+            generatedModel = generated.model;
+            gameCode = generated.code;
+        }
 
         clearInterval(progressInterval);
         try {
@@ -1996,36 +2245,46 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             ].join('\n'), { parse_mode: 'HTML' });
         } catch (e) {}
 
-        let issues = validateGameCode(gameCode, platform);
-        const audit = auditGame(gameCode, platform);
-        const auditCriticals = audit.issues.filter(i => i.level === 'critical');
-        if (auditCriticals.length) issues = issues.concat(auditCriticals);
-        const criticals = issues.filter(i => i.level === 'critical');
-        if (criticals.length) {
-            console.error('[Валидация] Критично:', criticals.map(i => i.msg).join(' | '));
-            try {
-                await bot.telegram.editMessageText(chatId, msgId, null, [
-                    '🔧 <b>Автопочинка...</b>',
-                    UI_DIVIDER,
-                    `<i>Устраняю замечания проверки (${criticals.length})...</i>`
-                ].join('\n'), { parse_mode: 'HTML' });
-            } catch (e) {}
-            const repaired = await repairGameCode(gameCode, issues, platform);
-            gameCode = repaired.code;
-            issues = repaired.issues;
-            const stillCritical = issues.filter(i => i.level === 'critical');
-            if (stillCritical.length) throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
+        let quality = null;
+        if (usedHybrid) {
+            const audit = auditGame(gameCode, platform);
+            const validation = validateGameCode(gameCode, platform).filter((issue) => !/клавиатура/i.test(issue.msg));
+            quality = {
+                code: gameCode,
+                technicalScore: audit.score,
+                criticScore: null,
+                score: audit.score,
+                patched: false,
+                polished: false,
+                issues: validation.concat(audit.issues).map((issue) => ({ level: issue.level, code: issue.code || null, msg: issue.msg })),
+                issueCodes: validation.concat(audit.issues).map((issue) => issue.code || issue.msg).slice(0, 12)
+            };
+        } else {
+            quality = await runQualityPipeline(gameCode, {
+                platform,
+                brief: cleanPrompt,
+                plan: planResult.plan
+            });
+            gameCode = quality.code;
         }
-        if (issues.length) console.warn('[Валидация] Замечания:', issues.map(i => i.msg).join(' | '));
-        const finalAudit = auditGame(gameCode, platform);
-        if (finalAudit.issues.length) {
-            console.warn('[Аудит] Замечания:', finalAudit.issues.map(i => i.msg).join(' | '));
+
+        const stillCritical = quality.issues.filter((issue) => issue.level === 'critical');
+        if (stillCritical.length) {
+            console.error('[Валидация] Критично:', stillCritical.map((issue) => issue.msg).join(' | '));
+            throw new Error('Игра не прошла валидацию: ' + stillCritical[0].msg);
+        }
+        if (quality.issues.length) {
+            console.warn('[Качество] Замечания:', quality.issues.map((issue) => issue.msg).join(' | '));
         }
         logEvent('generation_quality', userId, {
             generationId,
             promptVersion: PROMPT_VERSION,
-            score: finalAudit.score,
-            issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
+            score: quality.score,
+            technicalScore: quality.technicalScore,
+            criticScore: quality.criticScore,
+            patched: quality.patched,
+            polished: quality.polished,
+            issues: quality.issueCodes
         });
 
         try {
@@ -2090,8 +2349,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             id: gameId,
             telegramId: userId,
             generationId,
-            title: sanitizeGameTitle(cleanPrompt, 'Игра'),
-            source: 'ai',
+            title: sanitizeGameTitle(usedHybrid ? gameTitle : cleanPrompt, 'Игра'),
+            source: usedHybrid ? 'hybrid' : 'ai',
             htmlPath: `${gameId}.html`
         });
         recordGeneration({
@@ -2099,21 +2358,24 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             telegramId: userId,
             prompt: cleanPrompt,
             platform,
-            engine: 'ai',
+            engine: usedHybrid ? 'hybrid' : 'ai',
             status: 'completed',
-            model: generated.model,
+            model: generatedModel,
             inputTokens: totalInputTokens,
             outputTokens: totalOutputTokens,
             costUsd: estimateCostUsd(totalInputTokens, totalOutputTokens),
             attempts: 1,
-            gameId
+            gameId,
+            genre
         });
         logEvent('generation_succeeded', userId, {
             generationId,
             gameId,
             inputTokens: totalInputTokens,
             outputTokens: totalOutputTokens,
-            planTokens: planResult.inputTokens + planResult.outputTokens
+            planTokens: planResult.inputTokens + planResult.outputTokens,
+            mode: usedHybrid ? 'hybrid' : 'ai',
+            score: quality.score
         });
         completed = true;
         createdGameId = gameId;
@@ -2134,12 +2396,17 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         const url = publicGameUrl(gameId);
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
-            [Markup.button.callback('✏️ Улучшить', `improve_ai_${gameId}`)],
+            [Markup.button.callback('👍 Хорошо', `rate_ai_${gameId}_5`), Markup.button.callback('👎 Плохо', `rate_ai_${gameId}_1`)]
+        ];
+        if (!usedHybrid) {
+            kb.push([Markup.button.callback('✏️ Улучшить', `improve_ai_${gameId}`)]);
+        }
+        kb.push(
             [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
             [Markup.button.callback('🔁 Перегенерировать', 'regen_ai')],
             [Markup.button.callback('💳 Купить ещё', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
-        ];
+        );
 
         const fresh = findUser(userId) || user;
         const msg = [
@@ -2230,6 +2497,23 @@ bot.action(/^improve_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
         '✏️ Что улучшить в игре?\n\nНапиши одной фразой: «добавь бонусы», «сделай сложнее», «ускорь персонажа».\n\nСтоимость: 1 игра.',
         Markup.inlineKeyboard([[Markup.button.callback('⬅️ Отмена', 'main_menu')]])
     ).catch(() => {});
+});
+
+bot.action(/^rate_ai_(ai_[0-9]{10,20})_([1-5])$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    const score = Number(ctx.match[2]);
+    if (!isSafeGameId(gameId)) return ctx.answerCbQuery('❌ Игра не найдена.', { show_alert: true });
+    const game = getGame(gameId);
+    if (!game) return ctx.answerCbQuery('❌ Игра не найдена.', { show_alert: true });
+    try {
+        const rating = rateGame(gameId, ctx.from.id, score);
+        const average = rating.avg ? ` Средняя оценка: ${rating.avg}.` : '';
+        logEvent('game_rated', ctx.from.id, { gameId, rating: score });
+        await ctx.answerCbQuery(score >= 4 ? `👍 Спасибо за оценку!${average}` : `👎 Учтём, сделаем лучше.${average}`);
+    } catch (error) {
+        console.error('[Оценка]', error.message);
+        await ctx.answerCbQuery('❌ Не удалось сохранить оценку.');
+    }
 });
 
 async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
@@ -2944,6 +3228,8 @@ module.exports = {
     validateGameCode,
     auditGame,
     repairGameCode,
+    runQualityPipeline,
+    collectQualityIssues,
     loadReference,
     sanitizeReference
 };

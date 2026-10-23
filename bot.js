@@ -60,6 +60,7 @@ const {
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { planRefund, REFUND_MODES } = require('./lib/refunds');
 const { legalValues, renderLegal, readinessReport, loadConfig, isPersistentDataDir } = require('./lib/readiness');
+const { renderLanding, renderRobots, renderSitemap } = require('./lib/landing');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -1142,7 +1143,45 @@ function applySandboxHeaders(res) {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
 }
 
-app.get('/', (req, res) => res.type('text').send('Фабрика Игр: Статус OK'));
+function publicBaseUrl(req) {
+    if (/^https:\/\//i.test(GAMES_PUBLIC_URL)) return GAMES_PUBLIC_URL;
+    if (/^https:\/\//i.test(WEBAPP_URL)) return WEBAPP_URL;
+    const host = String((req && req.get('host')) || '').trim();
+    return host ? `https://${host}` : '';
+}
+
+function botUsername() {
+    try {
+        return (bot.botInfo && bot.botInfo.username) || '';
+    } catch (error) {
+        return '';
+    }
+}
+
+app.get('/', (req, res) => {
+    const html = renderLanding({
+        botUsername: botUsername() || APP_CONFIG.botUsername,
+        baseUrl: publicBaseUrl(req),
+        support: legalValues(process.env, APP_CONFIG)
+    });
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.type('html').send(html);
+});
+
+app.get('/robots.txt', (req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(renderRobots(publicBaseUrl(req)));
+});
+
+app.get('/sitemap.xml', (req, res) => {
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(renderSitemap(publicBaseUrl(req), ['/', '/legal']));
+});
+
 app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
 
 app.get('/healthz', (req, res) => {

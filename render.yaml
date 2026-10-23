@@ -42,6 +42,18 @@ services:
         value: BLOCK_MEDIUM_AND_ABOVE
       - key: GEMINI_DANGEROUS_THRESHOLD
         value: BLOCK_ONLY_HIGH
+      - key: GEMINI_MODEL
+        value: "gemini-2.5-flash"
+      - key: GEMINI_FALLBACK_MODEL
+        value: "gemini-2.0-flash"
+      - key: GEMINI_MAX_ATTEMPTS
+        value: "3"
+      - key: QUALITY_CRITIC_ENABLED
+        value: "true"
+      - key: QUALITY_CRITIC_MIN_SCORE
+        value: "80"
+      - key: QUALITY_POLISH_ENABLED
+        value: "true"
       - key: ALLOW_UNMODERATED_IMAGE_UPLOADS
         value: "false"
       # Секреты и URL-ы задаются в Dashboard (sync: false).

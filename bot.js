@@ -1974,7 +1974,12 @@ async function processSuccessfulPayment(ctx, payment) {
     await ctx.reply(msg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
 
     const paymentKind = renewal ? 'Продление подписки' : (subscription ? 'Новая подписка' : 'Новый пакет');
-    await notifyAdmins(`💰 ${paymentKind}: ${plan.title}, ${payment.total_amount} Stars, пользователь ${ctx.from.id}`);
+    // Баланс дублируется в чате: если база стирается при деплое, деньги можно
+    // восстановить по этой переписке.
+    const adminPaymentNote = until && Number.isFinite(until.getTime())
+        ? `, баланс: ${gamesLabel(userGames(user))}, подписка до ${until.toLocaleDateString('ru-RU')}`
+        : `, баланс: ${gamesLabel(userGames(user))}`;
+    await notifyAdmins(`💰 ${paymentKind}: ${plan.title}, ${payment.total_amount} Stars, пользователь ${ctx.from.id}${adminPaymentNote}`);
 
     if (!DATA_PERSISTENT) {
         await notifyAdmins(`🚨 Платёж начислен, но база лежит во временной ФС (${DATA_DIR}): при следующем деплое баланс покупателя исчезнет. Нужен диск Render и DATA_DIR=/var/data.`);

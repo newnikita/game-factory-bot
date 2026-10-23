@@ -127,6 +127,8 @@ test('оплата начисляет игры и подтверждает по�
     assert.equal(db.getPaymentByChargeId('charge-e2e-1').status, 'succeeded');
     assert.ok(textsFor(1).some((text) => text.includes('Оплата получена')), 'покупатель должен получить подтверждение');
     assert.ok(textsFor(999).some((text) => text.includes('pack3') || text.includes('Попробовать')));
+    const adminNote = textsFor(999).find((text) => text.includes('Stars'));
+    assert.ok(adminNote && adminNote.includes('баланс:'), 'в уведомлении админу должен быть баланс, чтобы восстановить деньги из переписки');
 });
 
 test('повторная доставка того же платежа не начисляет игры дважды', async () => {

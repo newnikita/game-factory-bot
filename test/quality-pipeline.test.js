@@ -20,6 +20,46 @@ loop();
 
 const BROKEN_GAME = '<html><body><div>нет canvas</div></body></html>';
 
+const RICH_GAME = `<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const particles = [];
+function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, 800);
+    grad.addColorStop(0, '#101026');
+    grad.addColorStop(1, '#26264d');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 400, 800);
+}
+function drawParallaxLayer(offset) {
+    ctx.fillStyle = '#00f3ff';
+    ctx.beginPath();
+    ctx.moveTo(0, 800);
+    ctx.lineTo(100 + offset, 400);
+    ctx.lineTo(400, 800);
+    ctx.closePath();
+    ctx.fill();
+}
+function drawHero() {
+    ctx.beginPath();
+    ctx.arc(200, 300, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.rotate(Math.sin(performance.now() / 400) * 0.2);
+    ctx.restore();
+}
+function spawn() { particles.push({ x: 0, y: 0, color: '#ffd700' }); }
+let state = 'menu';
+window.addEventListener('pointerdown', () => { state = 'play'; });
+function loop() { requestAnimationFrame(loop); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+loop();
+</script>
+</body></html>`;
+
 test('collectQualityIssues собирает валидацию и аудит вместе', () => {
     const result = bot.collectQualityIssues(BROKEN_GAME, 'mobile');
     assert.ok(result.criticals.length > 0);
@@ -110,13 +150,53 @@ test('runQualityPipeline откатывает полиш, который уху�
 test('runQualityPipeline смешивает технический балл и оценку критика', async () => {
     const original = gemini.generate;
     const originalJson = gemini.generateJson;
-    gemini.generate = async () => ({ text: GOOD_GAME, usage: {}, model: 'test' });
+    gemini.generate = async () => ({ text: RICH_GAME, usage: {}, model: 'test' });
     gemini.generateJson = async () => ({ data: { score: 90, issues: [] }, usage: {}, model: 'test' });
     try {
-        const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
+        const report = await bot.runQualityPipeline(RICH_GAME, { platform: 'mobile' });
         assert.equal(report.criticScore, 90);
+        assert.equal(report.effectiveCriticScore, 90);
+        assert.equal(report.visualScore, 100);
         assert.equal(report.score, Math.round(report.technicalScore * 0.6 + 90 * 0.4));
         assert.equal(report.polished, false, 'score выше порога полиш не нужен');
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
+test('runQualityPipeline урезает оценку критика по аудиту графики', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => ({ text: GOOD_GAME, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({ data: { score: 95, issues: [] }, usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
+        assert.equal(report.criticScore, 95);
+        assert.ok(report.visualScore < 60, 'плоская графика должна получить низкий визуальный балл');
+        assert.equal(report.effectiveCriticScore, report.visualScore);
+        assert.ok(report.effectiveCriticScore < 95);
+        assert.equal(report.polished, true, 'плоская графика обязана уйти в полиш');
+        assert.equal(report.score, Math.round(report.technicalScore * 0.6 + report.effectiveCriticScore * 0.4));
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
+test('runQualityPipeline не принимает полиш, который ухудшил графику', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    const flatter = GOOD_GAME.replace(
+        'ctx.clearRect(0, 0, canvas.width, canvas.height);',
+        'ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillRect(0, 0, 10, 10); ctx.fillRect(20, 20, 10, 10); ctx.fillRect(40, 40, 10, 10);'
+    );
+    gemini.generate = async () => ({ text: flatter, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({ data: { score: 10, issues: [] }, usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
+        assert.equal(report.polished, false);
+        assert.equal(report.code, GOOD_GAME);
     } finally {
         gemini.generate = original;
         gemini.generateJson = originalJson;

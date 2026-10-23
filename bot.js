@@ -56,7 +56,7 @@ const {
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
-const { auditGame } = require('./lib/game-quality');
+const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
 const { reviewCode, criticToIssues } = require('./lib/game-vision');
 const hybrid = require('./lib/hybrid');
@@ -604,6 +604,7 @@ function collectQualityIssues(code, platform) {
         issues,
         criticals: issues.filter((issue) => issue.level === 'critical'),
         audit,
+        visual: auditVisuals(code),
         technicalScore: audit.score
     };
 }
@@ -618,6 +619,8 @@ async function runQualityPipeline(code, options = {}) {
         criticRepaired: false,
         critic: null,
         criticScore: null,
+        effectiveCriticScore: null,
+        visualScore: 0,
         technicalScore: 0,
         score: 0,
         issues: []
@@ -626,6 +629,7 @@ async function runQualityPipeline(code, options = {}) {
     let currentCode = code;
     let current = collectQualityIssues(currentCode, platform);
     report.technicalScore = current.technicalScore;
+    report.visualScore = current.visual.score;
 
     if (current.criticals.length) {
         try {
@@ -663,12 +667,21 @@ async function runQualityPipeline(code, options = {}) {
             const critic = await reviewCode(currentCode, {
                 brief: options.brief || '',
                 plan: options.plan || '',
-                platform
+                platform,
+                visualAudit: current.visual
             });
             report.critic = critic;
             report.criticScore = critic.score;
             if (critic.noVerdict) {
                 console.warn(`[Качество] Критик не дал вердикта (${critic.reason}) — оцениваю по техническому аудиту`);
+            }
+
+            const effective = critic.score === null
+                ? null
+                : Math.min(critic.score, current.visual.ceiling);
+            report.effectiveCriticScore = effective;
+            if (effective !== null && effective < critic.score) {
+                console.log(`[Качество] Оценка критика урезана по аудиту графики: ${critic.score} → ${effective}`);
             }
 
             const criticIssues = criticToIssues(critic);
@@ -688,13 +701,24 @@ async function runQualityPipeline(code, options = {}) {
 
             if (!QUALITY_POLISH_ENABLED) {
                 console.log('[Качество] Полиш выключен');
-            } else if (typeof critic.score !== 'number') {
+            } else if (effective === null) {
                 console.log('[Качество] Полиш пропущен: у критика нет оценки');
-            } else if (critic.score >= QUALITY_CRITIC_MIN_SCORE) {
-                console.log(`[Качество] Полиш не требуется: оценка ${critic.score} >= ${QUALITY_CRITIC_MIN_SCORE}`);
+            } else if (effective >= QUALITY_CRITIC_MIN_SCORE) {
+                console.log(`[Качество] Полиш не требуется: оценка ${effective} >= ${QUALITY_CRITIC_MIN_SCORE}`);
             } else {
+                const visualIssues = current.visual.issues.map((issue) => ({
+                    code: issue.code,
+                    level: 'warning',
+                    msg: issue.msg,
+                    fix: issue.fix
+                }));
+                const polishCritic = {
+                    ...critic,
+                    score: effective,
+                    issues: [...critic.issues, ...visualIssues]
+                };
                 try {
-                    const polished = await polishGameCode(currentCode, critic, { platform, keepBackground: true });
+                    const polished = await polishGameCode(currentCode, polishCritic, { platform, keepBackground: true });
                     if (!polished.code || !/<\/html>/i.test(polished.code)) {
                         console.log('[Качество] Полиш отклонён: модель вернула неполный HTML');
                     } else {
@@ -703,11 +727,13 @@ async function runQualityPipeline(code, options = {}) {
                             console.log(`[Качество] Полиш отклонён: осталось критичных замечаний (${after.criticals.length})`);
                         } else if (after.technicalScore < current.technicalScore) {
                             console.log(`[Качество] Полиш отклонён: технический балл упал ${current.technicalScore} → ${after.technicalScore}`);
+                        } else if (after.visual.score < current.visual.score) {
+                            console.log(`[Качество] Полиш отклонён: визуальный балл упал ${current.visual.score} → ${after.visual.score}`);
                         } else {
                             currentCode = polished.code;
                             current = after;
                             report.polished = true;
-                            console.log('[Качество] Полиш-пасс применён');
+                            console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score})`);
                         }
                     }
                 } catch (error) {
@@ -721,15 +747,19 @@ async function runQualityPipeline(code, options = {}) {
 
     report.code = currentCode;
     report.technicalScore = current.technicalScore;
+    report.visualScore = current.visual.score;
     report.issues = current.issues.map((issue) => ({
         level: issue.level,
         code: issue.code || null,
         msg: issue.msg
     }));
     report.issueCodes = report.issues.map((issue) => issue.code || issue.msg).slice(0, 12);
-    report.score = report.criticScore === null
+    const effectiveScore = report.effectiveCriticScore === null
+        ? null
+        : Math.min(report.effectiveCriticScore, current.visual.ceiling);
+    report.score = effectiveScore === null
         ? current.technicalScore
-        : Math.round(current.technicalScore * 0.6 + report.criticScore * 0.4);
+        : Math.round(current.technicalScore * 0.6 + effectiveScore * 0.4);
     return report;
 }
 
@@ -2284,6 +2314,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
                 code: gameCode,
                 technicalScore: audit.score,
                 criticScore: null,
+                visualScore: auditVisuals(gameCode).score,
                 score: audit.score,
                 patched: false,
                 polished: false,
@@ -2313,6 +2344,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             score: quality.score,
             technicalScore: quality.technicalScore,
             criticScore: quality.criticScore,
+            visualScore: quality.visualScore === undefined ? null : quality.visualScore,
             patched: quality.patched,
             polished: quality.polished,
             issues: quality.issueCodes

@@ -252,6 +252,30 @@ async function interact(page, capture) {
     return actions;
 }
 
+async function hudLayoutIssues(page) {
+    return await page.evaluate(() => {
+        const issues = new Set();
+        const roots = [...document.querySelectorAll('#hud, .hud, [class*="hud"], [id*="hud"]')];
+        for (const root of roots) {
+            const rootStyle = getComputedStyle(root);
+            if (rootStyle.display === 'none' || rootStyle.visibility === 'hidden') continue;
+            for (const el of root.querySelectorAll('*')) {
+                const text = String(el.textContent || '').trim();
+                if (!text || text.length > 60) continue;
+                const style = getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                const fontSize = parseFloat(style.fontSize) || 16;
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 1 || rect.height < 1) continue;
+                if (rect.height > fontSize * 1.7) {
+                    issues.add(`подпись «${text.slice(0, 30)}» переносится на вторую строку (${Math.round(rect.height)}px при шрифте ${Math.round(fontSize)}px)`);
+                }
+            }
+        }
+        return [...issues];
+    });
+}
+
 async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
@@ -278,8 +302,12 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
             await page.screenshot({ path: result.screenshot });
         };
         result.actions = await interact(page, capture);
-        await sleep(600);
+        await sleep(1500);
         result.after = await probeState(page);
+        result.hudIssues = await hudLayoutIssues(page).catch(() => []);
+        if (result.screenshot && result.after && result.after.menuVisible === false) {
+            await page.screenshot({ path: result.screenshot });
+        }
         result.signatureAfter = await canvasSignature(page);
         result.started = result.before.menuVisible ? !result.after.menuVisible : null;
         result.changed = Boolean(
@@ -480,6 +508,8 @@ async function run() {
                 score: quality.score,
                 technicalScore: quality.technicalScore,
                 criticScore: quality.criticScore,
+                effectiveCriticScore: quality.effectiveCriticScore,
+                visualScore: quality.visualScore,
                 criticNoVerdict: Boolean(quality.critic && quality.critic.noVerdict),
                 patched: quality.patched,
                 repaired: quality.repaired,
@@ -496,7 +526,7 @@ async function run() {
                 record.vision = await reviewScreenshotFile(bot, record.runtime.screenshot, prompt.text);
             }
             record.durationMs = Date.now() - started;
-            console.log(`score=${quality.score} tech=${quality.technicalScore} critic=${quality.criticScore} ` +
+            console.log(`score=${quality.score} tech=${quality.technicalScore} critic=${quality.criticScore} visual=${quality.visualScore} ` +
                 `model=${record.model}${record.fallbackUsed ? ' (fallback)' : ''} ` +
                 (record.runtime ? `fps=${record.runtime.fps?.rafPerSec} errors=${record.runtime.pageErrors.length + record.runtime.errors.length} started=${record.runtime.started} changed=${record.runtime.changed} ` : '') +
                 (record.vision ? `vision=${record.vision.score}` : ''));
@@ -526,19 +556,24 @@ async function run() {
     report.modelsUsed = modelsUsed;
     if (modelsUsed.length === 1) report.model = modelsUsed[0];
     else if (modelsUsed.length > 1) report.model = modelsUsed.join(', ');
+    const avgCritic = withCritic.length ? Math.round(withCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / withCritic.length) : 0;
+    const avgVision = withVision.length ? Math.round(withVision.reduce((sum, p) => sum + p.vision.score, 0) / withVision.length) : 0;
     report.summary = {
         requested: prompts.length,
         completed: completed.length,
         failed: report.prompts.length - completed.length,
         avgScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.score, 0) / completed.length) : 0,
         avgTechnical: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.technicalScore, 0) / completed.length) : 0,
+        avgVisualScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + (p.pipeline.visualScore || 0), 0) / completed.length) : 0,
         criticScored: withCritic.length,
         criticUnavailable: completed.length - withCritic.length,
-        avgCritic: withCritic.length ? Math.round(withCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / withCritic.length) : 0,
-        avgVisionScore: withVision.length ? Math.round(withVision.reduce((sum, p) => sum + p.vision.score, 0) / withVision.length) : 0,
+        avgCritic,
+        avgVisionScore: avgVision,
+        avgCriticGap: withVision.length && withCritic.length ? avgCritic - avgVision : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,
         polished: completed.filter((p) => p.pipeline.polished).length,
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
+        hudIssues: completed.reduce((sum, p) => sum + (p.runtime && p.runtime.hudIssues ? p.runtime.hudIssues.length : 0), 0),
         avgRafPerSec: completed.filter(p => p.runtime && p.runtime.fps)
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
         changedGames: completed.filter(p => p.runtime && p.runtime.changed).length,

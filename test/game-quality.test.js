@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { auditGame } = require('../lib/game-quality');
+const { auditGame, auditVisuals } = require('../lib/game-quality');
 
 const canvas = '<canvas id="game"></canvas>';
 
@@ -96,4 +96,86 @@ test('чистая игра без известных ловушек получ�
     const audit = auditGame(code, 'mobile');
     assert.equal(audit.score, 100);
     assert.deepEqual(audit.issues, []);
+});
+
+const FLAT_GAME = `
+    ${canvas}
+    <script>
+        const ctx = document.getElementById('game').getContext('2d');
+        function draw() {
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, 0, 400, 800);
+            ctx.fillRect(10, 10, 20, 20);
+            ctx.fillRect(50, 50, 20, 20);
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+`;
+
+const RICH_GAME = `
+    ${canvas}
+    <script>
+        const ctx = document.getElementById('game').getContext('2d');
+        const particles = [];
+        function drawSky() {
+            const grad = ctx.createLinearGradient(0, 0, 0, 800);
+            grad.addColorStop(0, '#101026');
+            grad.addColorStop(1, '#26264d');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 400, 800);
+        }
+        function drawParallaxLayer(offset) {
+            ctx.fillStyle = '#00f3ff';
+            ctx.beginPath();
+            ctx.moveTo(0, 800);
+            ctx.lineTo(100 + offset, 400);
+            ctx.lineTo(400, 800);
+            ctx.closePath();
+            ctx.fill();
+        }
+        function drawHero() {
+            ctx.beginPath();
+            ctx.arc(200, 300, 18, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.save();
+            ctx.rotate(Math.sin(performance.now() / 400) * 0.2);
+            ctx.restore();
+            ctx.fillText('HP', 10, 20);
+        }
+        function spawn() { particles.push({ x: 0, y: 0, color: '#ffd700' }); }
+        function draw() { requestAnimationFrame(draw); }
+        draw();
+    </script>
+`;
+
+test('визуальный аудит ловит игру, собранную из прямоугольников', () => {
+    const visual = auditVisuals(FLAT_GAME);
+    assert.ok(visual.score < 60);
+    assert.ok(visual.issues.some((issue) => issue.code === 'flat_primitives'));
+    assert.ok(visual.issues.some((issue) => issue.code === 'flat_background'));
+    assert.ok(visual.issues.every((issue) => issue.level === 'warning'));
+});
+
+test('визуальный аудит не ругает игру со слоями, палитрой и эффектами', () => {
+    const visual = auditVisuals(RICH_GAME);
+    assert.equal(visual.score, 100);
+    assert.deepEqual(visual.issues, []);
+});
+
+test('визуальный аудит даёт полу за графику без объёма', () => {
+    const visual = auditVisuals(FLAT_GAME);
+    assert.ok(visual.issues.some((issue) => issue.code === 'no_effects'));
+    assert.ok(visual.issues.some((issue) => issue.code === 'weak_palette'));
+});
+
+test('потолок визуальной оценки не опускается ниже 45', () => {
+    const visual = auditVisuals(FLAT_GAME);
+    assert.ok(visual.ceiling >= 45);
+    assert.ok(visual.ceiling <= visual.score + 1 || visual.ceiling === 45);
+});
+
+test('визуальный аудит выносит подсказки по исправлению', () => {
+    const visual = auditVisuals(FLAT_GAME);
+    assert.ok(visual.issues.every((issue) => typeof issue.fix === 'string' && issue.fix.length > 10));
 });

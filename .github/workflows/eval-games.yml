@@ -93,11 +93,14 @@ jobs:
               ["Игр", (s.completed || 0) + "/" + (s.requested || 0)],
               ["Средний score", s.avgScore || 0],
               ["Технический", s.avgTechnical || 0],
+              ["Визуальный аудит", s.avgVisualScore || 0],
               ["Критик", (s.avgCritic || 0) + " (" + (s.criticScored || 0) + " оценено, " + (s.criticUnavailable || 0) + " без вердикта)"],
               ["Vision", s.avgVisionScore || 0],
+              ["Разрыв критик↔vision", s.avgCriticGap || 0],
               ["Пропатчено", s.patched || 0],
               ["Отполировано", s.polished || 0],
               ["Ошибок в рантайме", s.runtimeErrors || 0],
+              ["Дефекты HUD", s.hudIssues || 0],
               ["Стартовали", (s.startedGames || 0) + " из " + (s.completed || 0)],
               ["FPS (raf/s)", Math.round((s.avgRafPerSec || 0) * 10) / 10]
             ];

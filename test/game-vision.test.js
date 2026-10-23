@@ -80,6 +80,23 @@ test('buildReviewPrompt для ПК просит мышь и клавиатур�
     assert.match(vision.buildReviewPrompt({ platform: 'pc' }), /ПК/);
 });
 
+test('buildReviewPrompt требует визуальный чек-лист и ориентиры оценки', () => {
+    const prompt = vision.buildReviewPrompt({ platform: 'mobile' });
+    assert.match(prompt, /ВИЗУАЛЬНЫЙ ЧЕК-ЛИСТ/);
+    assert.match(prompt, /не выше 50/);
+    assert.match(prompt, /перенос|вторую строку/i);
+    assert.match(prompt, /ЭКРАН НЕ ПОКАЗАН/);
+});
+
+test('buildReviewPrompt подставляет результаты автоматического аудита графики', () => {
+    const prompt = vision.buildReviewPrompt({
+        platform: 'mobile',
+        visualAudit: { issues: [{ code: 'flat_background', msg: 'фон однотонный', fix: 'сделай слои' }] }
+    });
+    assert.match(prompt, /АВТОМАТИЧЕСКИЙ АУДИТ ГРАФИКИ/);
+    assert.match(prompt, /фон однотонный/);
+});
+
 test('buildCriticResult без разбора JSON не даёт оценки', () => {
     const critic = vision.buildCriticResult(null);
     assert.equal(critic.score, null);

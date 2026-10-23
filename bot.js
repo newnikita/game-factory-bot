@@ -820,7 +820,9 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
                     break;
                 } catch (err) {
                     const status = (err.response && err.response.status) || err.status || null;
-                    const retryable = !status || status === 429 || status >= 500;
+                    const retryable = err.retryable === false
+                        ? false
+                        : (!status || status === 429 || status >= 500);
                     if (!retryable || attempt === maxRetries) throw err;
                     const delay = status === 429
                         ? Math.min(60000, 10000 * Math.pow(2, attempt - 1))
@@ -884,7 +886,9 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
             return { code, inputTokens, outputTokens, model: result.model, fallbackUsed: result.fallbackUsed };
         } catch (err) {
             const status = (err.response && err.response.status) || err.status || null;
-            const retryable = !status || status === 429 || status >= 500;
+            const retryable = err.retryable === false
+                ? false
+                : (!status || status === 429 || status >= 500);
             if (!retryable || attempt === maxRetries) throw err;
             const delay = status === 429
                 ? Math.min(60000, 10000 * Math.pow(2, attempt - 1))

@@ -1095,6 +1095,10 @@ const referencesDir = path.join(__dirname, 'references');
 const legalDir = path.join(__dirname, 'legal');
 const ENGINE_NAMES = ['arkanoid', 'bubble', 'platformer', 'shooter', 'tetris'];
 
+// Состояние квоты Gemini переживает рестарт: без файла после деплоя Health Check
+// снова показывает «всё хорошо», хотя генерировать нельзя.
+gemini.initStateFile(path.join(DATA_DIR, 'gemini-state.json'));
+
 for (const dir of [uploadsDir, aiGamesDir, referencesDir, legalDir, path.dirname(DB_FILE)]) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -1184,6 +1188,44 @@ app.get('/sitemap.xml', (req, res) => {
 
 app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
 
+const GEMINI_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+let geminiAccess = { checkedAt: 0, ok: null, reason: 'unknown', status: null, models: 0 };
+
+async function refreshGeminiAccess() {
+    try {
+        const result = await gemini.probeAccess();
+        geminiAccess = { checkedAt: Date.now(), ...result };
+    } catch (error) {
+        geminiAccess = { checkedAt: Date.now(), ok: null, reason: 'network', status: null, models: 0 };
+    }
+    return geminiAccess;
+}
+
+function geminiStatus() {
+    const quota = gemini.quotaState();
+    const key = Boolean(String(process.env.GEMINI_API_KEY || '').trim());
+    const keyValid = geminiAccess.reason === 'ok' ? true : (geminiAccess.reason === 'auth' ? false : null);
+    let reason = 'генерации доступны';
+    if (!key) reason = 'не задан GEMINI_API_KEY';
+    else if (keyValid === false) reason = 'ключ Gemini отклонён API';
+    else if (quota.blocked) reason = `дневная квота исчерпана до ${quota.until}`;
+    else if (keyValid === null) reason = 'доступ к Gemini не проверен';
+    return {
+        key,
+        key_valid: keyValid,
+        probe: geminiAccess.reason,
+        models_visible: geminiAccess.models,
+        checked_at: geminiAccess.checkedAt ? new Date(geminiAccess.checkedAt).toISOString() : null,
+        quota_blocked: quota.blocked,
+        quota_until: quota.until,
+        models_total: quota.models,
+        models_exhausted: quota.exhausted,
+        quota_errors_6h: monitor.snapshot().quotaErrorsRecent,
+        generation_available: key && keyValid !== false && !quota.blocked,
+        reason
+    };
+}
+
 app.get('/healthz', (req, res) => {
     res.json({
         ok: true,
@@ -1195,7 +1237,9 @@ app.get('/healthz', (req, res) => {
             adminIds: ADMIN_IDS,
             dataDir: DATA_DIR,
             dataPersistent: DATA_PERSISTENT
-        })
+        }),
+        gemini: geminiStatus(),
+        alerts: monitor.evaluate()
     });
 });
 
@@ -3699,11 +3743,21 @@ async function sendQualityDigest() {
 }
 
 async function runHealthCheck() {
+    if (Date.now() - geminiAccess.checkedAt >= GEMINI_PROBE_INTERVAL_MS) {
+        await refreshGeminiAccess();
+    }
     for (const alert of monitor.evaluate()) {
         const lastSent = sentAlerts.get(alert.key) || 0;
         if (Date.now() - lastSent < ALERT_COOLDOWN_MS) continue;
         sentAlerts.set(alert.key, Date.now());
         await notifyAdmins(`${alert.level === 'critical' ? '🚨' : '⚠️'} ${alert.text}`);
+    }
+    if (geminiAccess.reason === 'auth') {
+        const lastSent = sentAlerts.get('gemini_auth') || 0;
+        if (Date.now() - lastSent >= ALERT_COOLDOWN_MS) {
+            sentAlerts.set('gemini_auth', Date.now());
+            await notifyAdmins('🚨 Ключ Gemini отклонён API: генерации не работают. Проверь GEMINI_API_KEY в Render Dashboard.');
+        }
     }
     if (Date.now() - lastDigestAt >= DIGEST_INTERVAL_MS) {
         lastDigestAt = Date.now();
@@ -3742,6 +3796,17 @@ async function start() {
     if (!DATA_PERSISTENT && IS_RENDER) {
         console.warn('⚠️ Каталог данных не на постоянном диске: ' + DATA_DIR);
         await notifyAdmins('⚠️ Каталог данных не на постоянном диске (' + DATA_DIR + '): балансы и AI-игры исчезнут при следующем деплое. Нужен диск Render и DATA_DIR=/var/data.');
+    }
+
+    await refreshGeminiAccess();
+    if (geminiAccess.reason === 'auth') {
+        console.warn('⚠️ Ключ Gemini отклонён API');
+        await notifyAdmins('🚨 Ключ Gemini отклонён API: генерации не работают. Проверь GEMINI_API_KEY в Render Dashboard.');
+    }
+    const startupQuota = gemini.quotaState();
+    if (startupQuota.blocked) {
+        console.warn('⚠️ Дневная квота Gemini исчерпана до ' + startupQuota.until);
+        await notifyAdmins('🚨 Дневная квота Gemini исчерпана до ' + startupQuota.until + ': генерации невозможны до сброса. Нужен платный ключ Gemini.');
     }
 
     initDb({

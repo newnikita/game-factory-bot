@@ -7,6 +7,7 @@ ai_games/
 gamefactory.db
 gamefactory.db-shm
 gamefactory.db-wal
+gemini-state.json
 backups/
 eval-output/
 test-games/

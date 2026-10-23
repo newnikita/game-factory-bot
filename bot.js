@@ -1975,6 +1975,10 @@ async function processSuccessfulPayment(ctx, payment) {
 
     const paymentKind = renewal ? 'Продление подписки' : (subscription ? 'Новая подписка' : 'Новый пакет');
     await notifyAdmins(`💰 ${paymentKind}: ${plan.title}, ${payment.total_amount} Stars, пользователь ${ctx.from.id}`);
+
+    if (!DATA_PERSISTENT) {
+        await notifyAdmins(`🚨 Платёж начислен, но база лежит во временной ФС (${DATA_DIR}): при следующем деплое баланс покупателя исчезнет. Нужен диск Render и DATA_DIR=/var/data.`);
+    }
 }
 
 bot.on('message', async (ctx, next) => {

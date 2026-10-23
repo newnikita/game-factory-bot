@@ -59,6 +59,7 @@ const {
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { planRefund, REFUND_MODES } = require('./lib/refunds');
+const { legalValues, renderLegal, readinessReport } = require('./lib/readiness');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -1136,7 +1137,8 @@ app.get('/healthz', (req, res) => {
     res.json({
         ok: true,
         uptime: Math.round(process.uptime()),
-        version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev'
+        version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev',
+        config: readinessReport({ legalDocs: readLegalDocs() })
     });
 });
 
@@ -1183,6 +1185,16 @@ app.use('/uploads', express.static(uploadsDir, {
     }
 }));
 
+function readLegalDocs() {
+    try {
+        return fs.readdirSync(legalDir)
+            .filter((file) => file.endsWith('.md'))
+            .map((file) => ({ file, text: fs.readFileSync(path.join(legalDir, file), 'utf8') }));
+    } catch (error) {
+        return [];
+    }
+}
+
 app.get('/legal', (req, res) => {
     const files = fs.readdirSync(legalDir).filter((file) => file.endsWith('.md')).sort();
     const items = files.map((file) => {
@@ -1190,6 +1202,17 @@ app.get('/legal', (req, res) => {
         return `<li><a href="/legal/${encodeURIComponent(file)}">${escapeHtml(title)}</a></li>`;
     }).join('');
     res.type('html').send(`<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Правила и документы</title></head><body><h1>Правила и документы</h1><ul>${items}</ul></body></html>`);
+});
+
+app.get('/legal/:file', (req, res, next) => {
+    const name = String(req.params.file || '');
+    if (!/^[a-zA-Z0-9._-]+\.md$/.test(name) || name.includes('..')) return next();
+    const filePath = path.join(legalDir, name);
+    if (!fs.existsSync(filePath)) return next();
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.send(renderLegal(fs.readFileSync(filePath, 'utf8'), legalValues()));
 });
 
 app.use('/legal', express.static(legalDir, {
@@ -1880,6 +1903,9 @@ async function processSuccessfulPayment(ctx, payment) {
     const expiration = Number(payment.subscription_expiration_date);
     const untilDate = Number.isFinite(expiration) && expiration > 0 ? new Date(expiration * 1000) : null;
     const subscriptionUntil = untilDate && Number.isFinite(untilDate.getTime()) ? untilDate.toISOString() : null;
+
+    // Покупатель должен существовать до начисления, иначе оплата останется без игр.
+    tgUser(ctx);
 
     const result = recordPayment({
         telegramId: ctx.from.id,
@@ -3633,6 +3659,12 @@ async function start() {
         } else {
             console.warn('⚠️ Sightengine не настроен: загрузка своих фонов будет отклоняться.');
         }
+    }
+
+    const legalMissing = readinessReport({ legalDocs: readLegalDocs() }).legal_missing;
+    if (legalMissing.length) {
+        console.warn('⚠️ Юрдокументы содержат незаполненные поля: ' + legalMissing.join(', '));
+        await notifyAdmins('⚠️ Юрдокументы не заполнены: ' + legalMissing.join(', ') + '. Задай SUPPORT_EMAIL, SUPPORT_USERNAME и остальные переменные в Render Dashboard.');
     }
 
     initDb({

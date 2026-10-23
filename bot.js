@@ -59,7 +59,7 @@ const {
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { planRefund, REFUND_MODES } = require('./lib/refunds');
-const { legalValues, renderLegal, readinessReport } = require('./lib/readiness');
+const { legalValues, renderLegal, readinessReport, loadConfig, isPersistentDataDir } = require('./lib/readiness');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -77,6 +77,9 @@ const monitor = require('./lib/health-monitor');
 const hybrid = require('./lib/hybrid');
 const gemini = require('./lib/gemini');
 
+// Реквизиты и админ из репозитория: работают, даже если переменные окружения не заданы.
+const APP_CONFIG = loadConfig();
+
 function envInt(name, fallback) {
     const value = Number.parseInt(process.env[name], 10);
     return Number.isFinite(value) && value >= 0 ? value : fallback;
@@ -86,9 +89,9 @@ const START_FREE_GAMES = envInt('START_FREE_GAMES', 2);
 const REWARD_PER_REF = COST_PER_GAME * 2;
 const MAX_GENERATIONS_PER_DAY = envInt('MAX_GENERATIONS_PER_DAY', 20);
 const GENERATION_COOLDOWN_MS = envInt('GENERATION_COOLDOWN_MS', 30000);
-const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
+const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || (Array.isArray(APP_CONFIG.adminIds) ? APP_CONFIG.adminIds.join(',') : ''))
     .split(',')
-    .map((value) => Number.parseInt(value.trim(), 10))
+    .map((value) => Number.parseInt(String(value).trim(), 10))
     .filter((value) => Number.isSafeInteger(value) && value > 0);
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
@@ -1075,14 +1078,23 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
 const PORT = envInt('PORT', 3000);
-const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+// На Render постоянный диск монтируется в /var/data. Если DATA_DIR не задан,
+// данные уходят во временную файловую систему и исчезают при каждом деплое,
+// поэтому диск определяется автоматически.
+const RENDER_DISK_DIR = '/var/data';
+const DATA_DIR = process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : (fs.existsSync(RENDER_DISK_DIR) ? RENDER_DISK_DIR : __dirname);
 const uploadsDir = path.join(DATA_DIR, 'uploads');
 const aiGamesDir = path.join(DATA_DIR, 'ai_games');
+const DATA_PERSISTENT = isPersistentDataDir(DATA_DIR, __dirname);
+const IS_RENDER = Boolean(process.env.RENDER || process.env.RENDER_GIT_COMMIT || process.env.RENDER_SERVICE_ID);
+const DB_FILE = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(DATA_DIR, 'gamefactory.db');
 const referencesDir = path.join(__dirname, 'references');
 const legalDir = path.join(__dirname, 'legal');
 const ENGINE_NAMES = ['arkanoid', 'bubble', 'platformer', 'shooter', 'tetris'];
 
-for (const dir of [uploadsDir, aiGamesDir, referencesDir, legalDir]) {
+for (const dir of [uploadsDir, aiGamesDir, referencesDir, legalDir, path.dirname(DB_FILE)]) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -1138,7 +1150,13 @@ app.get('/healthz', (req, res) => {
         ok: true,
         uptime: Math.round(process.uptime()),
         version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev',
-        config: readinessReport({ legalDocs: readLegalDocs() })
+        config: readinessReport({
+            legalDocs: readLegalDocs(),
+            config: APP_CONFIG,
+            adminIds: ADMIN_IDS,
+            dataDir: DATA_DIR,
+            dataPersistent: DATA_PERSISTENT
+        })
     });
 });
 
@@ -1212,7 +1230,7 @@ app.get('/legal/:file', (req, res, next) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'public, max-age=600');
-    res.send(renderLegal(fs.readFileSync(filePath, 'utf8'), legalValues()));
+    res.send(renderLegal(fs.readFileSync(filePath, 'utf8'), legalValues(process.env, APP_CONFIG)));
 });
 
 app.use('/legal', express.static(legalDir, {
@@ -3661,14 +3679,25 @@ async function start() {
         }
     }
 
-    const legalMissing = readinessReport({ legalDocs: readLegalDocs() }).legal_missing;
+    const legalMissing = readinessReport({
+        legalDocs: readLegalDocs(),
+        config: APP_CONFIG,
+        adminIds: ADMIN_IDS,
+        dataDir: DATA_DIR,
+        dataPersistent: DATA_PERSISTENT
+    }).legal_missing;
     if (legalMissing.length) {
         console.warn('⚠️ Юрдокументы содержат незаполненные поля: ' + legalMissing.join(', '));
         await notifyAdmins('⚠️ Юрдокументы не заполнены: ' + legalMissing.join(', ') + '. Задай SUPPORT_EMAIL, SUPPORT_USERNAME и остальные переменные в Render Dashboard.');
     }
 
+    if (!DATA_PERSISTENT && IS_RENDER) {
+        console.warn('⚠️ Каталог данных не на постоянном диске: ' + DATA_DIR);
+        await notifyAdmins('⚠️ Каталог данных не на постоянном диске (' + DATA_DIR + '): балансы и AI-игры исчезнут при следующем деплое. Нужен диск Render и DATA_DIR=/var/data.');
+    }
+
     initDb({
-        file: process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(DATA_DIR, 'gamefactory.db'),
+        file: DB_FILE,
         startBalance: START_FREE_GAMES * COST_PER_GAME,
         adminIds: ADMIN_IDS,
         rewardPerRef: REWARD_PER_REF,

@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { legalValues, renderLegal, missingPlaceholders, readinessReport } = require('../lib/readiness');
+const path = require('node:path');
+const { legalValues, renderLegal, missingPlaceholders, readinessReport, loadConfig, isPersistentDataDir } = require('../lib/readiness');
 
 const env = {
     SUPPORT_EMAIL: 'owner@example.com',
@@ -45,4 +46,29 @@ test('без секретов визуального токена отчёт п�
     const report = readinessReport({ env: { BOT_TOKEN: 'x' }, legalDocs: [] });
     assert.equal(report.visual_secret, 'bot_token');
     assert.deepEqual(report.legal_missing, []);
+});
+
+test('реквизиты берутся из config.json, если их нет в переменных окружения', () => {
+    const values = legalValues({ SUPPORT_EMAIL: 'env@example.com' }, { supportEmail: 'config@example.com', refundPeriodDays: '14' });
+    assert.equal(values['[email]'], 'env@example.com', 'переменная окружения приоритетнее');
+    assert.equal(values['[срок]'], '14');
+});
+
+test('отчёт учитывает админов и каталог данных из конфигурации приложения', () => {
+    const report = readinessReport({ env: {}, legalDocs: [], adminIds: [6430160880], dataDir: '/var/data' });
+    assert.equal(report.admin_ids, true);
+    assert.equal(report.data_dir, '/var/data');
+});
+
+test('в поставленном config.json указан хотя бы один администратор', () => {
+    const config = loadConfig();
+    assert.ok(Array.isArray(config.adminIds), 'adminIds должен быть массивом');
+    assert.ok(config.adminIds.length > 0, 'без админов команды /stats, /grant и /refund отключены');
+    assert.ok(config.adminIds.every((id) => Number.isSafeInteger(id) && id > 0), 'идентификаторы админов должны быть числами');
+});
+
+test('каталог внутри каталога приложения считается непостоянным', () => {
+    const appDir = path.join(__dirname, '..');
+    assert.equal(isPersistentDataDir(appDir, appDir), false);
+    assert.equal(isPersistentDataDir(path.join(appDir, 'нет-такой-папки'), appDir), false);
 });

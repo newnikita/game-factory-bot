@@ -187,6 +187,70 @@ test('runQualityPipeline урезает оценку критика по ауд�
     }
 });
 
+test('runQualityPipeline урезает оценку критика по рубрике', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => ({ text: RICH_GAME, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({
+        data: {
+            score: 92,
+            criteria: { objects: 40, background: 45, decor: 92, contrast: 95, hud: 94, palette: 90, effects: 88 },
+            issues: []
+        },
+        usage: {},
+        model: 'test'
+    });
+    try {
+        const report = await bot.runQualityPipeline(RICH_GAME, { platform: 'mobile' });
+        assert.equal(report.criticScore, 92);
+        assert.equal(report.rubricScore, 70, 'две слабые критерии опускают рубрику до 70');
+        assert.equal(report.effectiveCriticScore, 70, 'оценка не может быть выше рубрики');
+        assert.equal(report.polished, true, 'низкая рубрика обязана отправить игру в полиш');
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
+test('runQualityPipeline не отправляет в полиш игру с сильной рубрикой', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => ({ text: RICH_GAME, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({
+        data: {
+            score: 90,
+            criteria: { objects: 92, background: 88, decor: 85, contrast: 90, hud: 86, palette: 92, effects: 84 },
+            issues: []
+        },
+        usage: {},
+        model: 'test'
+    });
+    try {
+        const report = await bot.runQualityPipeline(RICH_GAME, { platform: 'mobile' });
+        assert.equal(report.rubricScore, 88);
+        assert.equal(report.effectiveCriticScore, 88);
+        assert.equal(report.polished, false);
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
+test('runQualityPipeline без критериев в ответе критика оставляет оценку как есть', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => ({ text: RICH_GAME, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({ data: { score: 90, issues: [] }, usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(RICH_GAME, { platform: 'mobile' });
+        assert.equal(report.rubricScore, null);
+        assert.equal(report.effectiveCriticScore, 90);
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
 test('runQualityPipeline не принимает полиш, который ухудшил графику', async () => {
     const original = gemini.generate;
     const originalJson = gemini.generateJson;

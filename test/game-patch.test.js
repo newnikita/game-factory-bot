@@ -70,3 +70,19 @@ test('buildPolishPrompt может запретить плейсхолдер ф�
     assert.match(prompt, /не используй/);
     assert.doesNotMatch(prompt, /background: url\('\{\{AI_BG_IMAGE\}\}'\)/);
 });
+
+test('buildPolishPrompt перечисляет слабые критерии рубрики', () => {
+    const prompt = patch.buildPolishPrompt('<html></html>', {
+        issues: [],
+        criteria: { objects: 35, background: 40, decor: 80, contrast: 85, hud: 60, palette: 88, effects: 82 }
+    });
+    assert.match(prompt, /СЛАБЫЕ КРИТЕРИИ ПО РУБРИКЕ/);
+    assert.match(prompt, /objects: 35\/100/);
+    assert.match(prompt, /background: 40\/100/);
+    assert.doesNotMatch(prompt, /palette: 88/);
+});
+
+test('buildRubricBlock пуст, когда критериев нет или все сильные', () => {
+    assert.equal(patch.buildRubricBlock({}), '');
+    assert.equal(patch.buildRubricBlock({ criteria: { objects: 90, background: 80 } }), '');
+});

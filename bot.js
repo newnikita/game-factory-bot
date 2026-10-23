@@ -676,12 +676,16 @@ async function runQualityPipeline(code, options = {}) {
                 console.warn(`[Качество] Критик не дал вердикта (${critic.reason}) — оцениваю по техническому аудиту`);
             }
 
+            const caps = [current.visual.ceiling];
+            if (typeof critic.rubricScore === 'number') caps.push(critic.rubricScore);
             const effective = critic.score === null
                 ? null
-                : Math.min(critic.score, current.visual.ceiling);
+                : Math.min(critic.score, ...caps);
             report.effectiveCriticScore = effective;
+            report.rubricScore = typeof critic.rubricScore === 'number' ? critic.rubricScore : null;
+            report.criteria = critic.criteria || {};
             if (effective !== null && effective < critic.score) {
-                console.log(`[Качество] Оценка критика урезана по аудиту графики: ${critic.score} → ${effective}`);
+                console.log(`[Качество] Оценка критика урезана: ${critic.score} → ${effective} (потолок аудита ${current.visual.ceiling}, рубрика ${report.rubricScore ?? '—'})`);
             }
 
             const criticIssues = criticToIssues(critic);
@@ -1726,6 +1730,9 @@ bot.command('stats', async (ctx) => {
             '',
             `Качество за ${quality.days} дней: ${quality.avgScore}/100 по ${quality.count} генерациям`,
             `Ниже 80: ${quality.lowQuality}`,
+            ...(quality.avgRubric !== null && quality.avgRubric !== undefined
+                ? [`Рубрика графики: ${quality.avgRubric}/100`]
+                : []),
             quality.topIssues.length
                 ? 'Частые замечания: ' + quality.topIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
                 : 'Частых замечаний нет',
@@ -2350,6 +2357,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             score: quality.score,
             technicalScore: quality.technicalScore,
             criticScore: quality.criticScore,
+            rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
+            effectiveCriticScore: quality.effectiveCriticScore === undefined ? null : quality.effectiveCriticScore,
             visualScore: quality.visualScore === undefined ? null : quality.visualScore,
             patched: quality.patched,
             polished: quality.polished,

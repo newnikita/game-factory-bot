@@ -36,5 +36,16 @@ test('getQualityStats возвращает нули без событий', () =
     const quality = db.getStats().quality;
     assert.equal(quality.count, 0);
     assert.equal(quality.avgScore, 0);
+    assert.equal(quality.avgRubric, null);
     assert.deepEqual(quality.topIssues, []);
+});
+
+test('getQualityStats считает средний балл рубрики графики', () => {
+    freshDb();
+    db.logEvent('generation_quality', 1, { score: 90, rubricScore: 70, issues: [] });
+    db.logEvent('generation_quality', 1, { score: 80, rubricScore: 90, issues: [] });
+    db.logEvent('generation_quality', 1, { score: 70, issues: [] });
+
+    const quality = db.getQualityStats(7);
+    assert.equal(quality.avgRubric, 80);
 });

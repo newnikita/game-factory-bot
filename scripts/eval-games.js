@@ -552,6 +552,7 @@ async function run() {
                 score: quality.score,
                 technicalScore: quality.technicalScore,
                 criticScore: quality.criticScore,
+                rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
                 effectiveCriticScore: quality.effectiveCriticScore,
                 visualScore: quality.visualScore,
                 criticNoVerdict: Boolean(quality.critic && quality.critic.noVerdict),
@@ -602,6 +603,10 @@ async function run() {
     if (modelsUsed.length === 1) report.model = modelsUsed[0];
     else if (modelsUsed.length > 1) report.model = modelsUsed.join(', ');
     const avgCritic = withCritic.length ? Math.round(withCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / withCritic.length) : 0;
+    const withEffective = completed.filter((p) => typeof p.pipeline.effectiveCriticScore === 'number');
+    const avgEffectiveCritic = withEffective.length ? Math.round(withEffective.reduce((sum, p) => sum + p.pipeline.effectiveCriticScore, 0) / withEffective.length) : 0;
+    const withRubric = completed.filter((p) => typeof p.pipeline.rubricScore === 'number');
+    const avgRubric = withRubric.length ? Math.round(withRubric.reduce((sum, p) => sum + p.pipeline.rubricScore, 0) / withRubric.length) : 0;
     const avgVision = withVision.length ? Math.round(withVision.reduce((sum, p) => sum + p.vision.score, 0) / withVision.length) : 0;
     report.summary = {
         requested: prompts.length,
@@ -613,8 +618,11 @@ async function run() {
         criticScored: withCritic.length,
         criticUnavailable: completed.length - withCritic.length,
         avgCritic,
+        avgEffectiveCritic,
+        avgRubric,
         avgVisionScore: avgVision,
         avgCriticGap: withVision.length && withCritic.length ? avgCritic - avgVision : 0,
+        effectiveCriticGap: withVision.length && withEffective.length ? avgEffectiveCritic - avgVision : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,
         polished: completed.filter((p) => p.pipeline.polished).length,
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,

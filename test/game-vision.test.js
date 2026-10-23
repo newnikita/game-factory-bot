@@ -10,6 +10,67 @@ test('normalizeCritic приводит оценку к шкале 0-100', () => 
     assert.equal(vision.normalizeCritic({}).score, 0);
 });
 
+test('normalizeCriteria считает среднее по критериям', () => {
+    const result = vision.normalizeCriteria({
+        objects: 90, background: 80, decor: 70, contrast: 100, hud: 60, palette: 80, effects: 80
+    });
+    assert.equal(result.rubricScore, 80);
+    assert.equal(result.criteria.objects, 90);
+    assert.equal(result.criteria.hud, 60);
+});
+
+test('normalizeCriteria опускает рубрику до 70 при двух слабых критериях', () => {
+    const result = vision.normalizeCriteria({
+        objects: 40, background: 45, decor: 92, contrast: 95, hud: 94, palette: 90, effects: 88
+    });
+    assert.equal(result.rubricScore, 70);
+});
+
+test('normalizeCriteria не опускает рубрику при одном слабом критерии', () => {
+    const result = vision.normalizeCriteria({
+        objects: 40, background: 90, decor: 85, contrast: 90, hud: 85, palette: 88, effects: 84
+    });
+    assert.equal(result.rubricScore, 80);
+});
+
+test('normalizeCriteria игнорирует мусор и даёт null при малом числе критериев', () => {
+    assert.equal(vision.normalizeCriteria(null).rubricScore, null);
+    assert.equal(vision.normalizeCriteria({}).rubricScore, null);
+    assert.equal(vision.normalizeCriteria({ objects: 50, background: 50 }).rubricScore, null);
+    assert.equal(vision.normalizeCriteria({ objects: 'abc', background: null }).rubricScore, null);
+});
+
+test('normalizeCriteria обрезает значения в шкалу 0-100', () => {
+    const result = vision.normalizeCriteria({
+        objects: 250, background: -30, decor: 55.6, contrast: 70, hud: 70, palette: 70, effects: 70
+    });
+    assert.equal(result.criteria.objects, 100);
+    assert.equal(result.criteria.background, 0);
+    assert.equal(result.criteria.decor, 56);
+});
+
+test('normalizeCritic отдаёт рубрику и её оценку', () => {
+    const critic = vision.normalizeCritic({
+        score: 92,
+        criteria: { objects: 40, background: 45, decor: 92, contrast: 95, hud: 94, palette: 90, effects: 88 }
+    });
+    assert.equal(critic.rubricScore, 70);
+    assert.equal(critic.criteria.objects, 40);
+});
+
+test('buildCriticResult без оценки не выдумывает рубрику', () => {
+    assert.equal(vision.buildCriticResult(null).rubricScore, null);
+    const critic = vision.buildCriticResult({ criteria: { objects: 30, background: 40, decor: 30 } });
+    assert.equal(critic.score, null);
+    assert.equal(critic.rubricScore, null);
+});
+
+test('buildReviewPrompt требует критерии рубрики', () => {
+    const prompt = vision.buildReviewPrompt({ platform: 'mobile' });
+    assert.match(prompt, /criteria/);
+    assert.match(prompt, /objects, background, decor, contrast, hud, palette, effects/);
+});
+
 test('normalizeCritic нормализует уровни замечаний', () => {
     const critic = vision.normalizeCritic({
         score: 50,

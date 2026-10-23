@@ -563,7 +563,13 @@ async function run() {
         console.log(`Модели в доступе: ${availableModels.join(', ')}`);
     }
 
+    const maxApiCalls = Math.max(1, Number(process.env.EVAL_MAX_API_CALLS) || 12);
     for (const prompt of prompts) {
+        if (gemini.getApiCallCount() >= maxApiCalls) {
+            aborted = `Бюджет запросов к Gemini исчерпан (${gemini.getApiCallCount()}/${maxApiCalls}). Остальные игры пропущены, чтобы eval не съел квоту продакшена.`;
+            console.error(aborted);
+            break;
+        }
         const record = { id: prompt.id, prompt: prompt.text };
         console.log(`\n=== ${prompt.id}: ${prompt.text}`);
         const started = Date.now();
@@ -700,7 +706,8 @@ async function run() {
         startedGames: completed.filter(p => p.runtime && p.runtime.started === true).length,
         fallbackUsed: completed.filter((p) => p.model && p.model !== gemini.PRIMARY_MODEL).length,
         modelsUsed,
-        apiCalls: gemini.getApiCallCount()
+        apiCalls: gemini.getApiCallCount(),
+        apiCallBudget: maxApiCalls
     };
     report.finishedAt = new Date().toISOString();
 

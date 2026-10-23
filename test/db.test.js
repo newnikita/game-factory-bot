@@ -252,3 +252,45 @@ test('импорт users.json сохраняет балансы и не плат
     db.closeDb();
     fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('замеры визуала сохраняются и дают данные для калибровки', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.recordGame({ id: 'ai_11111111111', telegramId: 1, title: 'Первая' });
+    db.setGameVisualStatic('ai_11111111111', 80);
+
+    const stored = db.recordVisualMeasurement('ai_11111111111', {
+        score: 55, coverage: 0.5, colors: 20, shades: 6, contrast: 0.2, animated: true, blank: false, samples: 2
+    });
+    assert.equal(stored.accepted, true);
+    assert.equal(stored.score, 55);
+    assert.equal(stored.blankReports, 0);
+
+    const game = db.getGame('ai_11111111111');
+    assert.equal(game.visual_static, 80);
+    assert.equal(game.visual_measured, 55);
+    assert.ok(game.visual_measured_at);
+
+    const calibration = db.getVisualCalibration();
+    assert.equal(calibration.length, 1);
+    assert.equal(calibration[0].staticScore, 80);
+    assert.equal(calibration[0].measuredScore, 55);
+});
+
+test('пустой экран засчитывается только по нескольким кадрам, хранится лучший замер', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.recordGame({ id: 'ai_22222222222', telegramId: 1, title: 'Пустая' });
+
+    const blank = { score: 0, coverage: 0, colors: 0, shades: 0, contrast: 0, animated: false, blank: true };
+    assert.equal(db.recordVisualMeasurement('ai_22222222222', { ...blank, samples: 1 }).blankReports, 0,
+        'одиночный ранний кадр не считается пустым экраном');
+    assert.equal(db.recordVisualMeasurement('ai_22222222222', { ...blank, samples: 2 }).blankReports, 1);
+    assert.equal(db.recordVisualMeasurement('ai_22222222222', { ...blank, samples: 3 }).blankReports, 2);
+
+    db.recordVisualMeasurement('ai_22222222222', { score: 50, coverage: 0.4, colors: 10, shades: 4, contrast: 0.1, animated: true, blank: false, samples: 4 });
+    db.recordVisualMeasurement('ai_22222222222', { score: 70, coverage: 0.5, colors: 12, shades: 5, contrast: 0.2, animated: true, blank: false, samples: 5 });
+    const last = db.recordVisualMeasurement('ai_22222222222', { score: 90, coverage: 0.6, colors: 30, shades: 8, contrast: 0.2, animated: true, blank: false, samples: 6 });
+    assert.equal(last.accepted, false, 'сверх лимита замеры не принимаются');
+    assert.equal(db.getGame('ai_22222222222').visual_measured, 70, 'сохраняется лучший замер игры');
+});

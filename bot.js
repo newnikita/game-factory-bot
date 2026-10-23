@@ -25,6 +25,9 @@ const {
     recordGeneration,
     recordGame,
     getGame,
+    setGameVisualStatic,
+    recordVisualMeasurement,
+    getVisualCalibration,
     createComplaint,
     getComplaint,
     listOpenComplaints,
@@ -61,6 +64,14 @@ const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-c
 const { repairTdzErrors } = require('./lib/tdz-repair');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
 const { reviewCode, criticToIssues, localCritic } = require('./lib/game-vision');
+const {
+    buildProbeScript,
+    buildForwarderScript,
+    scoreMetrics,
+    isValidMetrics,
+    calibrationOffset
+} = require('./lib/canvas-metrics');
+const monitor = require('./lib/health-monitor');
 const hybrid = require('./lib/hybrid');
 const gemini = require('./lib/gemini');
 
@@ -85,6 +96,25 @@ const QUALITY_CRITIC_ENABLED = String(process.env.QUALITY_CRITIC_ENABLED || 'tru
 const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 80));
 const QUALITY_POLISH_ENABLED = String(process.env.QUALITY_POLISH_ENABLED || 'true') === 'true';
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
+const ADMIN_API_TOKEN = String(process.env.ADMIN_API_TOKEN || '');
+const CANVAS_BLANK_AUTOHIDE = String(process.env.CANVAS_BLANK_AUTOHIDE || 'true') === 'true';
+const VISUAL_TOKEN_SECRET = String(
+    process.env.VISUAL_TOKEN_SECRET || process.env.ADMIN_API_TOKEN || process.env.BOT_TOKEN || ''
+);
+
+function safeEqual(left, right) {
+    const a = Buffer.from(String(left || ''));
+    const b = Buffer.from(String(right || ''));
+    if (!a.length || a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+}
+
+// Токен привязывает замер к конкретной игре: без него можно было бы прислать
+// метрики для чужой игры, а с ним — только для той, чью страницу открыли.
+function visualToken(gameId) {
+    if (!VISUAL_TOKEN_SECRET) return '';
+    return crypto.createHmac('sha256', VISUAL_TOKEN_SECRET).update(String(gameId)).digest('hex').slice(0, 32);
+}
 
 process.on('uncaughtException', (err) => console.error('❌ Неперехваченная ошибка:', err.stack || err.message));
 process.on('unhandledRejection', (err) => console.error('❌ Необработанная ошибка:', (err && err.stack) || err));
@@ -636,6 +666,23 @@ function collectQualityIssues(code, platform) {
     };
 }
 
+// Потолок визуальной оценки. Статический аудит смотрит код и склонен
+// завышать: реальный замер canvas с телефона игрока показывает, насколько
+// аудит ошибался. Поправка применяется только вниз и только когда есть
+// достаточная выборка реальных замеров.
+function visualCeiling(visual) {
+    const base = Number(visual && visual.ceiling);
+    if (!Number.isFinite(base)) return 45;
+    let offset = null;
+    try {
+        offset = calibrationOffset(getVisualCalibration());
+    } catch (error) {
+        offset = null;
+    }
+    if (offset === null) return base;
+    return Math.max(0, Math.min(100, base + offset));
+}
+
 async function runQualityPipeline(code, options = {}) {
     const platform = options.platform || 'pc';
     const report = {
@@ -673,6 +720,7 @@ async function runQualityPipeline(code, options = {}) {
             currentCode = tdz.code;
             current = after;
             report.tdzRepaired = tdz.fixes.length;
+            monitor.recordTdzRepaired(tdz.fixes.length);
             console.log(`[Качество] Детерминированный ремонт: перенесены ${tdz.fixes.map((fix) => fix.variable).join(', ')}`);
         }
     }
@@ -686,10 +734,14 @@ async function runQualityPipeline(code, options = {}) {
                     currentCode = patched.code;
                     current = after;
                     report.patched = true;
+                    monitor.recordPipelineStage('patch', true);
                     console.log('[Качество] Точечный патч закрыл замечания');
+                } else {
+                    monitor.recordPipelineStage('patch', false);
                 }
             }
         } catch (error) {
+            monitor.recordPipelineStage('patch', false);
             console.error('[Качество] Патч не удался:', error.message);
         }
     }
@@ -702,8 +754,12 @@ async function runQualityPipeline(code, options = {}) {
                 currentCode = repaired.code;
                 current = after;
                 report.repaired = true;
+                monitor.recordPipelineStage('repair', true);
+            } else {
+                monitor.recordPipelineStage('repair', false);
             }
         } catch (error) {
+            monitor.recordPipelineStage('repair', false);
             console.error('[Качество] Ремонт не удался:', error.message);
         }
     }
@@ -729,14 +785,16 @@ async function runQualityPipeline(code, options = {}) {
             if (!critic || critic.noVerdict) {
                 critic = localCritic(current.visual, current.audit);
                 report.criticSource = 'audit';
+                monitor.recordCritic('audit');
                 console.log(`[Качество] Критик недоступен — визуальная оценка по аудиту кода: ${critic.score}`);
             } else {
                 report.criticSource = 'model';
+                monitor.recordCritic('model');
             }
             report.critic = critic;
             report.criticScore = critic.score;
 
-            const caps = [current.visual.ceiling];
+            const caps = [visualCeiling(current.visual)];
             if (typeof critic.rubricScore === 'number') caps.push(critic.rubricScore);
             const effective = critic.score === null
                 ? null
@@ -811,6 +869,7 @@ async function runQualityPipeline(code, options = {}) {
                             current = after;
                             report.polished = true;
                             report.polishModel = polished.model || null;
+                            monitor.recordPipelineStage('polish', true);
                             console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score})`);
                         }
                     }
@@ -835,7 +894,7 @@ async function runQualityPipeline(code, options = {}) {
     report.visualIssues = current.visual.issues.map((issue) => issue.code);
     const effectiveScore = report.effectiveCriticScore === null
         ? null
-        : Math.min(report.effectiveCriticScore, current.visual.ceiling);
+        : Math.min(report.effectiveCriticScore, visualCeiling(current.visual));
     report.score = effectiveScore === null
         ? current.technicalScore
         : Math.round(current.technicalScore * 0.6 + effectiveScore * 0.4);
@@ -1010,6 +1069,7 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
 
 const app = express();
 app.disable('x-powered-by');
+app.use(express.json({ limit: '16kb' }));
 const PORT = envInt('PORT', 3000);
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
 const uploadsDir = path.join(DATA_DIR, 'uploads');
@@ -1037,6 +1097,15 @@ function injectDprGuard(html) {
     if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (match) => match + guard);
     if (/<body[^>]*>/i.test(html)) return html.replace(/<body[^>]*>/i, (match) => match + guard);
     return guard + html;
+}
+
+function injectCanvasProbe(html, gameId) {
+    const token = visualToken(gameId);
+    if (!token) return html;
+    const probe = `<script>${buildProbeScript({ gameId, token })}</script>`;
+    if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, () => `${probe}</body>`);
+    if (/<\/html>/i.test(html)) return html.replace(/<\/html>/i, () => `${probe}</html>`);
+    return html + probe;
 }
 
 function applySandboxHeaders(res) {
@@ -1075,6 +1144,30 @@ app.get('/readyz', (req, res) => {
     } catch (error) {
         res.status(503).json({ ok: false, error: 'database_unavailable' });
     }
+});
+
+app.get('/admin/stats', (req, res) => {
+    if (!ADMIN_API_TOKEN) return res.status(404).type('text').send('Не найдено');
+    const token = String(req.get('x-admin-token') || req.query.token || '');
+    if (!safeEqual(token, ADMIN_API_TOKEN)) return res.status(403).type('text').send('Доступ запрещён');
+
+    let quality = null;
+    let calibration = [];
+    try { quality = getQualityStats(); } catch (error) { quality = { error: error.message }; }
+    try { calibration = getVisualCalibration(); } catch (error) { calibration = []; }
+
+    res.json({
+        ok: true,
+        version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev',
+        uptime: Math.round(process.uptime()),
+        monitor: monitor.snapshot(),
+        alerts: monitor.evaluate(),
+        quality,
+        visualCalibration: {
+            samples: calibration.length,
+            offset: calibrationOffset(calibration)
+        }
+    });
 });
 
 app.use('/uploads', express.static(uploadsDir, {
@@ -1120,6 +1213,7 @@ app.get('/play/:gameId', (req, res) => {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.setHeader('Cache-Control', 'no-store');
+    const forwarder = buildForwarderScript({ gameId, token: visualToken(gameId) });
     res.type('html').send(`<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1129,7 +1223,8 @@ app.get('/play/:gameId', (req, res) => {
 <style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}iframe{display:block;width:100%;height:100%;border:0}</style>
 </head>
 <body>
-<iframe src="${iframeSrc}" title="${title}" sandbox="allow-scripts allow-pointer-lock allow-orientation-lock" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
+<iframe id="gf-game-frame" src="${iframeSrc}" title="${title}" sandbox="allow-scripts allow-pointer-lock allow-orientation-lock" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
+<script>${forwarder}</script>
 </body>
 </html>`);
 });
@@ -1152,9 +1247,72 @@ app.get('/sandbox/:gameId', (req, res) => {
     }
 
     html = injectDprGuard(html);
+    html = injectCanvasProbe(html, gameId);
     applySandboxHeaders(res);
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.type('html').send(html);
+});
+
+const reportHits = new Map();
+const REPORT_WINDOW_MS = 10 * 60 * 1000;
+const REPORT_MAX_PER_WINDOW = 30;
+
+function allowReport(ip) {
+    const now = Date.now();
+    const hits = (reportHits.get(ip) || []).filter((at) => now - at < REPORT_WINDOW_MS);
+    if (hits.length >= REPORT_MAX_PER_WINDOW) {
+        reportHits.set(ip, hits);
+        return false;
+    }
+    hits.push(now);
+    reportHits.set(ip, hits);
+    if (reportHits.size > 5000) {
+        for (const [key, value] of reportHits) {
+            if (!value.some((at) => now - at < REPORT_WINDOW_MS)) reportHits.delete(key);
+        }
+    }
+    return true;
+}
+
+function handleBlankCanvas(gameId, stored) {
+    logEvent('visual_blank', null, { gameId, blankReports: stored.blankReports, score: stored.score });
+    if (stored.blankReports < 2) {
+        notifyAdmins(`⚠️ Игра ${gameId} рисует пустой экран (замер ${stored.blankReports}/2). Проверь игру вручную.`);
+        return;
+    }
+    const game = getGame(gameId);
+    if (!game || game.status === 'hidden') return;
+    if (!CANVAS_BLANK_AUTOHIDE) {
+        notifyAdmins(`🚫 Игра ${gameId} дважды показала пустой экран. Автоскрытие выключено — скрой вручную.`);
+        return;
+    }
+    hideGame(gameId, null);
+    monitor.recordCanvasHidden();
+    logEvent('game_hidden', null, { gameId, reason: 'blank_canvas' });
+    notifyAdmins(`🚫 Игра ${gameId} скрыта: два замера показали пустой экран. Вернуть: /restore ${gameId}`);
+}
+
+app.post('/api/canvas-metrics', (req, res) => {
+    const body = req.body || {};
+    const gameId = String(body.gameId || '');
+    const token = String(body.token || '');
+    if (!isSafeGameId(gameId)) return res.status(400).json({ ok: false, error: 'bad_game' });
+    const expected = visualToken(gameId);
+    if (!expected || !safeEqual(token, expected)) return res.status(403).json({ ok: false, error: 'bad_token' });
+    if (!isValidMetrics(body.metrics)) return res.status(400).json({ ok: false, error: 'bad_metrics' });
+    if (!allowReport(String(req.ip || 'unknown'))) return res.status(429).json({ ok: false, error: 'rate_limited' });
+
+    const scored = scoreMetrics(body.metrics);
+    scored.samples = Math.max(0, Math.round(Number(body.metrics.samples) || 0));
+    try {
+        const stored = recordVisualMeasurement(gameId, scored);
+        monitor.recordCanvasReport({ blank: scored.blank, gameId });
+        if (scored.blank) handleBlankCanvas(gameId, stored);
+        res.json({ ok: true, score: scored.score });
+    } catch (error) {
+        console.error('[Визуал] Замер не сохранён:', error.message);
+        res.status(500).json({ ok: false, error: 'server_error' });
+    }
 });
 
 app.get('/test-games/', (req, res) => {
@@ -1832,6 +1990,15 @@ bot.command('stats', async (ctx) => {
                 : ''
         ].filter(Boolean)
         : [];
+    const pipeline = monitor.snapshot();
+    const pipelineLines = [
+        '',
+        'Пайплайн (с запуска сервиса):',
+        `Генераций: ${pipeline.generations.succeeded} успешно, ${pipeline.generations.failed} с ошибкой`,
+        `Критик: ${pipeline.pipeline.criticModel} по модели, ${pipeline.pipeline.criticAudit} по аудиту`,
+        `Починено без модели (TDZ): ${pipeline.pipeline.tdzRepaired}, полишей: ${pipeline.pipeline.polished}`,
+        `Замеров canvas: ${pipeline.canvas.reports}, пустых экранов: ${pipeline.canvas.blank}`
+    ];
     await ctx.reply([
         '👑 Статистика',
         '',
@@ -1841,8 +2008,18 @@ bot.command('stats', async (ctx) => {
         `Платежей: ${stats.payments}`,
         `Открытых жалоб: ${stats.openComplaints}`,
         ...qualityLines,
-        ...ratingLines
+        ...ratingLines,
+        ...pipelineLines
     ].join('\n'));
+});
+
+bot.command('restore', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    const gameId = String(ctx.message.text || '').trim().split(/\s+/)[1] || '';
+    if (!isSafeGameId(gameId)) return ctx.reply('Использование: /restore <game_id>');
+    if (!restoreGame(gameId)) return ctx.reply('Игра не найдена или уже доступна.');
+    logEvent('game_restored', ctx.from.id, { gameId, reason: 'admin_restore' });
+    await ctx.reply(`Игра ${gameId} снова доступна.`);
 });
 
 bot.command('ratings', async (ctx) => {
@@ -2347,6 +2524,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             genre
         });
         logEvent('generation_started', userId, { generationId, platform, promptVersion: PROMPT_VERSION, genre });
+        monitor.recordGenerationStarted();
 
         let planResult = { plan: '', inputTokens: 0, outputTokens: 0 };
         let gameCode = '';
@@ -2514,6 +2692,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             source: usedHybrid ? 'hybrid' : 'ai',
             htmlPath: `${gameId}.html`
         });
+        setGameVisualStatic(gameId, quality.visualScore);
         recordGeneration({
             id: generationId,
             telegramId: userId,
@@ -2537,6 +2716,10 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             planTokens: planResult.inputTokens + planResult.outputTokens,
             mode: usedHybrid ? 'hybrid' : 'ai',
             score: quality.score
+        });
+        monitor.recordGenerationSucceeded({
+            score: quality.score,
+            criticSource: quality.criticSource
         });
         completed = true;
         createdGameId = gameId;
@@ -2613,6 +2796,11 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             console.error('[Генерация] Не удалось записать ошибку:', recordError.message);
         }
         logEvent('generation_failed', userId, { generationId, error: String(err.message || 'unknown').slice(0, 200) });
+        monitor.recordGenerationFailed({ error: String(err.message || 'unknown').slice(0, 200) });
+        if (gemini.isQuotaExhaustedError(err) || gemini.isDailyQuotaError(err)) {
+            monitor.recordQuotaError();
+            await notifyAdmins(`🚨 Квота Gemini исчерпана: ${String(err.message || err).slice(0, 200)}. Генерации идут по резервным моделям.`);
+        }
 
         const kb = [
             [Markup.button.callback('🔄 Повторить', 'regen_ai')],
@@ -2773,6 +2961,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             model: 'gemini-2.5-flash'
         });
         logEvent('generation_started', userId, { generationId, gameId, kind: 'improve', promptVersion: PROMPT_VERSION });
+        monitor.recordGenerationStarted();
 
         const improved = await improveAIGame(originalCode, cleanInstruction, platform);
         if (!improved || !improved.code) throw new Error('Модель не вернула полный файл');
@@ -2819,6 +3008,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             score: finalAudit.score,
             issues: finalAudit.issues.map(i => i.code || i.msg).slice(0, 8)
         });
+        setGameVisualStatic(gameId, auditVisuals(gameCode).score);
 
         tmpPath = path.join(aiGamesDir, `.${gameId}.${Date.now()}.tmp`);
         fs.writeFileSync(tmpPath, gameCode);
@@ -2850,6 +3040,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             inputTokens: improved.inputTokens,
             outputTokens: improved.outputTokens
         });
+        monitor.recordGenerationSucceeded({ score: finalAudit.score });
 
         clearInterval(progressInterval);
         const url = publicGameUrl(gameId);
@@ -2908,6 +3099,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
             console.error('[Улучшение] Не удалось записать ошибку:', recordError.message);
         }
         logEvent('generation_failed', userId, { generationId, gameId, kind: 'improve', error: String(err.message || 'unknown').slice(0, 200) });
+        monitor.recordGenerationFailed({ error: String(err.message || 'unknown').slice(0, 200) });
 
         const kb = [
             [Markup.button.callback('🔄 Попробовать снова', `improve_ai_${gameId}`)],
@@ -3315,7 +3507,48 @@ function validateConfig() {
     if (!ADMIN_IDS.length) {
         console.warn('⚠️ ADMIN_IDS не задан: команды /stats, /grant и /refund отключены.');
     }
+    if (!ADMIN_API_TOKEN) {
+        console.warn('⚠️ ADMIN_API_TOKEN не задан: статистика пайплайна по /admin/stats недоступна.');
+    }
+    if (!VISUAL_TOKEN_SECRET) {
+        console.warn('⚠️ Нет секрета для токенов замера: визуальные метрики игр не собираются.');
+    }
     return errors;
+}
+
+const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const MONITOR_INTERVAL_MS = 10 * 60 * 1000;
+const DIGEST_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const sentAlerts = new Map();
+let monitorTimer = null;
+let lastDigestAt = Date.now();
+
+async function sendQualityDigest() {
+    const snapshot = monitor.snapshot();
+    const lines = [
+        '📊 Сводка по качеству',
+        UI_DIVIDER,
+        `Генераций: ${snapshot.generations.succeeded} успешно, ${snapshot.generations.failed} с ошибкой`,
+        `Критик: ${snapshot.pipeline.criticModel} по модели, ${snapshot.pipeline.criticAudit} по аудиту кода`,
+        `Починено без модели (TDZ): ${snapshot.pipeline.tdzRepaired}`,
+        `Патчей: ${snapshot.pipeline.patched}, ремонтов: ${snapshot.pipeline.repaired}, полишей: ${snapshot.pipeline.polished}`,
+        `Замеров canvas: ${snapshot.canvas.reports}, пустых экранов: ${snapshot.canvas.blank}`,
+        `Средний балл: ${snapshot.averageScore === null ? '—' : snapshot.averageScore}`
+    ];
+    await notifyAdmins(lines.join('\n'));
+}
+
+async function runHealthCheck() {
+    for (const alert of monitor.evaluate()) {
+        const lastSent = sentAlerts.get(alert.key) || 0;
+        if (Date.now() - lastSent < ALERT_COOLDOWN_MS) continue;
+        sentAlerts.set(alert.key, Date.now());
+        await notifyAdmins(`${alert.level === 'critical' ? '🚨' : '⚠️'} ${alert.text}`);
+    }
+    if (Date.now() - lastDigestAt >= DIGEST_INTERVAL_MS) {
+        lastDigestAt = Date.now();
+        await sendQualityDigest();
+    }
 }
 
 async function start() {
@@ -3358,11 +3591,17 @@ async function start() {
     });
     console.log('🤖 Бот запущен');
 
+    monitorTimer = setInterval(() => {
+        runHealthCheck().catch((error) => console.error('[Мониторинг] Ошибка проверки:', error.message));
+    }, MONITOR_INTERVAL_MS);
+    if (typeof monitorTimer.unref === 'function') monitorTimer.unref();
+
     let stopping = false;
     const shutdown = async (signal) => {
         if (stopping) return;
         stopping = true;
         console.log(`\n${signal}: остановка...`);
+        if (monitorTimer) clearInterval(monitorTimer);
         try { await bot.stop(signal); } catch (e) {}
         await new Promise((resolve) => server.close(resolve));
         try { closeDb(); } catch (e) {}

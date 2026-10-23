@@ -56,12 +56,18 @@ services:
         value: "80"
       - key: QUALITY_POLISH_ENABLED
         value: "true"
+      - key: CANVAS_BLANK_AUTOHIDE
+        value: "true"
       - key: ALLOW_UNMODERATED_IMAGE_UPLOADS
         value: "false"
       # Секреты и URL-ы задаются в Dashboard (sync: false).
       - key: BOT_TOKEN
         sync: false
       - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: VISUAL_TOKEN_SECRET
         sync: false
       - key: SIGHT_USER
         sync: false

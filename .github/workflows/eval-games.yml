@@ -39,6 +39,8 @@ jobs:
           node-version: '24'
           cache: 'npm'
       - run: npm ci
+      - name: Tests
+        run: npm test
       - name: Locate Chrome
         run: |
           for path in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium; do
@@ -47,10 +49,17 @@ jobs:
           echo "::error::Chrome не найден на раннере." && exit 1
       - name: Check Gemini key and quota
         env:
+          EVAL_GEMINI_API_KEY: ${{ secrets.EVAL_GEMINI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::Добавьте секрет репозитория GEMINI_API_KEY (Settings → Secrets and variables → Actions)."
+          if [ -n "$EVAL_GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY=$EVAL_GEMINI_API_KEY" >> "$GITHUB_ENV"
+            echo "::notice::Используется отдельный ключ EVAL_GEMINI_API_KEY — квота продакшена не тратится."
+          elif [ -n "$GEMINI_API_KEY" ]; then
+            echo "::warning::Отдельный секрет EVAL_GEMINI_API_KEY не задан: eval тратит квоту продакшена."
+            echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> "$GITHUB_ENV"
+          else
+            echo "::error::Добавьте секрет репозитория EVAL_GEMINI_API_KEY (или GEMINI_API_KEY как запасной): Settings → Secrets and variables → Actions."
             exit 1
           fi
           node scripts/probe-gemini.js
@@ -64,11 +73,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate and playtest
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LIMIT: ${{ inputs.limit }}
           ONLY: ${{ inputs.only }}
           ENGINES: ${{ inputs.engines }}
           FAIL_BELOW: ${{ inputs.fail_below }}
+          EVAL_MAX_API_CALLS: '12'
         run: |
           args=(--limit "$LIMIT")
           if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
@@ -108,6 +117,7 @@ jobs:
               ["Прирост конвейера", s.pipelineLift || 0],
               ["Ошибок в рантайме", s.runtimeErrors || 0],
               ["Починено без модели (TDZ)", s.tdzRepaired || 0],
+              ["Запросов к API", (s.apiCalls || 0) + " из " + (s.apiCallBudget || 0)],
               ["Дефекты HUD", s.hudIssues || 0],
               ["Кадры", JSON.stringify(s.screenshotKinds || {})],
               ["Пустой рендер", s.blankRenders || 0],

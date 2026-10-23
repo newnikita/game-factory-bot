@@ -31,7 +31,7 @@ permissions:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,7 +45,7 @@ jobs:
             if [ -x "$path" ]; then echo "CHROME_PATH=$path" >> "$GITHUB_ENV"; exit 0; fi
           done
           echo "::error::Chrome не найден на раннере." && exit 1
-      - name: Check Gemini key
+      - name: Check Gemini key and quota
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -53,6 +53,7 @@ jobs:
             echo "::error::Добавьте секрет репозитория GEMINI_API_KEY (Settings → Secrets and variables → Actions)."
             exit 1
           fi
+          node scripts/probe-gemini.js
       - name: Download baseline report
         if: inputs.baseline_run_id != ''
         uses: actions/download-artifact@v4

@@ -822,7 +822,10 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
                     const status = (err.response && err.response.status) || err.status || null;
                     const retryable = !status || status === 429 || status >= 500;
                     if (!retryable || attempt === maxRetries) throw err;
-                    await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));
+                    const delay = status === 429
+                        ? Math.min(60000, 10000 * Math.pow(2, attempt - 1))
+                        : Math.min(20000, 3000 * attempt);
+                    await new Promise(r => setTimeout(r, delay));
                     continue;
                 }
             }
@@ -883,7 +886,10 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
             const status = (err.response && err.response.status) || err.status || null;
             const retryable = !status || status === 429 || status >= 500;
             if (!retryable || attempt === maxRetries) throw err;
-            await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));
+            const delay = status === 429
+                ? Math.min(60000, 10000 * Math.pow(2, attempt - 1))
+                : Math.min(20000, 3000 * attempt);
+            await new Promise(r => setTimeout(r, delay));
         }
     }
     throw new Error('Не удалось улучшить игру');

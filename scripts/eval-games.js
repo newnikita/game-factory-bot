@@ -497,12 +497,19 @@ async function run() {
     if (args.baseline && fs.existsSync(args.baseline)) {
         try {
             const baseline = JSON.parse(fs.readFileSync(args.baseline, 'utf8'));
-            const base = (baseline.summary && baseline.summary.avgScore) || 0;
-            const delta = report.summary.avgScore - base;
-            console.log(`\nBaseline: ${base} → сейчас ${report.summary.avgScore} (Δ ${delta >= 0 ? '+' : ''}${delta})`);
-            if (delta < 0) {
-                console.error('❌ Качество упало относительно baseline.');
+            const baseSummary = baseline.summary || {};
+            const base = baseSummary.avgScore || 0;
+            const baseCompleted = baseSummary.completed || 0;
+            if (report.summary.completed < baseCompleted) {
+                console.error(`❌ Прогон неполный: ${report.summary.completed} игр против ${baseCompleted} в baseline — сравнение качества невалидно.`);
                 exitCode = 1;
+            } else {
+                const delta = report.summary.avgScore - base;
+                console.log(`\nBaseline: ${base} → сейчас ${report.summary.avgScore} (Δ ${delta >= 0 ? '+' : ''}${delta})`);
+                if (delta < 0) {
+                    console.error('❌ Качество упало относительно baseline.');
+                    exitCode = 1;
+                }
             }
         } catch (error) {
             console.error('Не удалось прочитать baseline:', error.message);

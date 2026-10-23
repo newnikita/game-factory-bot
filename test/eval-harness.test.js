@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { isStartLabel, stripRuntimeArtifacts } = require('../scripts/eval-games');
 
 test('stripRuntimeArtifacts убирает плейсхолдер фона и маркер [BG:]', () => {
@@ -36,4 +38,14 @@ test('isStartLabel не путает обычный текст с кнопкой
     assert.equal(isStartLabel('Стартовый экран'), false);
     assert.equal(isStartLabel(''), false);
     assert.equal(isStartLabel('x'.repeat(60)), false);
+});
+
+test('проба Gemini без ключа падает с понятной ошибкой', () => {
+    const script = path.join(__dirname, '..', 'scripts', 'probe-gemini.js');
+    const result = spawnSync(process.execPath, [script], {
+        env: { ...process.env, GEMINI_API_KEY: '' },
+        encoding: 'utf8'
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /GEMINI_API_KEY не задан/);
 });

@@ -1,5 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+
+process.env.GEMINI_MIN_INTERVAL_MS = '0';
+process.env.GEMINI_RETRY_BASE_MS = '10';
+
 const gemini = require('../lib/gemini');
 const axios = require('axios');
 
@@ -124,6 +128,42 @@ test('generate не переключается при ошибке автори�
         assert.equal(calls, 1);
     } finally {
         await restore();
+    }
+});
+
+test('generate при 429 повторяет запрос и уходит на резервную модель', async () => {
+    const calls = [];
+    const restore = withStubbedPost(async (url) => {
+        calls.push(url);
+        if (calls.length === 1) throw httpError(429);
+        return { status: 200, data: { candidates: [{ content: { parts: [{ text: 'ответ' }] } }] } };
+    });
+    try {
+        const result = await gemini.generate({ contents: [], models: ['model-a', 'model-b'] });
+        assert.equal(result.text, 'ответ');
+        assert.equal(result.fallbackUsed, false);
+        assert.equal(calls.length, 2);
+    } finally {
+        await restore();
+    }
+});
+
+test('пауза перед повтором при 429 растёт экспоненциально', () => {
+    assert.equal(gemini.retryDelayFor(429, 1), 10);
+    assert.equal(gemini.retryDelayFor(429, 2), 20);
+    assert.equal(gemini.retryDelayFor(429, 3), 40);
+    assert.equal(gemini.retryDelayFor(429, 1, '60'), 60000);
+    assert.equal(gemini.retryDelayFor(500, 1), 3000);
+});
+
+test('базовая пауза при 429 по умолчанию десять секунд', () => {
+    const previous = process.env.GEMINI_RETRY_BASE_MS;
+    delete process.env.GEMINI_RETRY_BASE_MS;
+    try {
+        assert.equal(gemini.retryDelayFor(429, 1), 10000);
+        assert.equal(gemini.retryDelayFor(429, 2), 20000);
+    } finally {
+        if (previous !== undefined) process.env.GEMINI_RETRY_BASE_MS = previous;
     }
 });
 

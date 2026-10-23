@@ -819,7 +819,7 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
                     attemptSuccess = true;
                     break;
                 } catch (err) {
-                    const status = err.response ? err.response.status : null;
+                    const status = (err.response && err.response.status) || err.status || null;
                     const retryable = !status || status === 429 || status >= 500;
                     if (!retryable || attempt === maxRetries) throw err;
                     await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));
@@ -880,7 +880,7 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
             if (!code || !/<\/html>/i.test(code)) throw new Error('Модель вернула неполный файл');
             return { code, inputTokens, outputTokens, model: result.model, fallbackUsed: result.fallbackUsed };
         } catch (err) {
-            const status = err.response ? err.response.status : null;
+            const status = (err.response && err.response.status) || err.status || null;
             const retryable = !status || status === 429 || status >= 500;
             if (!retryable || attempt === maxRetries) throw err;
             await new Promise(r => setTimeout(r, Math.min(20000, 3000 * attempt)));

@@ -623,6 +623,8 @@ async function runQualityPipeline(code, options = {}) {
         criticSource: null,
         effectiveCriticScore: null,
         visualScore: 0,
+        visualScoreBefore: 0,
+        visualScoreBeforePolish: null,
         technicalScore: 0,
         score: 0,
         issues: []
@@ -632,6 +634,7 @@ async function runQualityPipeline(code, options = {}) {
     let current = collectQualityIssues(currentCode, platform);
     report.technicalScore = current.technicalScore;
     report.visualScore = current.visual.score;
+    report.visualScoreBefore = current.visual.score;
 
     if (current.criticals.length) {
         try {
@@ -726,6 +729,7 @@ async function runQualityPipeline(code, options = {}) {
             } else if (effective >= QUALITY_CRITIC_MIN_SCORE) {
                 console.log(`[Качество] Полиш не требуется: оценка ${effective} >= ${QUALITY_CRITIC_MIN_SCORE}`);
             } else {
+                report.visualScoreBeforePolish = current.visual.score;
                 const visualIssues = current.visual.issues.map((issue) => ({
                     code: issue.code,
                     level: 'warning',

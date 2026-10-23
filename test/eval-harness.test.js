@@ -205,3 +205,31 @@ async function readPixel(browser, filePath, x, y) {
         await page.close();
     }
 }
+
+test('A/B гейт не сравнивает игры с разным источником критика', () => {
+    const baseline = {
+        summary: { avgScore: 90, completed: 1 },
+        prompts: [{ id: 'game0', pipeline: { score: 90, criticSource: 'none' } }]
+    };
+    const current = {
+        summary: { avgScore: 60, completed: 1 },
+        prompts: [{ id: 'game0', pipeline: { score: 60, criticSource: 'audit' } }]
+    };
+    const comparison = compareWithBaseline(baseline, current);
+    assert.equal(comparison.exitCode, 0);
+    assert.match(comparison.lines.join('\n'), /источник критика изменился/);
+});
+
+test('A/B гейт сравнивает игры с одинаковым источником критика', () => {
+    const baseline = {
+        summary: { avgScore: 90, completed: 1 },
+        prompts: [{ id: 'game0', pipeline: { score: 90, criticSource: 'audit' } }]
+    };
+    const current = {
+        summary: { avgScore: 80, completed: 1 },
+        prompts: [{ id: 'game0', pipeline: { score: 80, criticSource: 'audit' } }]
+    };
+    const comparison = compareWithBaseline(baseline, current);
+    assert.equal(comparison.exitCode, 1);
+    assert.match(comparison.errors.join('\n'), /game0: 90 → 80/);
+});

@@ -286,3 +286,31 @@ loop();
     const critic = vision.localCritic(auditVisuals(brokenHud), auditGame(brokenHud, 'mobile'));
     assert.ok(critic.criteria.hud <= 40, `сломанный HUD должен потерять баллы, получено ${critic.criteria.hud}`);
 });
+
+test('reviewScreenshot без независимого судьи помечает самооценку модели-автора', async () => {
+    const originalGenerate = gemini.generateJson;
+    const originalJudge = gemini.judgeModels;
+    gemini.judgeModels = () => [];
+    gemini.generateJson = async () => ({ data: { score: 55 }, usage: {}, model: 'author-model' });
+    try {
+        const critic = await vision.reviewScreenshot(Buffer.from('png'), { platform: 'mobile', excludeModel: 'author-model' });
+        assert.equal(critic.score, 55);
+        assert.equal(critic.selfReview, true);
+    } finally {
+        gemini.generateJson = originalGenerate;
+        gemini.judgeModels = originalJudge;
+    }
+});
+
+test('reviewScreenshot не маскирует другие ошибки модели', async () => {
+    const originalGenerate = gemini.generateJson;
+    const originalJudge = gemini.judgeModels;
+    gemini.judgeModels = () => [];
+    gemini.generateJson = async () => { throw new Error('сеть отвалилась'); };
+    try {
+        await assert.rejects(() => vision.reviewScreenshot(Buffer.from('png'), { platform: 'mobile' }), /сеть отвалилась/);
+    } finally {
+        gemini.generateJson = originalGenerate;
+        gemini.judgeModels = originalJudge;
+    }
+});

@@ -457,6 +457,9 @@ function compareWithBaseline(baseline, report) {
     const baseModelById = new Map((baseline.prompts || [])
         .filter((prompt) => prompt && prompt.pipeline && !prompt.error)
         .map((prompt) => [prompt.id, prompt.model]));
+    const baseSourceById = new Map((baseline.prompts || [])
+        .filter((prompt) => prompt && prompt.pipeline && !prompt.error)
+        .map((prompt) => [prompt.id, prompt.pipeline.criticSource || 'none']));
     const regressions = [];
     let compared = 0;
     for (const prompt of completed) {
@@ -465,6 +468,12 @@ function compareWithBaseline(baseline, report) {
         const baseModel = baseModelById.get(prompt.id);
         if (baseModel && prompt.model && baseModel !== prompt.model) {
             lines.push(`  ${prompt.id}: не сопоставимо — модель ${baseModel} → ${prompt.model}`);
+            continue;
+        }
+        const baseSource = baseSourceById.get(prompt.id);
+        const currentSource = prompt.pipeline.criticSource || 'none';
+        if (baseSource !== currentSource) {
+            lines.push(`  ${prompt.id}: не сопоставимо — источник критика изменился (${baseSource} → ${currentSource})`);
             continue;
         }
         compared += 1;
@@ -573,6 +582,8 @@ async function run() {
                 rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
                 effectiveCriticScore: quality.effectiveCriticScore,
                 visualScore: quality.visualScore,
+                visualScoreBefore: quality.visualScoreBefore,
+                visualScoreBeforePolish: quality.visualScoreBeforePolish === undefined ? null : quality.visualScoreBeforePolish,
                 criticNoVerdict: Boolean(quality.critic && quality.critic.noVerdict),
                 patched: quality.patched,
                 repaired: quality.repaired,
@@ -643,10 +654,20 @@ async function run() {
         avgEffectiveCritic,
         avgRubric,
         avgVisionScore: avgVision,
+        visionSelfReview: withVision.filter((p) => p.vision && p.vision.selfReview).length,
         avgCriticGap: withVision.length && modelCritic.length ? avgCritic - avgVision : 0,
         effectiveCriticGap: withVision.length && withEffective.length ? avgEffectiveCritic - avgVision : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,
         polished: completed.filter((p) => p.pipeline.polished).length,
+        polishLift: (() => {
+            const lifted = completed.filter((p) => p.pipeline.polished && typeof p.pipeline.visualScoreBeforePolish === 'number');
+            if (!lifted.length) return 0;
+            return Math.round(lifted.reduce((sum, p) => sum + (p.pipeline.visualScore - p.pipeline.visualScoreBeforePolish), 0) / lifted.length);
+        })(),
+        pipelineLift: (() => {
+            if (!completed.length) return 0;
+            return Math.round(completed.reduce((sum, p) => sum + ((p.pipeline.visualScore || 0) - (p.pipeline.visualScoreBefore || 0)), 0) / completed.length);
+        })(),
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
         hudIssues: completed.reduce((sum, p) => sum + (p.runtime && p.runtime.hudIssues ? p.runtime.hudIssues.length : 0), 0),
         screenshotKinds: completed.reduce((acc, p) => {

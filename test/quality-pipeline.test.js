@@ -294,3 +294,57 @@ test('runQualityPipeline без вердикта модели переходит
         gemini.generateJson = originalJson;
     }
 });
+
+const POLISHED_GAME = `<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, 800);
+    grad.addColorStop(0, '#101026');
+    grad.addColorStop(1, '#26264d');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 400, 800);
+}
+function drawParallaxLayer(offset) {
+    ctx.fillStyle = '#00f3ff';
+    ctx.beginPath();
+    ctx.moveTo(0, 800);
+    ctx.lineTo(100 + offset, 400);
+    ctx.lineTo(400, 800);
+    ctx.closePath();
+    ctx.fill();
+}
+function drawHero() {
+    ctx.shadowColor = '#00f3ff';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(200, 300, 18, 0, Math.PI * 2);
+    ctx.fill();
+}
+let state = 'menu';
+window.addEventListener('pointerdown', () => { state = 'play'; });
+function loop() { requestAnimationFrame(loop); ctx.save(); ctx.rotate(Math.sin(performance.now() / 400) * 0.2); ctx.restore(); }
+loop();
+</script>
+</body></html>`;
+
+test('runQualityPipeline измеряет прирост графики от полиша', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => ({ text: POLISHED_GAME, usage: {}, model: 'test' });
+    gemini.generateJson = async () => ({ data: { score: 20, issues: [] }, usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
+        assert.equal(report.polished, true);
+        assert.equal(report.visualScoreBeforePolish, 37, 'до полиша плоская графика');
+        assert.ok(report.visualScore > report.visualScoreBeforePolish, 'полиш должен поднять визуальный балл');
+        assert.equal(report.visualScoreBefore, report.visualScoreBeforePolish, 'исходный код уже был плоским');
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});

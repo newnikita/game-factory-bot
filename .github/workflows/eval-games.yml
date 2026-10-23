@@ -107,6 +107,7 @@ jobs:
               ["Прирост от полиша", s.polishLift || 0],
               ["Прирост конвейера", s.pipelineLift || 0],
               ["Ошибок в рантайме", s.runtimeErrors || 0],
+              ["Починено без модели (TDZ)", s.tdzRepaired || 0],
               ["Дефекты HUD", s.hudIssues || 0],
               ["Кадры", JSON.stringify(s.screenshotKinds || {})],
               ["Пустой рендер", s.blankRenders || 0],

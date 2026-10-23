@@ -602,6 +602,7 @@ async function run() {
                 criticNoVerdict: Boolean(quality.critic && quality.critic.noVerdict),
                 patched: quality.patched,
                 repaired: quality.repaired,
+                tdzRepaired: quality.tdzRepaired || 0,
                 polished: quality.polished,
                 polishModel: quality.polishModel || null,
                 issues: quality.issueCodes,
@@ -685,6 +686,7 @@ async function run() {
             return Math.round(completed.reduce((sum, p) => sum + ((p.pipeline.visualScore || 0) - (p.pipeline.visualScoreBefore || 0)), 0) / completed.length);
         })(),
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
+        tdzRepaired: completed.reduce((sum, p) => sum + (p.pipeline.tdzRepaired || 0), 0),
         hudIssues: completed.reduce((sum, p) => sum + (p.runtime && p.runtime.hudIssues ? p.runtime.hudIssues.length : 0), 0),
         screenshotKinds: completed.reduce((acc, p) => {
             const kind = p.runtime && p.runtime.screenshotKind;

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vision = require('../lib/game-vision');
 const gemini = require('../lib/gemini');
+const { auditGame, auditVisuals } = require('../lib/game-quality');
 
 test('normalizeCritic приводит оценку к шкале 0-100', () => {
     assert.equal(vision.normalizeCritic({ score: 87 }).score, 87);
@@ -196,4 +197,92 @@ test('reviewCode при нечитаемом ответе отдаёт null вм
     } finally {
         gemini.generateJson = original;
     }
+});
+
+const RICH_CODE = `<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const particles = [];
+function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, 800);
+    grad.addColorStop(0, '#101026');
+    grad.addColorStop(1, '#26264d');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 400, 800);
+}
+function drawParallaxLayer(offset) {
+    ctx.fillStyle = '#00f3ff';
+    ctx.beginPath();
+    ctx.moveTo(0, 800);
+    ctx.lineTo(100 + offset, 400);
+    ctx.lineTo(400, 800);
+    ctx.closePath();
+    ctx.fill();
+}
+function drawHero() {
+    ctx.shadowColor = '#00f3ff';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(200, 300, 18, 0, Math.PI * 2);
+    ctx.fill();
+}
+function spawn() { particles.push({ x: 0, y: 0, color: '#ffd700' }); }
+function loop() { requestAnimationFrame(loop); ctx.save(); ctx.rotate(Math.sin(performance.now() / 400) * 0.2); ctx.restore(); }
+loop();
+</script>
+</body></html>`;
+
+const FLAT_CODE = `<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function loop() { requestAnimationFrame(loop); ctx.fillRect(0, 0, 10, 10); ctx.fillRect(20, 20, 10, 10); ctx.fillRect(40, 40, 10, 10); }
+loop();
+</script>
+</body></html>`;
+
+test('localCritic оценивает богатую графику выше примитивов', () => {
+    const rich = vision.localCritic(auditVisuals(RICH_CODE), auditGame(RICH_CODE, 'mobile'));
+    const flat = vision.localCritic(auditVisuals(FLAT_CODE), auditGame(FLAT_CODE, 'mobile'));
+    assert.ok(rich.score > flat.score, `богатая графика ${rich.score} должна быть выше примитивов ${flat.score}`);
+    assert.ok(rich.score >= 60, 'богатая графика без модели должна получать достойную оценку');
+    assert.ok(flat.score < 50, 'примитивы без модели должны получать низкую оценку');
+});
+
+test('localCritic заполняет все критерии рубрики', () => {
+    const critic = vision.localCritic(auditVisuals(RICH_CODE), auditGame(RICH_CODE, 'mobile'));
+    for (const key of ['objects', 'background', 'decor', 'contrast', 'hud', 'palette', 'effects']) {
+        assert.equal(typeof critic.criteria[key], 'number', `критерий ${key} должен быть заполнен`);
+    }
+    assert.equal(critic.rubricScore, Math.round(Object.values(critic.criteria).reduce((sum, value) => sum + value, 0) / 7));
+    assert.equal(critic.noVerdict, false);
+    assert.equal(critic.reason, 'local_audit');
+    assert.equal(critic.model, null);
+});
+
+test('localCritic не ставит оценку выше потолка аудита', () => {
+    const visual = auditVisuals(FLAT_CODE);
+    const critic = vision.localCritic(visual, auditGame(FLAT_CODE, 'mobile'));
+    assert.ok(critic.score <= visual.score);
+    assert.ok(critic.issues.length > 0, 'замечания аудита должны попасть в вердикт');
+});
+
+test('localCritic опускает HUD-критерий при сломанном HUD', () => {
+    const brokenHud = `<!DOCTYPE html><html><body><canvas id="game"></canvas><script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+ctx.scale(dpr, dpr);
+function loop() { requestAnimationFrame(loop); ctx.font = '20px * dpr sans-serif'; ctx.fillText('счёт', 10, 10); }
+loop();
+</script></body></html>`;
+    const critic = vision.localCritic(auditVisuals(brokenHud), auditGame(brokenHud, 'mobile'));
+    assert.ok(critic.criteria.hud <= 40, `сломанный HUD должен потерять баллы, получено ${critic.criteria.hud}`);
 });

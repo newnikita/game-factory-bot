@@ -569,6 +569,7 @@ async function run() {
                 technicalScore: quality.technicalScore,
                 criticScore: quality.criticScore,
                 criticModel: quality.critic && quality.critic.model ? quality.critic.model : null,
+                criticSource: quality.criticSource || 'model',
                 rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
                 effectiveCriticScore: quality.effectiveCriticScore,
                 visualScore: quality.visualScore,
@@ -615,12 +616,14 @@ async function run() {
 
     const completed = report.prompts.filter((p) => !p.error && p.pipeline);
     const withVision = completed.filter((p) => p.vision);
-    const withCritic = completed.filter((p) => typeof p.pipeline.criticScore === 'number');
+    const modelCritic = completed.filter((p) => p.pipeline.criticSource !== 'audit' && typeof p.pipeline.criticScore === 'number');
+    const auditCritic = completed.filter((p) => p.pipeline.criticSource === 'audit');
     const modelsUsed = [...new Set(completed.map((p) => p.model).filter(Boolean))];
     report.modelsUsed = modelsUsed;
     if (modelsUsed.length === 1) report.model = modelsUsed[0];
     else if (modelsUsed.length > 1) report.model = modelsUsed.join(', ');
-    const avgCritic = withCritic.length ? Math.round(withCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / withCritic.length) : 0;
+    const avgCritic = modelCritic.length ? Math.round(modelCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / modelCritic.length) : 0;
+    const avgAuditCritic = auditCritic.length ? Math.round(auditCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / auditCritic.length) : 0;
     const withEffective = completed.filter((p) => typeof p.pipeline.effectiveCriticScore === 'number');
     const avgEffectiveCritic = withEffective.length ? Math.round(withEffective.reduce((sum, p) => sum + p.pipeline.effectiveCriticScore, 0) / withEffective.length) : 0;
     const withRubric = completed.filter((p) => typeof p.pipeline.rubricScore === 'number');
@@ -633,13 +636,14 @@ async function run() {
         avgScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.score, 0) / completed.length) : 0,
         avgTechnical: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.technicalScore, 0) / completed.length) : 0,
         avgVisualScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + (p.pipeline.visualScore || 0), 0) / completed.length) : 0,
-        criticScored: withCritic.length,
-        criticUnavailable: completed.length - withCritic.length,
+        criticScored: modelCritic.length,
+        criticUnavailable: auditCritic.length,
         avgCritic,
+        avgAuditCritic,
         avgEffectiveCritic,
         avgRubric,
         avgVisionScore: avgVision,
-        avgCriticGap: withVision.length && withCritic.length ? avgCritic - avgVision : 0,
+        avgCriticGap: withVision.length && modelCritic.length ? avgCritic - avgVision : 0,
         effectiveCriticGap: withVision.length && withEffective.length ? avgEffectiveCritic - avgVision : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,
         polished: completed.filter((p) => p.pipeline.polished).length,

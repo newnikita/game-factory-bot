@@ -58,7 +58,7 @@ const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabe
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
-const { reviewCode, criticToIssues } = require('./lib/game-vision');
+const { reviewCode, criticToIssues, localCritic } = require('./lib/game-vision');
 const hybrid = require('./lib/hybrid');
 const gemini = require('./lib/gemini');
 
@@ -620,6 +620,7 @@ async function runQualityPipeline(code, options = {}) {
         criticRepaired: false,
         critic: null,
         criticScore: null,
+        criticSource: null,
         effectiveCriticScore: null,
         visualScore: 0,
         technicalScore: 0,
@@ -665,18 +666,31 @@ async function runQualityPipeline(code, options = {}) {
 
     if (QUALITY_CRITIC_ENABLED) {
         try {
-            const critic = await reviewCode(currentCode, {
-                brief: options.brief || '',
-                plan: options.plan || '',
-                platform,
-                visualAudit: current.visual,
-                excludeModel: options.model || null
-            });
+            let critic = null;
+            try {
+                critic = await reviewCode(currentCode, {
+                    brief: options.brief || '',
+                    plan: options.plan || '',
+                    platform,
+                    visualAudit: current.visual,
+                    excludeModel: options.model || null
+                });
+                if (critic.noVerdict) {
+                    console.warn(`[Качество] Критик не дал вердикта (${critic.reason}) — оцениваю по техническому аудиту`);
+                }
+            } catch (error) {
+                console.error('[Качество] Критик не ответил:', error.message);
+            }
+
+            if (!critic || critic.noVerdict) {
+                critic = localCritic(current.visual, current.audit);
+                report.criticSource = 'audit';
+                console.log(`[Качество] Критик недоступен — визуальная оценка по аудиту кода: ${critic.score}`);
+            } else {
+                report.criticSource = 'model';
+            }
             report.critic = critic;
             report.criticScore = critic.score;
-            if (critic.noVerdict) {
-                console.warn(`[Качество] Критик не дал вердикта (${critic.reason}) — оцениваю по техническому аудиту`);
-            }
 
             const caps = [current.visual.ceiling];
             if (typeof critic.rubricScore === 'number') caps.push(critic.rubricScore);
@@ -718,10 +732,18 @@ async function runQualityPipeline(code, options = {}) {
                     msg: issue.msg,
                     fix: issue.fix
                 }));
+                const mergedIssues = [];
+                const seenIssues = new Set();
+                for (const issue of [...critic.issues, ...visualIssues]) {
+                    const key = issue.msg || issue.code;
+                    if (seenIssues.has(key)) continue;
+                    seenIssues.add(key);
+                    mergedIssues.push(issue);
+                }
                 const polishCritic = {
                     ...critic,
                     score: effective,
-                    issues: [...critic.issues, ...visualIssues]
+                    issues: mergedIssues
                 };
                 try {
                     const polished = await polishGameCode(currentCode, polishCritic, {
@@ -752,7 +774,7 @@ async function runQualityPipeline(code, options = {}) {
                 }
             }
         } catch (error) {
-            console.error('[Качество] Критик не ответил:', error.message);
+            console.error('[Качество] Ошибка конвейера критики:', error.message);
         }
     }
 
@@ -1740,6 +1762,9 @@ bot.command('stats', async (ctx) => {
             ...(quality.avgRubric !== null && quality.avgRubric !== undefined
                 ? [`Рубрика графики: ${quality.avgRubric}/100`]
                 : []),
+            ...(quality.auditCritic
+                ? [`Оценено без модели-критика (по аудиту): ${quality.auditCritic}`]
+                : []),
             quality.topIssues.length
                 ? 'Частые замечания: ' + quality.topIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
                 : 'Частых замечаний нет',
@@ -2366,6 +2391,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             technicalScore: quality.technicalScore,
             criticScore: quality.criticScore,
             criticModel: quality.critic && quality.critic.model ? quality.critic.model : null,
+            criticSource: quality.criticSource === undefined ? null : quality.criticSource,
             rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
             effectiveCriticScore: quality.effectiveCriticScore === undefined ? null : quality.effectiveCriticScore,
             visualScore: quality.visualScore === undefined ? null : quality.visualScore,

@@ -337,3 +337,19 @@ test('критик оставляет модель-автор, если друг
     assert.deepEqual(gemini.pickCriticModels(['model-only'], 'model-only'), ['model-only']);
     assert.deepEqual(gemini.pickCriticModels(['model-only'], 'model-other'), ['model-only']);
 });
+
+test('судья не берёт модель-автора, если есть альтернатива', () => {
+    assert.deepEqual(gemini.pickJudgeModels(['model-a', 'model-b'], 'model-a'), ['model-b']);
+    assert.deepEqual(gemini.pickJudgeModels(['model-a', 'model-b'], null), ['model-a', 'model-b']);
+});
+
+test('судья отказывается оценивать игру своей же модели', () => {
+    assert.deepEqual(gemini.pickJudgeModels(['model-only'], 'model-only'), []);
+});
+
+test('цепочка судьи не содержит модель-автора', () => {
+    const chain = gemini.CRITIC_MODEL_CHAIN;
+    const models = gemini.judgeModels(chain[0]);
+    assert.ok(models.length > 0);
+    assert.ok(!models.includes(chain[0]), 'модель-автор исключается из списка судьи');
+});

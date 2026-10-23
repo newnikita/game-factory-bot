@@ -75,7 +75,7 @@ test('collectQualityIssues на чистой игре не находит кри
     assert.equal(result.criticals.length, 0);
 });
 
-test('runQualityPipeline без модели оставляет код и считает технический балл', async () => {
+test('runQualityPipeline без модели оценивает игру по автоматическому аудиту', async () => {
     const original = gemini.generate;
     const originalJson = gemini.generateJson;
     gemini.generate = async () => { throw new Error('модель недоступна'); };
@@ -85,7 +85,11 @@ test('runQualityPipeline без модели оставляет код и счи
         assert.equal(report.code, BROKEN_GAME);
         assert.equal(report.patched, false);
         assert.equal(report.polished, false);
-        assert.equal(report.criticScore, null);
+        assert.equal(report.criticSource, 'audit', 'без модели игру оценивает аудит, а не никто');
+        assert.equal(typeof report.criticScore, 'number');
+        assert.ok(report.criticScore < 60, 'плоская графика без модели должна получить низкую оценку');
+        assert.equal(report.effectiveCriticScore, report.criticScore);
+        assert.ok(report.score < report.technicalScore, 'игра без вердикта модели не должна завышаться');
         assert.ok(report.technicalScore >= 0);
         assert.ok(report.issues.length > 0);
     } finally {
@@ -270,7 +274,7 @@ test('runQualityPipeline не принимает полиш, который ух
     }
 });
 
-test('runQualityPipeline без вердикта критика не штрафует и не полирует', async () => {
+test('runQualityPipeline без вердикта модели переходит на оценку по аудиту', async () => {
     const original = gemini.generate;
     const originalJson = gemini.generateJson;
     let generateCalls = 0;
@@ -278,11 +282,13 @@ test('runQualityPipeline без вердикта критика не штраф�
     gemini.generateJson = async () => ({ data: null, raw: 'не json', usage: {}, model: 'test' });
     try {
         const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
-        assert.equal(report.criticScore, null);
-        assert.equal(report.critic.noVerdict, true);
-        assert.equal(report.score, report.technicalScore);
-        assert.equal(report.polished, false);
-        assert.equal(generateCalls, 0, 'полиш не должен запускаться без оценки');
+        assert.equal(report.criticSource, 'audit');
+        assert.equal(report.critic.reason, 'local_audit');
+        assert.equal(typeof report.criticScore, 'number');
+        assert.ok(report.score < report.technicalScore, 'игра без вердикта модели не должна завышаться');
+        assert.equal(report.polished, false, 'полиш без модели не может примениться');
+        assert.equal(report.code, GOOD_GAME);
+        assert.equal(generateCalls, 1, 'полиш должен быть запущен, но модель недоступна');
     } finally {
         gemini.generate = original;
         gemini.generateJson = originalJson;

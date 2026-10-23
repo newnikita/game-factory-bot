@@ -44,6 +44,8 @@ services:
         value: BLOCK_ONLY_HIGH
       - key: GEMINI_MODEL_CHAIN
         value: "gemini-2.5-flash,gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.5-flash"
+      - key: GEMINI_CRITIC_MODEL_CHAIN
+        value: "gemini-2.5-flash,gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite"
       - key: GEMINI_MIN_INTERVAL_MS
         value: "4000"
       - key: GEMINI_MAX_ATTEMPTS

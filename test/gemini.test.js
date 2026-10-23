@@ -316,3 +316,24 @@ test('цепочка моделей не содержит выведенных �
     assert.ok(!gemini.MODEL_CHAIN.includes('gemini-2.5-flash-lite'));
     assert.ok(gemini.MODEL_CHAIN.includes('gemini-2.5-flash'));
 });
+
+test('цепочка критика ставит полные модели раньше лайтовой', () => {
+    const chain = gemini.CRITIC_MODEL_CHAIN;
+    const liteIndex = chain.findIndex((model) => /lite/i.test(model));
+    const fullIndexes = chain.map((model, index) => (/lite/i.test(model) ? -1 : index)).filter((index) => index >= 0);
+    if (liteIndex >= 0) {
+        assert.ok(Math.max(...fullIndexes) < liteIndex, 'полные модели должны идти раньше лайтовой');
+    }
+});
+
+test('критик не оценивает игру той же моделью, если есть альтернатива', () => {
+    const chain = gemini.CRITIC_MODEL_CHAIN;
+    const models = gemini.criticModels(chain[0]);
+    assert.ok(models.length > 0);
+    assert.ok(!models.includes(chain[0]), 'модель-автор исключается из списка критика');
+});
+
+test('критик оставляет модель-автор, если других нет', () => {
+    assert.deepEqual(gemini.pickCriticModels(['model-only'], 'model-only'), ['model-only']);
+    assert.deepEqual(gemini.pickCriticModels(['model-only'], 'model-other'), ['model-only']);
+});

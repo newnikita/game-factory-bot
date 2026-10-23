@@ -668,7 +668,8 @@ async function runQualityPipeline(code, options = {}) {
                 brief: options.brief || '',
                 plan: options.plan || '',
                 platform,
-                visualAudit: current.visual
+                visualAudit: current.visual,
+                excludeModel: options.model || null
             });
             report.critic = critic;
             report.criticScore = critic.score;
@@ -2338,7 +2339,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             quality = await runQualityPipeline(gameCode, {
                 platform,
                 brief: cleanPrompt,
-                plan: planResult.plan
+                plan: planResult.plan,
+                model: generatedModel
             });
             gameCode = quality.code;
         }
@@ -2357,6 +2359,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             score: quality.score,
             technicalScore: quality.technicalScore,
             criticScore: quality.criticScore,
+            criticModel: quality.critic && quality.critic.model ? quality.critic.model : null,
             rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
             effectiveCriticScore: quality.effectiveCriticScore === undefined ? null : quality.effectiveCriticScore,
             visualScore: quality.visualScore === undefined ? null : quality.visualScore,

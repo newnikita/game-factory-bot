@@ -378,12 +378,12 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     return result;
 }
 
-async function reviewScreenshotFile(bot, filePath, brief) {
+async function reviewScreenshotFile(bot, filePath, brief, excludeModel) {
     if (!filePath || !fs.existsSync(filePath)) return null;
     try {
         const buffer = fs.readFileSync(filePath);
         const { reviewScreenshot } = require('../lib/game-vision');
-        return await reviewScreenshot(buffer, { brief, platform: 'mobile' });
+        return await reviewScreenshot(buffer, { brief, platform: 'mobile', excludeModel: excludeModel || null });
     } catch (error) {
         console.error('[Vision] Ревью скриншота не удалось:', error.message);
         return null;
@@ -544,7 +544,8 @@ async function run() {
             const quality = await bot.runQualityPipeline(generated.code, {
                 platform: 'mobile',
                 brief: prompt.text,
-                plan: plan.plan
+                plan: plan.plan,
+                model: generated.model
             });
 
             const code = quality.code;
@@ -552,6 +553,7 @@ async function run() {
                 score: quality.score,
                 technicalScore: quality.technicalScore,
                 criticScore: quality.criticScore,
+                criticModel: quality.critic && quality.critic.model ? quality.critic.model : null,
                 rubricScore: quality.rubricScore === undefined ? null : quality.rubricScore,
                 effectiveCriticScore: quality.effectiveCriticScore,
                 visualScore: quality.visualScore,
@@ -569,7 +571,7 @@ async function run() {
 
             if (browser) {
                 record.runtime = await browserCheck(browser, code, record.htmlPath);
-                record.vision = await reviewScreenshotFile(bot, record.runtime.screenshot, prompt.text);
+                record.vision = await reviewScreenshotFile(bot, record.runtime.screenshot, prompt.text, record.model);
             }
             record.durationMs = Date.now() - started;
             console.log(`score=${quality.score} tech=${quality.technicalScore} critic=${quality.criticScore} visual=${quality.visualScore} ` +

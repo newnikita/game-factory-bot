@@ -4,6 +4,7 @@ const path = require('path');
 const dns = require('dns');
 const https = require('https');
 const axios = require('axios');
+const gemini = require('../lib/gemini');
 
 function installDnsFallback() {
     const cache = new Map();
@@ -56,6 +57,24 @@ function parseArgs(argv) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const START_LABEL_SOURCE = '^(начать|играть|старт|start|play|begin|resume|продолжить|заново)([\\s!,.…:—-]|$)';
+const CANVAS_TAP_POINTS = [
+    [0.5, 0.58], [0.5, 0.5], [0.5, 0.62], [0.5, 0.42], [0.25, 0.5], [0.75, 0.5]
+];
+
+function isStartLabel(text) {
+    const value = String(text || '').trim();
+    if (!value || value.length > 40) return false;
+    return new RegExp(START_LABEL_SOURCE, 'i').test(value);
+}
+
+function stripRuntimeArtifacts(html) {
+    return String(html || '')
+        .replace(/\{\{AI_BG_IMAGE\}\}/g, '')
+        .replace(/\[BG:\s*[^\]]*\]/gi, '')
+        .trim();
+}
 
 function findChrome() {
     const candidates = [
@@ -133,7 +152,7 @@ async function canvasSignature(page) {
 async function probeState(page) {
     return page.evaluate(() => {
         const result = {};
-        for (const name of ['gameState', 'gameStatus', 'state', 'game']) {
+        for (const name of ['gameState', 'gameStatus', 'currentState', 'state', 'game']) {
             try {
                 const value = eval(name);
                 if (typeof value === 'string' || typeof value === 'number') result[name] = value;
@@ -142,24 +161,85 @@ async function probeState(page) {
                 }
             } catch (error) { /* переменная не объявлена */ }
         }
-        const menus = [...document.querySelectorAll('#menu, .menu, .overlay, #start-screen, #startScreen')];
-        result.visibleOverlays = menus.filter((el) => {
+        const isVisible = (el) => {
             const style = getComputedStyle(el);
             return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0.05;
-        }).length;
+        };
+        const menus = [...document.querySelectorAll('#menu, .menu, .overlay, #start-screen, #startScreen')];
+        result.visibleOverlays = menus.filter(isVisible).length;
+        const startScreen = document.querySelector('#menu-overlay, #menu, #start-screen, #startScreen');
+        result.menuVisible = startScreen ? isVisible(startScreen) : null;
         return result;
     });
 }
 
-async function interact(page) {
-    const points = [
-        { x: 195, y: 420 },
-        { x: 195, y: 500 },
-        { x: 195, y: 650 },
-        { x: 195, y: 750 },
-        { x: 100, y: 420 }
-    ];
-    for (const point of points) {
+async function findStartTarget(page) {
+    return page.evaluate((pattern) => {
+        const regex = new RegExp(pattern, 'i');
+        const nodes = [...document.querySelectorAll('button, a, p, div, span, h1, h2, li, label')];
+        let best = null;
+        let bestElement = null;
+        for (const node of nodes) {
+            const label = String(node.textContent || '').trim();
+            if (!label || label.length > 40) continue;
+            if (!regex.test(label)) continue;
+            const style = getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) < 0.1) continue;
+            const rect = node.getBoundingClientRect();
+            if (rect.width < 8 || rect.height < 8) continue;
+            if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+            if (rect.right < 0 || rect.left > window.innerWidth) continue;
+            const area = rect.width * rect.height;
+            if (!best || area < best.area) {
+                best = { area, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: label.slice(0, 40) };
+                bestElement = node;
+            }
+        }
+        if (bestElement) {
+            try { bestElement.click(); } catch (error) { /* у кнопки нет обработчика click */ }
+        }
+        return best ? { x: best.x, y: best.y, label: best.label } : null;
+    }, START_LABEL_SOURCE);
+}
+
+async function canvasRect(page) {
+    return page.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    });
+}
+
+async function interact(page, capture) {
+    const actions = [];
+    const shoot = typeof capture === 'function' ? capture : async () => {};
+    const target = await findStartTarget(page).catch(() => null);
+    if (target) {
+        await page.touchscreen.tap(target.x, target.y).catch(() => {});
+        actions.push(`кнопка старта «${target.label}»`);
+        await sleep(120);
+        await shoot();
+        await sleep(400);
+    }
+    const rect = await canvasRect(page).catch(() => null);
+    if (rect) {
+        for (const [index, [rx, ry]] of CANVAS_TAP_POINTS.entries()) {
+            await page.touchscreen.tap(rect.left + rect.width * rx, rect.top + rect.height * ry).catch(() => {});
+            await sleep(200);
+            if (index === 0) await shoot();
+        }
+        actions.push('точки по холсту');
+        for (let round = 0; round < 3; round++) {
+            for (const [rx, ry] of [[0.2, 0.6], [0.2, 0.75], [0.35, 0.6]]) {
+                await page.touchscreen.tap(rect.left + rect.width * rx, rect.top + rect.height * ry).catch(() => {});
+                await sleep(150);
+            }
+        }
+        actions.push('прыжки');
+    }
+    for (const point of [{ x: 195, y: 420 }, { x: 195, y: 500 }, { x: 195, y: 650 }, { x: 195, y: 750 }, { x: 100, y: 420 }]) {
         await page.touchscreen.tap(point.x, point.y).catch(() => {});
         await sleep(250);
     }
@@ -167,6 +247,7 @@ async function interact(page) {
         await page.keyboard.press(key).catch(() => {});
         await sleep(150);
     }
+    return actions;
 }
 
 async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
@@ -182,16 +263,23 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     page.on('requestfailed', (request) => failedRequests.push(`${request.url().slice(0, 120)} :: ${request.failure()?.errorText}`));
 
     const result = { errors: consoleErrors, pageErrors, failedRequests };
-    const runnableHtml = html.replace(/\{\{AI_BG_IMAGE\}\}/g, '');
+    const runnableHtml = stripRuntimeArtifacts(html);
     try {
         await page.setContent(runnableHtml, { waitUntil: 'domcontentloaded', timeout: pageLimitMs });
         await sleep(1500);
         result.before = await probeState(page);
         result.signatureBefore = await canvasSignature(page);
-        await interact(page);
-        await sleep(1200);
+        const capture = async () => {
+            const probe = await probeState(page).catch(() => null);
+            if (result.screenshot && probe && probe.menuVisible === false) return;
+            result.screenshot = outPath.replace(/\.html$/i, '.png');
+            await page.screenshot({ path: result.screenshot });
+        };
+        result.actions = await interact(page, capture);
+        await sleep(600);
         result.after = await probeState(page);
         result.signatureAfter = await canvasSignature(page);
+        result.started = result.before.menuVisible ? !result.after.menuVisible : null;
         result.changed = Boolean(
             result.signatureBefore && result.signatureAfter &&
             result.signatureBefore.hash !== result.signatureAfter.hash
@@ -208,8 +296,6 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
         result.dpr = await page.evaluate(() => window.devicePixelRatio);
         result.fps = await sampleFps(page);
         result.mainThread = await mainThread(page);
-        result.screenshot = outPath.replace(/\.html$/i, '.png');
-        await page.screenshot({ path: result.screenshot });
     } catch (error) {
         result.error = String(error && error.message || error);
     } finally {
@@ -299,12 +385,18 @@ async function run() {
 
     const report = {
         startedAt: new Date().toISOString(),
-        model: 'gemini-2.5-flash',
-        promptVersion: 'v3-quality-pipeline',
+        model: gemini.PRIMARY_MODEL,
+        fallbackModel: gemini.FALLBACK_MODEL,
+        promptVersion: bot.PROMPT_VERSION,
         prompts: [],
         engines: [],
         summary: {}
     };
+
+    const availableModels = await gemini.listModels();
+    if (availableModels.length) {
+        console.log(`Модели в доступе: ${availableModels.join(', ')}`);
+    }
 
     for (const prompt of prompts) {
         const record = { id: prompt.id, prompt: prompt.text };
@@ -317,6 +409,8 @@ async function run() {
             const generated = await bot.generateAIGame(prompt.text, 'mobile', { plan: plan.plan });
             if (!generated || !generated.code) throw new Error('модель не вернула полный HTML');
             record.generatedTokens = { input: generated.inputTokens, output: generated.outputTokens };
+            record.model = generated.model;
+            record.fallbackUsed = Boolean(generated.fallbackUsed);
 
             const initial = bot.collectQualityIssues(generated.code, 'mobile');
             record.initialAudit = { score: initial.technicalScore, issues: initial.issues.map((i) => i.msg) };
@@ -332,6 +426,7 @@ async function run() {
                 score: quality.score,
                 technicalScore: quality.technicalScore,
                 criticScore: quality.criticScore,
+                criticNoVerdict: Boolean(quality.critic && quality.critic.noVerdict),
                 patched: quality.patched,
                 repaired: quality.repaired,
                 polished: quality.polished,
@@ -348,7 +443,8 @@ async function run() {
             }
             record.durationMs = Date.now() - started;
             console.log(`score=${quality.score} tech=${quality.technicalScore} critic=${quality.criticScore} ` +
-                (record.runtime ? `fps=${record.runtime.fps?.rafPerSec} errors=${record.runtime.pageErrors.length + record.runtime.errors.length} changed=${record.runtime.changed} ` : '') +
+                `model=${record.model}${record.fallbackUsed ? ' (fallback)' : ''} ` +
+                (record.runtime ? `fps=${record.runtime.fps?.rafPerSec} errors=${record.runtime.pageErrors.length + record.runtime.errors.length} started=${record.runtime.started} changed=${record.runtime.changed} ` : '') +
                 (record.vision ? `vision=${record.vision.score}` : ''));
         } catch (error) {
             record.error = String(error && error.stack || error);
@@ -366,21 +462,25 @@ async function run() {
 
     const completed = report.prompts.filter((p) => !p.error && p.pipeline);
     const withVision = completed.filter((p) => p.vision);
+    const withCritic = completed.filter((p) => typeof p.pipeline.criticScore === 'number');
     report.summary = {
         requested: prompts.length,
         completed: completed.length,
+        failed: report.prompts.length - completed.length,
         avgScore: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.score, 0) / completed.length) : 0,
         avgTechnical: completed.length ? Math.round(completed.reduce((sum, p) => sum + p.pipeline.technicalScore, 0) / completed.length) : 0,
-        avgCritic: completed.length && completed.some((p) => p.pipeline.criticScore !== null)
-            ? Math.round(completed.reduce((sum, p) => sum + (p.pipeline.criticScore || 0), 0) / completed.length)
-            : 0,
+        criticScored: withCritic.length,
+        criticUnavailable: completed.length - withCritic.length,
+        avgCritic: withCritic.length ? Math.round(withCritic.reduce((sum, p) => sum + p.pipeline.criticScore, 0) / withCritic.length) : 0,
         avgVisionScore: withVision.length ? Math.round(withVision.reduce((sum, p) => sum + p.vision.score, 0) / withVision.length) : 0,
         patched: completed.filter((p) => p.pipeline.patched).length,
         polished: completed.filter((p) => p.pipeline.polished).length,
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
         avgRafPerSec: completed.filter(p => p.runtime && p.runtime.fps)
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
-        changedGames: completed.filter(p => p.runtime && p.runtime.changed).length
+        changedGames: completed.filter(p => p.runtime && p.runtime.changed).length,
+        startedGames: completed.filter(p => p.runtime && p.runtime.started === true).length,
+        fallbackUsed: completed.filter(p => p.fallbackUsed).length
     };
     report.finishedAt = new Date().toISOString();
 
@@ -411,7 +511,11 @@ async function run() {
     process.exit(exitCode);
 }
 
-run().catch((error) => {
-    console.error(error && error.stack || error);
-    process.exit(1);
-});
+module.exports = { isStartLabel, stripRuntimeArtifacts, browserCheck, findChrome, PROMPTS };
+
+if (require.main === module) {
+    run().catch((error) => {
+        console.error(error && error.stack || error);
+        process.exit(1);
+    });
+}

@@ -78,7 +78,7 @@ const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
 const MAX_DEVICE_PIXEL_RATIO = Math.min(Math.max(Number(process.env.MAX_DEVICE_PIXEL_RATIO) || 2, 1), 3);
-const PROMPT_VERSION = 'v3-quality-pipeline';
+const PROMPT_VERSION = 'v4-quality-pipeline';
 const QUALITY_CRITIC_ENABLED = String(process.env.QUALITY_CRITIC_ENABLED || 'true') === 'true';
 const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 80));
 const QUALITY_POLISH_ENABLED = String(process.env.QUALITY_POLISH_ENABLED || 'true') === 'true';
@@ -253,7 +253,8 @@ const SYSTEM_INSTRUCTION = {
             "12. UX: крупная кнопка старта, одна строка с управлением, пауза, экран Game Over со счётом и кнопкой «Заново». Игрок должен понимать цель без внешней инструкции.",
             "13. Визуальная система: палитра 5–6 цветов, 3 слоя фона с параллаксом, объекты из 2–3 геометрических слоёв с обводкой и бликом, единый HUD. Фото-фон — только подложка, поверх него нужен плотный градиент/силуэты.",
             "14. Технические ловушки: не смешивай CSS-пиксели и backing-пиксели canvas; не присваивай значения переменным const; лимит частиц должен реально соблюдаться в функции спавна; полноэкранный оверлей не должен перекрывать ввод без pointer-events:none.",
-            "15. Перед ответом мысленно запусти игру на экране 390×844: старт нажимается, все объекты в кадре, HUD читается, частицы и враги не растут без предела."
+            "15. Перед ответом мысленно запусти игру на экране 390×844: старт нажимается, все объекты в кадре, HUD читается, частицы и враги не растут без предела.",
+            "16. Первые 1–1.5 секунды после старта игрок должен быть в безопасности: не спавни врагов и препятствия ближе чем за 300 px от игрока и не ставь игрока на путь первого препятствия. Игра не должна закончиться раньше, чем игрок успеет сделать первое осмысленное действие."
         ].join('\n')
     }]
 };
@@ -666,6 +667,9 @@ async function runQualityPipeline(code, options = {}) {
             });
             report.critic = critic;
             report.criticScore = critic.score;
+            if (critic.noVerdict) {
+                console.warn(`[Качество] Критик не дал вердикта (${critic.reason}) — оцениваю по техническому аудиту`);
+            }
 
             const criticIssues = criticToIssues(critic);
             if (criticIssues.some((issue) => issue.level === 'critical')) {
@@ -682,12 +686,24 @@ async function runQualityPipeline(code, options = {}) {
                 }
             }
 
-            if (QUALITY_POLISH_ENABLED && critic.score < QUALITY_CRITIC_MIN_SCORE) {
+            if (!QUALITY_POLISH_ENABLED) {
+                console.log('[Качество] Полиш выключен');
+            } else if (typeof critic.score !== 'number') {
+                console.log('[Качество] Полиш пропущен: у критика нет оценки');
+            } else if (critic.score >= QUALITY_CRITIC_MIN_SCORE) {
+                console.log(`[Качество] Полиш не требуется: оценка ${critic.score} >= ${QUALITY_CRITIC_MIN_SCORE}`);
+            } else {
                 try {
                     const polished = await polishGameCode(currentCode, critic, { platform, keepBackground: true });
-                    if (polished.code && /<\/html>/i.test(polished.code)) {
+                    if (!polished.code || !/<\/html>/i.test(polished.code)) {
+                        console.log('[Качество] Полиш отклонён: модель вернула неполный HTML');
+                    } else {
                         const after = collectQualityIssues(polished.code, platform);
-                        if (!after.criticals.length && after.technicalScore >= current.technicalScore) {
+                        if (after.criticals.length) {
+                            console.log(`[Качество] Полиш отклонён: осталось критичных замечаний (${after.criticals.length})`);
+                        } else if (after.technicalScore < current.technicalScore) {
+                            console.log(`[Качество] Полиш отклонён: технический балл упал ${current.technicalScore} → ${after.technicalScore}`);
+                        } else {
                             currentCode = polished.code;
                             current = after;
                             report.polished = true;
@@ -814,8 +830,11 @@ async function generateAIGame(userPrompt, platform = 'pc', options = {}, maxRetr
         }
 
         if (!isFinished) return null;
+        const rawCode = stripCodeMarkers(fullCode);
+        const bgMatch = rawCode.match(/\[BG:\s*([^\]]+)\]/i);
         return {
-            code: stripCodeMarkers(fullCode),
+            code: rawCode.replace(/\[BG:\s*([^\]]+)\]/i, '').trim(),
+            bgKeyword: bgMatch && bgMatch[1] ? sanitizeText(bgMatch[1], 60) : null,
             inputTokens,
             outputTokens,
             model: usedModel || gemini.PRIMARY_MODEL,
@@ -2205,7 +2224,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         let gameCode = '';
         let totalInputTokens = 0;
         let totalOutputTokens = 0;
-        let generatedModel = 'gemini-2.5-flash';
+        let generatedModel = gemini.PRIMARY_MODEL;
+        let generatedBgKeyword = '';
         let gameTitle = cleanPrompt;
         let usedHybrid = false;
 
@@ -2232,6 +2252,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             totalInputTokens = generated.inputTokens + planResult.inputTokens;
             totalOutputTokens = generated.outputTokens + planResult.outputTokens;
             generatedModel = generated.model;
+            generatedBgKeyword = generated.bgKeyword || '';
             gameCode = generated.code;
         }
 
@@ -2295,7 +2316,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             ].join('\n'), { parse_mode: 'HTML' });
         } catch (e) {}
 
-        let bgKeyword = 'fantasy landscape';
+        let bgKeyword = generatedBgKeyword || 'fantasy landscape';
         const bgMatch = gameCode.match(/\[BG:\s*([^\]]+)\]/i);
         if (bgMatch && bgMatch[1]) {
             bgKeyword = sanitizeText(bgMatch[1], 60) || bgKeyword;
@@ -3230,6 +3251,8 @@ module.exports = {
     repairGameCode,
     runQualityPipeline,
     collectQualityIssues,
+    PROMPT_VERSION,
+    SYSTEM_INSTRUCTION,
     loadReference,
     sanitizeReference
 };

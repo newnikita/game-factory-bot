@@ -43,9 +43,9 @@ services:
       - key: GEMINI_DANGEROUS_THRESHOLD
         value: BLOCK_ONLY_HIGH
       - key: GEMINI_MODEL
-        value: "gemini-2.5-flash"
+        value: "gemini-3.8-flash"
       - key: GEMINI_FALLBACK_MODEL
-        value: "gemini-2.0-flash"
+        value: "gemini-2.5-flash"
       - key: GEMINI_MAX_ATTEMPTS
         value: "3"
       - key: QUALITY_CRITIC_ENABLED

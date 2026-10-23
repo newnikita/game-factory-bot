@@ -122,3 +122,22 @@ test('runQualityPipeline смешивает технический балл и �
         gemini.generateJson = originalJson;
     }
 });
+
+test('runQualityPipeline без вердикта критика не штрафует и не полирует', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    let generateCalls = 0;
+    gemini.generate = async () => { generateCalls += 1; throw new Error('модель недоступна'); };
+    gemini.generateJson = async () => ({ data: null, raw: 'не json', usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
+        assert.equal(report.criticScore, null);
+        assert.equal(report.critic.noVerdict, true);
+        assert.equal(report.score, report.technicalScore);
+        assert.equal(report.polished, false);
+        assert.equal(generateCalls, 0, 'полиш не должен запускаться без оценки');
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});

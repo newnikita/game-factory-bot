@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vision = require('../lib/game-vision');
+const gemini = require('../lib/gemini');
 
 test('normalizeCritic приводит оценку к шкале 0-100', () => {
     assert.equal(vision.normalizeCritic({ score: 87 }).score, 87);
@@ -77,4 +78,44 @@ test('buildReviewPrompt включает замысел, план и платф�
 
 test('buildReviewPrompt для ПК просит мышь и клавиатуру', () => {
     assert.match(vision.buildReviewPrompt({ platform: 'pc' }), /ПК/);
+});
+
+test('buildCriticResult без разбора JSON не даёт оценки', () => {
+    const critic = vision.buildCriticResult(null);
+    assert.equal(critic.score, null);
+    assert.equal(critic.noVerdict, true);
+    assert.equal(critic.reason, 'json_unparsed');
+    assert.deepEqual(critic.issues, []);
+});
+
+test('buildCriticResult без поля score не даёт оценки', () => {
+    const critic = vision.buildCriticResult({ issues: [{ level: 'warning', msg: 'медленно' }] });
+    assert.equal(critic.score, null);
+    assert.equal(critic.noVerdict, true);
+    assert.equal(critic.reason, 'no_score');
+});
+
+test('buildCriticResult с оценкой работает как раньше', () => {
+    const critic = vision.buildCriticResult({ score: 87, issues: [{ level: 'critical', msg: 'сломано' }] });
+    assert.equal(critic.score, 87);
+    assert.equal(critic.noVerdict, false);
+    assert.equal(critic.issues.length, 1);
+});
+
+test('buildCriticResult сохраняет модель и расход токенов', () => {
+    const critic = vision.buildCriticResult({ score: 50 }, { model: 'test-model', usage: { inputTokens: 3 } });
+    assert.equal(critic.model, 'test-model');
+    assert.equal(critic.usage.inputTokens, 3);
+});
+
+test('reviewCode при нечитаемом ответе отдаёт null вместо нуля', async () => {
+    const original = gemini.generateJson;
+    gemini.generateJson = async () => ({ data: null, raw: 'просто текст', usage: {}, model: 'test' });
+    try {
+        const critic = await vision.reviewCode('<html></html>', { platform: 'mobile' });
+        assert.equal(critic.score, null);
+        assert.equal(critic.noVerdict, true);
+    } finally {
+        gemini.generateJson = original;
+    }
 });

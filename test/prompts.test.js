@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildGenerationPrompt } = require('../bot');
+const { buildGenerationPrompt, SYSTEM_INSTRUCTION, PROMPT_VERSION } = require('../bot');
 
 test('generation-промпт содержит жанровый рецепт и технический контракт', () => {
     const prompt = buildGenerationPrompt('Защити ворота замка от драконов', 'mobile', {
@@ -31,4 +31,14 @@ test('generation-промпт сохраняет план и идею польз
     assert.match(prompt, /=== ПЛАН ИГРЫ/);
     assert.match(prompt, /Фишка: ускорение/);
     assert.match(prompt, /Идея пользователя важнее рецепта/);
+});
+
+test('системная инструкция требует безопасного старта', () => {
+    const text = SYSTEM_INSTRUCTION.parts.map((part) => part.text).join('\n');
+    assert.match(text, /Первые 1–1\.5 секунды после старта/);
+    assert.match(text, /300 px от игрока/);
+});
+
+test('версия промпта помечена', () => {
+    assert.match(PROMPT_VERSION, /^v\d+-quality-pipeline$/);
 });

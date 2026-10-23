@@ -5,6 +5,7 @@ const dns = require('dns');
 const https = require('https');
 const axios = require('axios');
 const gemini = require('../lib/gemini');
+const { auditCanvasHud } = require('../lib/canvas-hud');
 
 function installDnsFallback() {
     const cache = new Map();
@@ -284,18 +285,25 @@ async function hudLayoutIssues(page) {
                 if (!text || text.length > 60) continue;
                 const style = getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden') continue;
-                const fontSize = parseFloat(style.fontSize) || 16;
                 const rect = el.getBoundingClientRect();
                 if (rect.width < 1 || rect.height < 1) continue;
-                if (rect.height <= fontSize * 1.7) continue;
-                const childWrapped = [...el.children].some((child) => {
-                    const childStyle = getComputedStyle(child);
-                    const childRect = child.getBoundingClientRect();
-                    const childFont = parseFloat(childStyle.fontSize) || 16;
-                    return childRect.height > childFont * 1.7;
-                });
-                if (childWrapped) continue;
-                issues.add(`подпись «${text.slice(0, 30)}» переносится на вторую строку (${Math.round(rect.height)}px при шрифте ${Math.round(fontSize)}px)`);
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const boxes = [...range.getClientRects()]
+                    .filter((box) => box.width > 0.5 && box.height > 0.5)
+                    .sort((a, b) => a.top - b.top);
+                let lines = 0;
+                let lineBottom = -Infinity;
+                for (const box of boxes) {
+                    if (box.top >= lineBottom - 1) {
+                        lines += 1;
+                        lineBottom = box.bottom;
+                    } else {
+                        lineBottom = Math.max(lineBottom, box.bottom);
+                    }
+                }
+                if (lines <= 1) continue;
+                issues.add(`подпись «${text.slice(0, 30)}» переносится на вторую строку (строк: ${lines}, высота ${Math.round(rect.height)}px)`);
             }
         }
         return [...issues];
@@ -316,6 +324,7 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
 
     const result = { errors: consoleErrors, pageErrors, failedRequests };
     const runnableHtml = stripRuntimeArtifacts(html);
+    const canvasHudIssues = auditCanvasHud(runnableHtml).issues.map((issue) => issue.msg);
     try {
         await page.setContent(runnableHtml, { waitUntil: 'domcontentloaded', timeout: pageLimitMs });
         await sleep(1500);
@@ -358,7 +367,10 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
             result.screenshot = shotPath;
             result.playShot = true;
             result.screenshotKind = hidden ? 'overlay-hidden' : 'play';
-            result.hudIssues = await hudLayoutIssues(page).catch(() => []);
+            result.hudIssues = [...new Set([
+                ...(await hudLayoutIssues(page).catch(() => [])),
+                ...canvasHudIssues
+            ])];
             return true;
         };
         result.actions = await interact(page, capture);

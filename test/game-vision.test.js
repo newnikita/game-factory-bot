@@ -287,6 +287,21 @@ loop();
     assert.ok(critic.criteria.hud <= 40, `сломанный HUD должен потерять баллы, получено ${critic.criteria.hud}`);
 });
 
+test('localCritic опускает HUD-критерий при наезде подписей на canvas', () => {
+    const overlapped = `<!DOCTYPE html><html><body><canvas id="game"></canvas><script>
+const ctx = document.getElementById('game').getContext('2d');
+ctx.font = 'bold 14px system-ui';
+ctx.textAlign = 'center';
+ctx.fillText('СЧЕТ:', width / 2 - 35, 32);
+ctx.fillText(\`\${score}\`, width / 2 + 25, 32);
+ctx.textAlign = 'right';
+ctx.fillText('ЗАМОК:', width - 115, 32);
+</script></body></html>`;
+    const critic = vision.localCritic(auditVisuals(overlapped), auditGame(overlapped, 'mobile'));
+    assert.ok(critic.criteria.hud <= 40, `наезд подписей должен понизить HUD-критерий, получено ${critic.criteria.hud}`);
+    assert.ok(critic.issues.some((issue) => issue.code === 'hud_overlap'));
+});
+
 test('reviewScreenshot без независимого судьи помечает самооценку модели-автора', async () => {
     const originalGenerate = gemini.generateJson;
     const originalJudge = gemini.judgeModels;

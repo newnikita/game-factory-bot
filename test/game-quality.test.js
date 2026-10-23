@@ -195,3 +195,74 @@ test('кнопка старта не считается фоновым слое�
     assert.equal(visual.features.layers, false, 'start-btn не должен считаться слоем');
     assert.ok(visual.issues.some((issue) => issue.code === 'flat_background'));
 });
+
+const HUD_OVERLAP_GAME = `
+    ${canvas}
+    <script>
+        const ctx = document.getElementById('game').getContext('2d');
+        function drawHud() {
+            ctx.font = 'bold 14px system-ui';
+            ctx.textAlign = 'left';
+            ctx.fillText('ВОЛНА:', 15, 32);
+            ctx.textAlign = 'center';
+            ctx.fillText('СЧЕТ:', width / 2 - 35, 32);
+            ctx.fillText(\`\${score}\`, width / 2 + 25, 32);
+            ctx.textAlign = 'right';
+            ctx.fillText('ЗАМОК:', width - 115, 32);
+        }
+    </script>`;
+
+const HUD_CLEAR_GAME = `
+    ${canvas}
+    <script>
+        const ctx = document.getElementById('game').getContext('2d');
+        function drawHud() {
+            ctx.font = 'bold 14px system-ui';
+            ctx.textAlign = 'left';
+            ctx.fillText('ВОЛНА:', 15, 32);
+            ctx.textAlign = 'center';
+            ctx.fillText('СЧЕТ:', width / 2 - 35, 32);
+            ctx.textAlign = 'right';
+            ctx.fillText('ЗАМОК:', width - 115, 32);
+        }
+    </script>`;
+
+const HUD_TRANSLATED_GAME = `
+    ${canvas}
+    <script>
+        const ctx = document.getElementById('game').getContext('2d');
+        function drawPickup(c) {
+            ctx.save();
+            ctx.translate(c.x + c.w / 2, c.y + c.h / 2);
+            ctx.font = 'bold 12px system-ui';
+            ctx.textAlign = 'center';
+            ctx.fillText('S', 0, 0);
+            ctx.fillText('¢', 0, 0);
+            ctx.restore();
+        }
+    </script>`;
+
+test('аудит ловит наезд подписей HUD друг на друга', () => {
+    const visual = auditVisuals(HUD_OVERLAP_GAME);
+    const issue = visual.issues.find((item) => item.code === 'hud_overlap');
+    assert.ok(issue, 'ожидалось замечание о наезде подписей HUD');
+    assert.match(issue.msg, /ЗАМОК/);
+    assert.ok(issue.fix.length > 10);
+});
+
+test('разнесённые подписи HUD не считаются наездом', () => {
+    const visual = auditVisuals(HUD_CLEAR_GAME);
+    assert.equal(visual.issues.some((item) => item.code === 'hud_overlap'), false);
+});
+
+test('текст в сдвинутой системе координат не считается HUD', () => {
+    const visual = auditVisuals(HUD_TRANSLATED_GAME);
+    assert.equal(visual.issues.some((item) => item.code === 'hud_overlap'), false);
+});
+
+test('наезд подписей HUD снижает визуальную оценку', () => {
+    const overlap = auditVisuals(HUD_OVERLAP_GAME);
+    const clear = auditVisuals(HUD_CLEAR_GAME);
+    assert.ok(overlap.score < clear.score);
+    assert.equal(overlap.features.hudOverlap, true);
+});

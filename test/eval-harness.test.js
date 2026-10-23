@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { isStartLabel, stripRuntimeArtifacts, compareWithBaseline, browserCheck, findChrome } = require('../scripts/eval-games');
+const { isStartLabel, stripRuntimeArtifacts, compareWithBaseline, browserCheck, findChrome, hudLayoutIssues } = require('../scripts/eval-games');
 
 test('stripRuntimeArtifacts убирает плейсхолдер фона и маркер [BG:]', () => {
     const html = '<html><body><canvas id="g"></canvas>\n[BG: Neon Tokyo Skyline]\n</body></html>';
@@ -232,4 +232,64 @@ test('A/B гейт сравнивает игры с одинаковым ист�
     const comparison = compareWithBaseline(baseline, current);
     assert.equal(comparison.exitCode, 1);
     assert.match(comparison.errors.join('\n'), /game0: 90 → 80/);
+});
+
+const HUD_CHIP_GAME = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+body{margin:0;background:#111}
+#hud-container{position:absolute;top:12px;left:15px;right:70px;display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:800}
+.hud-item{background:rgba(10,10,30,.7);border:1px solid rgba(0,243,255,.3);padding:4px 8px;border-radius:6px;display:flex;gap:4px;align-items:center;white-space:nowrap}
+.hud-label{color:#88a0c0;font-size:11px}
+.hud-val{color:#00f3ff}
+</style></head><body>
+<div id="hud-container">
+  <div class="hud-item"><span class="hud-label">СЧЕТ</span><span class="hud-val">76</span></div>
+  <div class="hud-item"><span class="hud-label">ЦЕЛЬ</span><span class="hud-val">15%</span></div>
+</div>
+<canvas id="g"></canvas>
+</body></html>`;
+
+const HUD_WRAPPED_GAME = HUD_CHIP_GAME
+    .replace('white-space:nowrap', '')
+    .replace('display:flex;gap:4px;align-items:center;', '')
+    .replace('<span class="hud-label">СЧЕТ</span><span class="hud-val">76</span>', '<span class="hud-label">СЧЕТ </span><span class="hud-val">7600</span>')
+    .replace('.hud-item{', '.hud-item{width:32px;');
+
+async function hudIssuesOf(html) {
+    const chrome = findChrome();
+    if (!chrome) return null;
+    let puppeteer;
+    try {
+        puppeteer = require('puppeteer-core');
+    } catch (error) {
+        return null;
+    }
+    const browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    try {
+        const page = await browser.newPage();
+        await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+        await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return await hudLayoutIssues(page);
+    } finally {
+        await browser.close();
+    }
+}
+
+test('HUD с отступами и рамкой не считается переносом подписи', async (t) => {
+    const issues = await hudIssuesOf(HUD_CHIP_GAME);
+    if (issues === null) {
+        t.skip('Chrome не найден — проверка HUD пропущена');
+        return;
+    }
+    assert.deepEqual(issues, [], 'одиночная строка с паддингом не должна считаться переносом');
+});
+
+test('HUD с реальным переносом подписи помечается', async (t) => {
+    const issues = await hudIssuesOf(HUD_WRAPPED_GAME);
+    if (issues === null) {
+        t.skip('Chrome не найден — проверка HUD пропущена');
+        return;
+    }
+    assert.equal(issues.length, 1, `ожидалось одно замечание, получено ${JSON.stringify(issues)}`);
+    assert.match(issues[0], /переносится на вторую строку/);
 });

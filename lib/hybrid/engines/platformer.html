@@ -530,19 +530,48 @@ function buildBackground() {
     bctx.fillStyle = sky;
     bctx.fillRect(0, 0, viewWidth, viewHeight);
 
-    const rng = mulberry32(hashString((SPEC.title || 'bg') + 'layers'));
-    for (let layer = 0; layer < 3; layer++) {
-        const alpha = 0.35 + layer * 0.2;
-        const baseY = groundY - 60 + layer * 40;
-        const step = 90 - layer * 22;
-        const tint = layer === 0 ? '12,20,32' : (layer === 1 ? '18,34,40' : '26,52,42');
-        bctx.fillStyle = 'rgba(' + tint + ',' + alpha + ')';
+    const rng = mulberry32(hashString((SPEC.title || 'bg') + 'sky'));
+    const starTop = Math.max(40, groundY - 220);
+
+    for (let i = 0; i < 110; i++) {
+        const x = rng() * viewWidth;
+        const y = rng() * starTop;
+        const radius = 0.5 + rng() * 1.5;
+        bctx.fillStyle = 'rgba(255,255,255,' + (0.08 + rng() * 0.3).toFixed(3) + ')';
+        bctx.beginPath();
+        bctx.arc(x, y, radius, 0, Math.PI * 2);
+        bctx.fill();
+    }
+
+    const moonX = viewWidth * 0.72;
+    const moonY = Math.max(52, viewHeight * 0.14);
+    const halo = bctx.createRadialGradient(moonX, moonY, 4, moonX, moonY, 130);
+    halo.addColorStop(0, withAlpha(COLORS.reward, 0.34));
+    halo.addColorStop(0.45, withAlpha(COLORS.reward, 0.12));
+    halo.addColorStop(1, withAlpha(COLORS.reward, 0));
+    bctx.fillStyle = halo;
+    bctx.beginPath();
+    bctx.arc(moonX, moonY, 130, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.fillStyle = withAlpha(COLORS.reward, 0.9);
+    bctx.beginPath();
+    bctx.arc(moonX, moonY, 21, 0, Math.PI * 2);
+    bctx.fill();
+
+    const LAYERS = [
+        { baseY: groundY - 30, min: 150, max: 330, tint: '12,20,32', alpha: 0.32 },
+        { baseY: groundY - 10, min: 90, max: 210, tint: '18,34,40', alpha: 0.42 },
+        { baseY: groundY + 10, min: 40, max: 120, tint: '26,52,42', alpha: 0.5 }
+    ];
+    for (const layer of LAYERS) {
+        const step = 92 - LAYERS.indexOf(layer) * 22;
+        bctx.fillStyle = 'rgba(' + layer.tint + ',' + layer.alpha + ')';
         bctx.beginPath();
         bctx.moveTo(0, viewHeight);
         for (let x = 0; x <= viewWidth + step; x += step) {
-            const peak = baseY - (40 + rng() * 90) * (1 - layer * 0.2);
+            const peak = layer.baseY - (layer.min + rng() * (layer.max - layer.min));
             bctx.lineTo(x, peak);
-            bctx.lineTo(x + step / 2, peak + 30 + rng() * 40);
+            bctx.lineTo(x + step / 2, peak + 26 + rng() * 46);
         }
         bctx.lineTo(viewWidth + step, viewHeight);
         bctx.closePath();
@@ -918,6 +947,6 @@ window.gameState = state.mode;
 setInterval(function () { window.gameState = state.mode; }, 200);
 requestAnimationFrame(frame);
 </script>
-{{BG_LINE}}
+<span hidden aria-hidden="true">{{BG_LINE}}</span>
 </body>
 </html>

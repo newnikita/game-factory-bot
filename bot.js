@@ -58,6 +58,7 @@ const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabe
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
+const { repairTdzErrors } = require('./lib/tdz-repair');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
 const { reviewCode, criticToIssues, localCritic } = require('./lib/game-vision');
 const hybrid = require('./lib/hybrid');
@@ -569,6 +570,19 @@ async function repairGameCode(code, issues, platform, options = {}) {
         ];
     let current = code;
     let currentIssues = issues;
+
+    // Часть поломок чинится без модели: переменная объявлена ниже, чем её
+    // используют. Такую игру LLM чинит запросом к API, а квота может быть исчерпана.
+    const hasRuntimeIssue = currentIssues.some((issue) => /падает при загрузке|зависает при загрузке/.test(issue.msg));
+    if (hasRuntimeIssue) {
+        const tdz = repairTdzErrors(current);
+        if (tdz.changed) {
+            current = tdz.code;
+            currentIssues = validateGameCode(current, platform);
+            console.log(`[Ремонт] Объявления перенесены выше вызова: ${tdz.fixes.map((fix) => fix.variable).join(', ')}`);
+        }
+    }
+
     for (let round = 1; round <= 2; round++) {
         const criticals = currentIssues.filter(i => i.level === 'critical');
         if (!criticals.length) break;
@@ -631,6 +645,7 @@ async function runQualityPipeline(code, options = {}) {
         polished: false,
         polishModel: null,
         criticRepaired: false,
+        tdzRepaired: 0,
         critic: null,
         criticScore: null,
         criticSource: null,
@@ -648,6 +663,19 @@ async function runQualityPipeline(code, options = {}) {
     report.technicalScore = current.technicalScore;
     report.visualScore = current.visual.score;
     report.visualScoreBefore = current.visual.score;
+
+    if (current.criticals.length) {
+        // Сначала детерминированный ремонт: он бесплатный и снимает
+        // падение при загрузке, не тратя квоту Gemini.
+        const tdz = repairTdzErrors(currentCode);
+        if (tdz.changed) {
+            const after = collectQualityIssues(tdz.code, platform);
+            currentCode = tdz.code;
+            current = after;
+            report.tdzRepaired = tdz.fixes.length;
+            console.log(`[Качество] Детерминированный ремонт: перенесены ${tdz.fixes.map((fix) => fix.variable).join(', ')}`);
+        }
+    }
 
     if (current.criticals.length) {
         try {
@@ -2415,6 +2443,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             patched: quality.patched,
             polished: quality.polished,
             polishModel: quality.polishModel === undefined ? null : quality.polishModel,
+            tdzRepaired: quality.tdzRepaired || 0,
             issues: quality.issueCodes,
             visualIssues: quality.visualIssues || []
         });

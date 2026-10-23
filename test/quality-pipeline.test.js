@@ -20,6 +20,28 @@ loop();
 
 const BROKEN_GAME = '<html><body><div>нет canvas</div></body></html>';
 
+// Игра падает при загрузке: слой объявлен ниже, чем его использует initParallax.
+const CRASHED_GAME = `<!DOCTYPE html>
+<html><head><style>body{margin:0}</style></head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let state = 'menu';
+// состояния: menu, game over, restart
+function resize() { canvas.width = canvas.clientWidth; }
+window.addEventListener('pointerdown', () => { state = 'play'; });
+function initParallax() {
+    bgBuildingsFar.length = 0;
+}
+initParallax();
+const bgBuildingsFar = [];
+function loop() { requestAnimationFrame(loop); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+loop();
+</script>
+</body></html>`;
+
 const RICH_GAME = `<!DOCTYPE html>
 <html><head><style>body{margin:0}</style></head>
 <body>
@@ -73,6 +95,39 @@ test('collectQualityIssues собирает валидацию и аудит в�
 test('collectQualityIssues на чистой игре не находит критичных замечаний', () => {
     const result = bot.collectQualityIssues(GOOD_GAME, 'mobile');
     assert.equal(result.criticals.length, 0);
+});
+
+test('runQualityPipeline чинит падение при загрузке без обращения к модели', async () => {
+    const original = gemini.generate;
+    const originalJson = gemini.generateJson;
+    gemini.generate = async () => { throw new Error('модель недоступна'); };
+    gemini.generateJson = async () => ({ data: { score: 90, issues: [] }, usage: {}, model: 'test' });
+    try {
+        const report = await bot.runQualityPipeline(CRASHED_GAME, { platform: 'mobile' });
+        assert.equal(report.tdzRepaired, 1, 'объявление должно быть перенесено детерминированно');
+        assert.equal(report.patched, false, 'модель не нужна для починки порядка объявлений');
+        assert.equal(report.repaired, false);
+        assert.equal(report.issues.filter((issue) => issue.level === 'critical').length, 0);
+        assert.ok(report.code.indexOf('const bgBuildingsFar') < report.code.indexOf('initParallax();'));
+    } finally {
+        gemini.generate = original;
+        gemini.generateJson = originalJson;
+    }
+});
+
+test('repairGameCode закрывает падение при загрузке без запроса к модели', async () => {
+    const original = gemini.generate;
+    let generateCalls = 0;
+    gemini.generate = async () => { generateCalls += 1; throw new Error('модель недоступна'); };
+    try {
+        const issues = bot.validateGameCode(CRASHED_GAME, 'mobile');
+        assert.ok(issues.some((issue) => issue.level === 'critical'), 'падение должно быть критичным');
+        const result = await bot.repairGameCode(CRASHED_GAME, issues, 'mobile');
+        assert.equal(result.issues.filter((issue) => issue.level === 'critical').length, 0);
+        assert.equal(generateCalls, 0, 'ремонт не должен тратить квоту');
+    } finally {
+        gemini.generate = original;
+    }
 });
 
 test('runQualityPipeline без модели оценивает игру по автоматическому аудиту', async () => {

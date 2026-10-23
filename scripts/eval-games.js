@@ -167,7 +167,7 @@ async function probeState(page) {
         };
         const menus = [...document.querySelectorAll('#menu, .menu, .overlay, #start-screen, #startScreen')];
         result.visibleOverlays = menus.filter(isVisible).length;
-        const startScreen = document.querySelector('#menu-overlay, #menu, #start-screen, #startScreen');
+        const startScreen = document.querySelector('#menu-overlay, #menu, #start-screen, #startScreen, .start-screen, .menu');
         result.menuVisible = startScreen ? isVisible(startScreen) : null;
         return result;
     });

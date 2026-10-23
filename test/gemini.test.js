@@ -45,6 +45,20 @@ test('extractText помечает заблокированный ответ', (
     assert.equal(result.text, '');
 });
 
+test('extractText отбрасывает служебные части с размышлениями модели', () => {
+    const result = gemini.extractText({
+        candidates: [{
+            content: {
+                parts: [
+                    { text: 'размышление: что нарисовать', thought: true },
+                    { text: '<!DOCTYPE html>' }
+                ]
+            }
+        }]
+    });
+    assert.equal(result.text, '<!DOCTYPE html>');
+});
+
 test('GeminiError хранит статус и флаг повторяемости', () => {
     const error = new gemini.GeminiError('лимит', { status: 429, retryable: true, model: 'gemini-2.5-flash' });
     assert.equal(error.name, 'GeminiError');

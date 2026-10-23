@@ -367,10 +367,20 @@ function compareWithBaseline(baseline, report) {
     const baseById = new Map((baseline.prompts || [])
         .filter((prompt) => prompt && prompt.pipeline && !prompt.error)
         .map((prompt) => [prompt.id, prompt.pipeline.score]));
+    const baseModelById = new Map((baseline.prompts || [])
+        .filter((prompt) => prompt && prompt.pipeline && !prompt.error)
+        .map((prompt) => [prompt.id, prompt.model]));
     const regressions = [];
+    let compared = 0;
     for (const prompt of completed) {
         const baseScore = baseById.get(prompt.id);
         if (typeof baseScore !== 'number') continue;
+        const baseModel = baseModelById.get(prompt.id);
+        if (baseModel && prompt.model && baseModel !== prompt.model) {
+            lines.push(`  ${prompt.id}: не сопоставимо — модель ${baseModel} → ${prompt.model}`);
+            continue;
+        }
+        compared += 1;
         const gameDelta = prompt.pipeline.score - baseScore;
         lines.push(`  ${prompt.id}: ${baseScore} → ${prompt.pipeline.score} (Δ ${gameDelta >= 0 ? '+' : ''}${gameDelta})`);
         if (gameDelta < -SCORE_TOLERANCE) regressions.push(`${prompt.id}: ${baseScore} → ${prompt.pipeline.score}`);
@@ -378,6 +388,8 @@ function compareWithBaseline(baseline, report) {
 
     if (regressions.length) {
         errors.push(`❌ Качество упало по играм: ${regressions.join(', ')}`);
+    } else if (!compared) {
+        lines.push('  Сопоставимых с baseline игр нет — сравнение качества не выполнялось.');
     } else if (delta < -SCORE_TOLERANCE) {
         errors.push('❌ Качество упало относительно baseline.');
     }
@@ -425,6 +437,7 @@ async function run() {
         startedAt: new Date().toISOString(),
         model: gemini.PRIMARY_MODEL,
         fallbackModel: gemini.FALLBACK_MODEL,
+        modelChain: gemini.MODEL_CHAIN,
         promptVersion: bot.PROMPT_VERSION,
         prompts: [],
         engines: [],
@@ -518,7 +531,8 @@ async function run() {
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
         changedGames: completed.filter(p => p.runtime && p.runtime.changed).length,
         startedGames: completed.filter(p => p.runtime && p.runtime.started === true).length,
-        fallbackUsed: completed.filter(p => p.fallbackUsed).length
+        fallbackUsed: completed.filter(p => p.fallbackUsed).length,
+        apiCalls: gemini.getApiCallCount()
     };
     report.finishedAt = new Date().toISOString();
 

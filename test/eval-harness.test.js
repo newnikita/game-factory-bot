@@ -75,3 +75,17 @@ test('A/B гейт считает неполный прогон невалидн
     assert.equal(comparison.exitCode, 1);
     assert.match(comparison.errors.join('\n'), /Прогон неполный/);
 });
+
+test('A/B гейт не сравнивает игры, сделанные разными моделями', () => {
+    const baseline = {
+        summary: { avgScore: 90, completed: 1 },
+        prompts: [{ id: 'game0', model: 'model-a', pipeline: { score: 90 } }]
+    };
+    const current = {
+        summary: { avgScore: 40, completed: 1 },
+        prompts: [{ id: 'game0', model: 'model-b', pipeline: { score: 40 } }]
+    };
+    const comparison = compareWithBaseline(baseline, current);
+    assert.equal(comparison.exitCode, 0);
+    assert.match(comparison.lines.join('\n'), /не сопоставимо/);
+});

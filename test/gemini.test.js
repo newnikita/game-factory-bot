@@ -210,4 +210,46 @@ test('модели по умолчанию живы и различаются', 
     assert.notEqual(gemini.PRIMARY_MODEL, gemini.FALLBACK_MODEL);
     assert.ok(gemini.PRIMARY_MODEL.startsWith('gemini-'));
     assert.ok(gemini.FALLBACK_MODEL.startsWith('gemini-'));
+    assert.ok(gemini.MODEL_CHAIN.length >= 2);
+});
+
+test('модель с исчерпанной дневной квотой выключается из цепочки', async () => {
+    const quotaError = new Error('Quota exceeded for metric: generate_content_free_tier_requests, limit: 20, '
+        + 'description: Generate content requests per day limit exceeded on Free Tier.');
+    quotaError.response = { status: 429, data: { error: { message: quotaError.message } } };
+    const calls = [];
+    const restore = withStubbedPost(async (url) => {
+        calls.push(url);
+        if (calls.length === 1) throw quotaError;
+        return { status: 200, data: { candidates: [{ content: { parts: [{ text: 'ответ' }] } }] } };
+    });
+    try {
+        const result = await gemini.generate({ contents: [], models: ['model-a', 'model-b'] });
+        assert.equal(result.text, 'ответ');
+        assert.equal(result.fallbackUsed, true);
+        assert.equal(calls.length, 2);
+        assert.equal(gemini.getModelState('model-a').exhausted, true);
+    } finally {
+        await restore();
+    }
+});
+
+test('счётчик запросов Gemini растёт', async () => {
+    const before = gemini.getApiCallCount();
+    const restore = withStubbedPost(async () => ({
+        status: 200,
+        data: { candidates: [{ content: { parts: [{ text: 'ответ' }] } }] }
+    }));
+    try {
+        await gemini.generate({ contents: [], models: ['model-c'] });
+        assert.equal(gemini.getApiCallCount(), before + 1);
+    } finally {
+        await restore();
+    }
+});
+
+test('время ожидания квоты разбирается из ответа API', () => {
+    assert.equal(Math.round(gemini.parseRetryDelaySeconds('Please retry in 19h25m58.679820436s.')), 69959);
+    assert.equal(Math.round(gemini.parseRetryDelaySeconds('Please retry in 45s.')), 45);
+    assert.equal(gemini.parseRetryDelaySeconds('без подсказки'), null);
 });

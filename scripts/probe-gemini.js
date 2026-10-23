@@ -1,4 +1,5 @@
 const https = require('https');
+const { MODEL_CHAIN } = require('../lib/gemini');
 
 const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
 if (!apiKey) {
@@ -6,42 +7,44 @@ if (!apiKey) {
     process.exit(1);
 }
 
-const model = process.env.GEMINI_PROBE_MODEL || 'gemini-2.5-flash';
-const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
-const body = JSON.stringify({
-    contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
-    generationConfig: { maxOutputTokens: 8 }
-});
-
 function redact(text) {
-    return String(text).split(apiKey).join('***').slice(0, 600);
+    return String(text).split(apiKey).join('***').slice(0, 400);
 }
 
-const request = https.request(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-}, (response) => {
-    let data = '';
-    response.on('data', (chunk) => { data += chunk; });
-    response.on('end', () => {
-        console.log(`Пробный запрос к ${model}: статус ${response.statusCode}`);
-        console.log(redact(data));
-        if (response.statusCode === 429 || response.statusCode === 403) {
-            console.error(`::error::Gemini API отклонил пробный запрос (${response.statusCode}) — прогон бессмыслен, детали выше.`);
-            process.exit(1);
-        }
-        if (response.statusCode >= 500) {
-            console.error(`::error::Gemini API вернул ${response.statusCode} — прогон бессмыслен, детали выше.`);
-            process.exit(1);
-        }
-        process.exit(0);
+function probe(model) {
+    return new Promise((resolve) => {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+        const body = JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+            generationConfig: { maxOutputTokens: 8 }
+        });
+        const request = https.request(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        }, (response) => {
+            let data = '';
+            response.on('data', (chunk) => { data += chunk; });
+            response.on('end', () => resolve({ model, status: response.statusCode, body: data }));
+        });
+        request.on('error', (error) => resolve({ model, status: 0, body: error.message }));
+        request.write(body);
+        request.end();
     });
-});
+}
 
-request.on('error', (error) => {
-    console.error('::error::Пробный запрос не прошёл:', error.message);
-    process.exit(1);
-});
-
-request.write(body);
-request.end();
+(async () => {
+    const working = [];
+    for (const model of MODEL_CHAIN) {
+        const result = await probe(model);
+        const ok = result.status === 200;
+        console.log(`${ok ? 'OK' : 'ОТКАЗ'} ${model}: статус ${result.status}`);
+        if (!ok) console.log(redact(result.body));
+        if (ok) working.push(model);
+    }
+    console.log(`Рабочие модели: ${working.length ? working.join(', ') : 'нет'}`);
+    if (!working.length) {
+        console.error('::error::Ни одна модель Gemini не отвечает — прогон бессмыслен, детали выше.');
+        process.exit(1);
+    }
+    process.exit(0);
+})();

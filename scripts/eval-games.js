@@ -437,6 +437,7 @@ async function run() {
     const report = {
         startedAt: new Date().toISOString(),
         model: gemini.PRIMARY_MODEL,
+        primaryModel: gemini.PRIMARY_MODEL,
         fallbackModel: gemini.FALLBACK_MODEL,
         modelChain: gemini.MODEL_CHAIN,
         promptVersion: bot.PROMPT_VERSION,
@@ -521,6 +522,10 @@ async function run() {
     const completed = report.prompts.filter((p) => !p.error && p.pipeline);
     const withVision = completed.filter((p) => p.vision);
     const withCritic = completed.filter((p) => typeof p.pipeline.criticScore === 'number');
+    const modelsUsed = [...new Set(completed.map((p) => p.model).filter(Boolean))];
+    report.modelsUsed = modelsUsed;
+    if (modelsUsed.length === 1) report.model = modelsUsed[0];
+    else if (modelsUsed.length > 1) report.model = modelsUsed.join(', ');
     report.summary = {
         requested: prompts.length,
         completed: completed.length,
@@ -538,7 +543,8 @@ async function run() {
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
         changedGames: completed.filter(p => p.runtime && p.runtime.changed).length,
         startedGames: completed.filter(p => p.runtime && p.runtime.started === true).length,
-        fallbackUsed: completed.filter(p => p.fallbackUsed).length,
+        fallbackUsed: completed.filter((p) => p.model && p.model !== gemini.PRIMARY_MODEL).length,
+        modelsUsed,
         apiCalls: gemini.getApiCallCount()
     };
     report.finishedAt = new Date().toISOString();

@@ -41,6 +41,8 @@ const PROMPTS = [
     { id: 'racing', text: 'Гонка на ховербайке по пустыне: успей к финишу и не разбейся.' }
 ];
 
+const SCORE_TOLERANCE = 5;
+
 function parseArgs(argv) {
     const args = { limit: 3, out: 'eval-output', browser: true, only: null, engines: false, baseline: null, failBelow: 0 };
     for (let i = 2; i < argv.length; i++) {
@@ -346,6 +348,42 @@ async function runEngines(browser, bot, outDir) {
     return results;
 }
 
+function compareWithBaseline(baseline, report) {
+    const baseSummary = (baseline && baseline.summary) || {};
+    const base = baseSummary.avgScore || 0;
+    const baseCompleted = baseSummary.completed || 0;
+    const completed = (report.prompts || []).filter((prompt) => prompt && prompt.pipeline && !prompt.error);
+    const lines = [];
+    const errors = [];
+
+    if (completed.length < baseCompleted) {
+        errors.push(`❌ Прогон неполный: ${completed.length} игр против ${baseCompleted} в baseline — сравнение качества невалидно.`);
+        return { exitCode: 1, lines, errors };
+    }
+
+    const delta = report.summary.avgScore - base;
+    lines.push(`Baseline: средний ${base} → сейчас ${report.summary.avgScore} (Δ ${delta >= 0 ? '+' : ''}${delta})`);
+
+    const baseById = new Map((baseline.prompts || [])
+        .filter((prompt) => prompt && prompt.pipeline && !prompt.error)
+        .map((prompt) => [prompt.id, prompt.pipeline.score]));
+    const regressions = [];
+    for (const prompt of completed) {
+        const baseScore = baseById.get(prompt.id);
+        if (typeof baseScore !== 'number') continue;
+        const gameDelta = prompt.pipeline.score - baseScore;
+        lines.push(`  ${prompt.id}: ${baseScore} → ${prompt.pipeline.score} (Δ ${gameDelta >= 0 ? '+' : ''}${gameDelta})`);
+        if (gameDelta < -SCORE_TOLERANCE) regressions.push(`${prompt.id}: ${baseScore} → ${prompt.pipeline.score}`);
+    }
+
+    if (regressions.length) {
+        errors.push(`❌ Качество упало по играм: ${regressions.join(', ')}`);
+    } else if (delta < -SCORE_TOLERANCE) {
+        errors.push('❌ Качество упало относительно baseline.');
+    }
+    return { exitCode: errors.length ? 1 : 0, lines, errors };
+}
+
 async function run() {
     const args = parseArgs(process.argv);
     installDnsFallback();
@@ -497,20 +535,10 @@ async function run() {
     if (args.baseline && fs.existsSync(args.baseline)) {
         try {
             const baseline = JSON.parse(fs.readFileSync(args.baseline, 'utf8'));
-            const baseSummary = baseline.summary || {};
-            const base = baseSummary.avgScore || 0;
-            const baseCompleted = baseSummary.completed || 0;
-            if (report.summary.completed < baseCompleted) {
-                console.error(`❌ Прогон неполный: ${report.summary.completed} игр против ${baseCompleted} в baseline — сравнение качества невалидно.`);
-                exitCode = 1;
-            } else {
-                const delta = report.summary.avgScore - base;
-                console.log(`\nBaseline: ${base} → сейчас ${report.summary.avgScore} (Δ ${delta >= 0 ? '+' : ''}${delta})`);
-                if (delta < 0) {
-                    console.error('❌ Качество упало относительно baseline.');
-                    exitCode = 1;
-                }
-            }
+            const comparison = compareWithBaseline(baseline, report);
+            for (const line of comparison.lines) console.log(line);
+            for (const error of comparison.errors) console.error(error);
+            if (comparison.exitCode) exitCode = comparison.exitCode;
         } catch (error) {
             console.error('Не удалось прочитать baseline:', error.message);
         }
@@ -518,7 +546,7 @@ async function run() {
     process.exit(exitCode);
 }
 
-module.exports = { isStartLabel, stripRuntimeArtifacts, browserCheck, findChrome, PROMPTS };
+module.exports = { isStartLabel, stripRuntimeArtifacts, browserCheck, findChrome, compareWithBaseline, PROMPTS };
 
 if (require.main === module) {
     run().catch((error) => {

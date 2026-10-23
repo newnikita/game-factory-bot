@@ -1729,6 +1729,9 @@ bot.command('stats', async (ctx) => {
             quality.topIssues.length
                 ? 'Частые замечания: ' + quality.topIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
                 : 'Частых замечаний нет',
+            quality.topVisualIssues && quality.topVisualIssues.length
+                ? 'Частые дефекты графики: ' + quality.topVisualIssues.map((item) => `${item.code}×${item.occurrences}`).join(', ')
+                : '',
             ...(quality.byVersion.length > 1
                 ? ['Версии: ' + quality.byVersion.map((item) => `${item.version} ${item.avgScore}/100 (${item.count})`).join(', ')]
                 : [])
@@ -2350,7 +2353,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             visualScore: quality.visualScore === undefined ? null : quality.visualScore,
             patched: quality.patched,
             polished: quality.polished,
-            issues: quality.issueCodes
+            issues: quality.issueCodes,
+            visualIssues: quality.visualIssues || []
         });
 
         try {

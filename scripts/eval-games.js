@@ -61,6 +61,11 @@ function parseArgs(argv) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const START_LABEL_SOURCE = '^(начать|играть|старт|start|play|begin|resume|продолжить|заново)([\\s!,.…:—-]|$)';
+const OVERLAY_SELECTOR = [
+    '#menu', '.menu', '.overlay', '#start-screen', '#startScreen',
+    '#game-over', '#gameover', '.game-over', '.gameover',
+    '#end-screen', '#endScreen', '.end-screen', '#pause-screen', '#pauseScreen'
+].join(', ');
 const CANVAS_TAP_POINTS = [
     [0.5, 0.58], [0.5, 0.5], [0.5, 0.62], [0.5, 0.42], [0.25, 0.5], [0.75, 0.5]
 ];
@@ -152,7 +157,7 @@ async function canvasSignature(page) {
 }
 
 async function probeState(page) {
-    return page.evaluate(() => {
+    return page.evaluate((overlaySelector) => {
         const result = {};
         for (const name of ['gameState', 'gameStatus', 'currentState', 'state', 'game']) {
             try {
@@ -167,12 +172,12 @@ async function probeState(page) {
             const style = getComputedStyle(el);
             return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0.05;
         };
-        const menus = [...document.querySelectorAll('#menu, .menu, .overlay, #start-screen, #startScreen')];
+        const menus = [...document.querySelectorAll(overlaySelector)];
         result.visibleOverlays = menus.filter(isVisible).length;
         const startScreen = document.querySelector('#menu-overlay, #menu, #start-screen, #startScreen, .start-screen, .menu');
         result.menuVisible = startScreen ? isVisible(startScreen) : null;
         return result;
-    });
+    }, OVERLAY_SELECTOR);
 }
 
 async function findStartTarget(page) {
@@ -221,7 +226,7 @@ async function interact(page, capture) {
     if (target) {
         await page.touchscreen.tap(target.x, target.y).catch(() => {});
         actions.push(`кнопка старта «${target.label}»`);
-        await sleep(120);
+        await sleep(2000);
         await shoot();
         await sleep(400);
     }
@@ -260,16 +265,22 @@ async function hudLayoutIssues(page) {
             const rootStyle = getComputedStyle(root);
             if (rootStyle.display === 'none' || rootStyle.visibility === 'hidden') continue;
             for (const el of root.querySelectorAll('*')) {
-                const text = String(el.textContent || '').trim();
+                const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
                 if (!text || text.length > 60) continue;
                 const style = getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden') continue;
                 const fontSize = parseFloat(style.fontSize) || 16;
                 const rect = el.getBoundingClientRect();
                 if (rect.width < 1 || rect.height < 1) continue;
-                if (rect.height > fontSize * 1.7) {
-                    issues.add(`подпись «${text.slice(0, 30)}» переносится на вторую строку (${Math.round(rect.height)}px при шрифте ${Math.round(fontSize)}px)`);
-                }
+                if (rect.height <= fontSize * 1.7) continue;
+                const childWrapped = [...el.children].some((child) => {
+                    const childStyle = getComputedStyle(child);
+                    const childRect = child.getBoundingClientRect();
+                    const childFont = parseFloat(childStyle.fontSize) || 16;
+                    return childRect.height > childFont * 1.7;
+                });
+                if (childWrapped) continue;
+                issues.add(`подпись «${text.slice(0, 30)}» переносится на вторую строку (${Math.round(rect.height)}px при шрифте ${Math.round(fontSize)}px)`);
             }
         }
         return [...issues];
@@ -295,19 +306,52 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
         await sleep(1500);
         result.before = await probeState(page);
         result.signatureBefore = await canvasSignature(page);
+        const shotPath = outPath.replace(/\.html$/i, '.png');
+        const hideOverlays = () => page.evaluate((selector) => {
+            window.__evalHidden = [];
+            for (const node of document.querySelectorAll(selector)) {
+                const style = getComputedStyle(node);
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) <= 0.05) continue;
+                window.__evalHidden.push({ node, opacity: style.opacity });
+                node.style.opacity = '0';
+            }
+            return window.__evalHidden.length;
+        }, OVERLAY_SELECTOR);
+        const restoreOverlays = () => page.evaluate(() => {
+            for (const item of (window.__evalHidden || [])) item.node.style.opacity = item.opacity;
+            window.__evalHidden = [];
+        });
         const capture = async () => {
+            if (result.playShot) return true;
             const probe = await probeState(page).catch(() => null);
-            if (result.screenshot && probe && probe.menuVisible === false) return;
-            result.screenshot = outPath.replace(/\.html$/i, '.png');
-            await page.screenshot({ path: result.screenshot });
+            const signature = await canvasSignature(page).catch(() => null);
+            const blank = Boolean(signature && signature.nonBlank === 0);
+            if (blank) result.renderBlank = true;
+            const overlayVisible = Boolean(probe && (probe.visibleOverlays > 0 || probe.menuVisible === true));
+            let hidden = 0;
+            if (overlayVisible) {
+                hidden = await hideOverlays().catch(() => 0);
+                if (!hidden) return false;
+                await sleep(150);
+            }
+            if (blank) {
+                if (hidden) await restoreOverlays().catch(() => {});
+                return false;
+            }
+            await page.screenshot({ path: shotPath });
+            if (hidden) await restoreOverlays().catch(() => {});
+            result.screenshot = shotPath;
+            result.playShot = true;
+            result.screenshotKind = hidden ? 'overlay-hidden' : 'play';
+            result.hudIssues = await hudLayoutIssues(page).catch(() => []);
+            return true;
         };
         result.actions = await interact(page, capture);
         await sleep(1500);
         result.after = await probeState(page);
-        result.hudIssues = await hudLayoutIssues(page).catch(() => []);
-        if (result.screenshot && result.after && result.after.menuVisible === false) {
-            await page.screenshot({ path: result.screenshot });
-        }
+        const lateHud = await hudLayoutIssues(page).catch(() => []);
+        result.hudIssues = [...new Set([...(result.hudIssues || []), ...lateHud])];
+        if (!result.playShot) await capture();
         result.signatureAfter = await canvasSignature(page);
         result.started = result.before.menuVisible ? !result.after.menuVisible : null;
         result.changed = Boolean(
@@ -335,7 +379,7 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
 }
 
 async function reviewScreenshotFile(bot, filePath, brief) {
-    if (!fs.existsSync(filePath)) return null;
+    if (!filePath || !fs.existsSync(filePath)) return null;
     try {
         const buffer = fs.readFileSync(filePath);
         const { reviewScreenshot } = require('../lib/game-vision');
@@ -514,7 +558,8 @@ async function run() {
                 patched: quality.patched,
                 repaired: quality.repaired,
                 polished: quality.polished,
-                issues: quality.issueCodes
+                issues: quality.issueCodes,
+                visualIssues: quality.visualIssues || []
             };
             record.finalAudit = { score: quality.technicalScore, issues: quality.issues.map((i) => i.msg) };
             record.bytes = Buffer.byteLength(code);
@@ -574,6 +619,12 @@ async function run() {
         polished: completed.filter((p) => p.pipeline.polished).length,
         runtimeErrors: completed.filter(p => p.runtime && (p.runtime.pageErrors.length || p.runtime.errors.length)).length,
         hudIssues: completed.reduce((sum, p) => sum + (p.runtime && p.runtime.hudIssues ? p.runtime.hudIssues.length : 0), 0),
+        screenshotKinds: completed.reduce((acc, p) => {
+            const kind = p.runtime && p.runtime.screenshotKind;
+            if (kind) acc[kind] = (acc[kind] || 0) + 1;
+            return acc;
+        }, {}),
+        blankRenders: completed.filter(p => p.runtime && p.runtime.renderBlank).length,
         avgRafPerSec: completed.filter(p => p.runtime && p.runtime.fps)
             .reduce((sum, p, _, list) => sum + p.runtime.fps.rafPerSec / list.length, 0) || 0,
         changedGames: completed.filter(p => p.runtime && p.runtime.changed).length,
@@ -612,7 +663,7 @@ async function run() {
     process.exit(exitCode);
 }
 
-module.exports = { isStartLabel, stripRuntimeArtifacts, browserCheck, findChrome, compareWithBaseline, PROMPTS };
+module.exports = { isStartLabel, stripRuntimeArtifacts, browserCheck, findChrome, compareWithBaseline, hudLayoutIssues, PROMPTS };
 
 if (require.main === module) {
     run().catch((error) => {

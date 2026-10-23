@@ -101,6 +101,8 @@ jobs:
               ["Отполировано", s.polished || 0],
               ["Ошибок в рантайме", s.runtimeErrors || 0],
               ["Дефекты HUD", s.hudIssues || 0],
+              ["Кадры", JSON.stringify(s.screenshotKinds || {})],
+              ["Пустой рендер", s.blankRenders || 0],
               ["Стартовали", (s.startedGames || 0) + " из " + (s.completed || 0)],
               ["FPS (raf/s)", Math.round((s.avgRafPerSec || 0) * 10) / 10]
             ];

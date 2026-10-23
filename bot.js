@@ -754,6 +754,7 @@ async function runQualityPipeline(code, options = {}) {
         msg: issue.msg
     }));
     report.issueCodes = report.issues.map((issue) => issue.code || issue.msg).slice(0, 12);
+    report.visualIssues = current.visual.issues.map((issue) => issue.code);
     const effectiveScore = report.effectiveCriticScore === null
         ? null
         : Math.min(report.effectiveCriticScore, current.visual.ceiling);
@@ -2310,11 +2311,13 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         if (usedHybrid) {
             const audit = auditGame(gameCode, platform);
             const validation = validateGameCode(gameCode, platform).filter((issue) => !/клавиатура/i.test(issue.msg));
+            const visual = auditVisuals(gameCode);
             quality = {
                 code: gameCode,
                 technicalScore: audit.score,
                 criticScore: null,
-                visualScore: auditVisuals(gameCode).score,
+                visualScore: visual.score,
+                visualIssues: visual.issues.map((issue) => issue.code),
                 score: audit.score,
                 patched: false,
                 polished: false,

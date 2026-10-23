@@ -45,9 +45,12 @@ function drawParallaxLayer(offset) {
     ctx.fill();
 }
 function drawHero() {
+    ctx.shadowColor = '#00f3ff';
+    ctx.shadowBlur = 12;
     ctx.beginPath();
     ctx.arc(200, 300, 18, 0, Math.PI * 2);
     ctx.fill();
+    ctx.shadowBlur = 0;
     ctx.save();
     ctx.rotate(Math.sin(performance.now() / 400) * 0.2);
     ctx.restore();
@@ -174,7 +177,7 @@ test('runQualityPipeline урезает оценку критика по ауд�
         const report = await bot.runQualityPipeline(GOOD_GAME, { platform: 'mobile' });
         assert.equal(report.criticScore, 95);
         assert.ok(report.visualScore < 60, 'плоская графика должна получить низкий визуальный балл');
-        assert.equal(report.effectiveCriticScore, report.visualScore);
+        assert.equal(report.effectiveCriticScore, Math.max(45, report.visualScore));
         assert.ok(report.effectiveCriticScore < 95);
         assert.equal(report.polished, true, 'плоская графика обязана уйти в полиш');
         assert.equal(report.score, Math.round(report.technicalScore * 0.6 + report.effectiveCriticScore * 0.4));

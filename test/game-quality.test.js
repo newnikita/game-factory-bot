@@ -135,9 +135,12 @@ const RICH_GAME = `
             ctx.fill();
         }
         function drawHero() {
+            ctx.shadowColor = '#00f3ff';
+            ctx.shadowBlur = 12;
             ctx.beginPath();
             ctx.arc(200, 300, 18, 0, Math.PI * 2);
             ctx.fill();
+            ctx.shadowBlur = 0;
             ctx.save();
             ctx.rotate(Math.sin(performance.now() / 400) * 0.2);
             ctx.restore();
@@ -178,4 +181,17 @@ test('потолок визуальной оценки не опускается
 test('визуальный аудит выносит подсказки по исправлению', () => {
     const visual = auditVisuals(FLAT_GAME);
     assert.ok(visual.issues.every((issue) => typeof issue.fix === 'string' && issue.fix.length > 10));
+});
+
+test('визуальный аудит ругается на графику без теней и свечения', () => {
+    const visual = auditVisuals(RICH_GAME.replace('ctx.shadowColor = \'#00f3ff\';', '').replace('ctx.shadowBlur = 12;', '').replace('ctx.shadowBlur = 0;', ''));
+    assert.ok(visual.issues.some((issue) => issue.code === 'no_depth'));
+    assert.ok(visual.score < 100);
+});
+
+test('кнопка старта не считается фоновым слоем', () => {
+    const flatWithButton = FLAT_GAME.replace('<canvas id="game"></canvas>', '<canvas id="game"></canvas><button id="start-btn">Играть</button>');
+    const visual = auditVisuals(flatWithButton);
+    assert.equal(visual.features.layers, false, 'start-btn не должен считаться слоем');
+    assert.ok(visual.issues.some((issue) => issue.code === 'flat_background'));
 });

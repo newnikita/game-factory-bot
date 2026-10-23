@@ -1,8 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { isStartLabel, stripRuntimeArtifacts, compareWithBaseline } = require('../scripts/eval-games');
+const { isStartLabel, stripRuntimeArtifacts, compareWithBaseline, browserCheck, findChrome } = require('../scripts/eval-games');
 
 test('stripRuntimeArtifacts убирает плейсхолдер фона и маркер [BG:]', () => {
     const html = '<html><body><canvas id="g"></canvas>\n[BG: Neon Tokyo Skyline]\n</body></html>';
@@ -89,3 +91,88 @@ test('A/B гейт не сравнивает игры, сделанные раз
     assert.equal(comparison.exitCode, 0);
     assert.match(comparison.lines.join('\n'), /не сопоставимо/);
 });
+
+const PLAY_FRAME_GAME = `<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; background: #000; }
+canvas { display: block; width: 100vw; height: 100vh; }
+#start-btn { position: fixed; top: 40%; left: 30%; z-index: 5; font: 20px sans-serif; padding: 12px 24px; }
+#game-over { position: fixed; inset: 0; background: #ffffff; color: #000; font: 24px sans-serif; display: none; }
+</style></head>
+<body>
+<canvas id="g"></canvas>
+<div id="game-over">СИСТЕМНЫЙ СБОЙ</div>
+<button id="start-btn">Играть</button>
+<script>
+const ctx = document.getElementById('g').getContext('2d');
+let started = false;
+function start() {
+    if (started) return;
+    started = true;
+    document.getElementById('start-btn').style.display = 'none';
+    setTimeout(() => { document.getElementById('game-over').style.display = 'block'; }, 4000);
+}
+document.addEventListener('pointerdown', start);
+function loop() {
+    requestAnimationFrame(loop);
+    ctx.fillStyle = started ? '#00ff00' : '#000088';
+    ctx.fillRect(0, 0, 100, 100);
+}
+loop();
+</script>
+</body></html>`;
+
+test('browserCheck снимает игровой кадр, а не экран проигрыша', async (t) => {
+    const chrome = findChrome();
+    if (!chrome) {
+        t.skip('Chrome не найден — проверка кадра пропущена');
+        return;
+    }
+    let puppeteer;
+    try {
+        puppeteer = require('puppeteer-core');
+    } catch (error) {
+        t.skip('puppeteer-core не установлен');
+        return;
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gf-eval-'));
+    const htmlPath = path.join(dir, 'game.html');
+    fs.writeFileSync(htmlPath, PLAY_FRAME_GAME);
+
+    const browser = await puppeteer.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    try {
+        const result = await browserCheck(browser, PLAY_FRAME_GAME, htmlPath);
+        assert.ok(result.playShot, 'игровой кадр должен быть снят');
+        assert.equal(result.screenshotKind, 'play');
+        assert.ok(result.after.visibleOverlays > 0, 'к концу прогона экран проигрыша уже показан');
+
+        const shotPath = path.join(dir, 'game.png');
+        assert.ok(fs.existsSync(shotPath));
+        const pixel = await readPixel(browser, shotPath, 60, 60);
+        assert.ok(pixel.g > 120 && pixel.r < 120, `кадр должен быть игровым (зелёный фон), а не экраном проигрыша: ${JSON.stringify(pixel)}`);
+    } finally {
+        await browser.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+async function readPixel(browser, filePath, x, y) {
+    const page = await browser.newPage();
+    try {
+        const base64 = fs.readFileSync(filePath).toString('base64');
+        return await page.evaluate(async (data, px, py) => {
+            const image = new Image();
+            image.src = `data:image/png;base64,${data}`;
+            await image.decode();
+            const canvas = document.createElement('canvas');
+            canvas.width = image.width;
+            canvas.height = image.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(image, 0, 0);
+            const pixel = ctx.getImageData(px, py, 1, 1).data;
+            return { r: pixel[0], g: pixel[1], b: pixel[2] };
+        }, base64, x, y);
+    } finally {
+        await page.close();
+    }
+}

@@ -6,6 +6,7 @@ const https = require('https');
 const axios = require('axios');
 const gemini = require('../lib/gemini');
 const { auditCanvasHud } = require('../lib/canvas-hud');
+const { auditHudLayout } = require('../lib/hud-layout');
 
 function installDnsFallback() {
     const cache = new Map();
@@ -325,6 +326,7 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     const result = { errors: consoleErrors, pageErrors, failedRequests };
     const runnableHtml = stripRuntimeArtifacts(html);
     const canvasHudIssues = auditCanvasHud(runnableHtml).issues.map((issue) => issue.msg);
+    const domHudIssues = auditHudLayout(runnableHtml).issues.map((issue) => issue.msg);
     try {
         await page.setContent(runnableHtml, { waitUntil: 'domcontentloaded', timeout: pageLimitMs });
         await sleep(1500);
@@ -369,7 +371,8 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
             result.screenshotKind = hidden ? 'overlay-hidden' : 'play';
             result.hudIssues = [...new Set([
                 ...(await hudLayoutIssues(page).catch(() => [])),
-                ...canvasHudIssues
+                ...canvasHudIssues,
+                ...domHudIssues
             ])];
             return true;
         };

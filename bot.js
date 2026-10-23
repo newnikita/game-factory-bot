@@ -57,6 +57,7 @@ const {
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
+const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
 const { reviewCode, criticToIssues, localCritic } = require('./lib/game-vision');
 const hybrid = require('./lib/hybrid');
@@ -497,6 +498,7 @@ function validateGameCode(code, platform) {
 
     const scriptRe = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
     let m, idx = 0;
+    let syntaxFailed = false;
     while ((m = scriptRe.exec(code)) !== null) {
         const attrs = m[1] || '';
         if (/\ssrc\s*=/.test(attrs)) continue;
@@ -507,9 +509,20 @@ function validateGameCode(code, platform) {
         try {
             new vm.Script(js, { filename: 'game_' + idx + '.js' });
         } catch (e) {
+            syntaxFailed = true;
             critical('сбой JavaScript в скрипте #' + (idx + 1) + ': ' + e.message);
         }
         idx++;
+    }
+
+    // Игра может синтаксически быть в порядке, но падать при запуске:
+    // обращение к переменной до объявления, отсутствующий элемент, зависание.
+    // Такой код игрок видит как пустой экран, поэтому это критично.
+    if (!syntaxFailed) {
+        const runtime = checkRuntimeErrors(code);
+        for (const error of runtime.errors) {
+            critical(formatRuntimeIssue(error));
+        }
     }
     return issues;
 }

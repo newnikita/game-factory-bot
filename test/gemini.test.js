@@ -253,3 +253,66 @@ test('время ожидания квоты разбирается из отв�
     assert.equal(Math.round(gemini.parseRetryDelaySeconds('Please retry in 45s.')), 45);
     assert.equal(gemini.parseRetryDelaySeconds('без подсказки'), null);
 });
+
+function apiError(status, body) {
+    const error = new Error(`Request failed with status code ${status}`);
+    error.response = { status, data: { error: { code: status, message: body } } };
+    return error;
+}
+
+test('суточная квота определяется по окну восстановления даже без словосочетания per day', () => {
+    const body = 'You exceeded your current quota. * Quota exceeded for metric: '
+        + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20. '
+        + 'Please retry in 19h25m58.679820436s.';
+    assert.equal(gemini.isDailyQuotaError(apiError(429, body)), true);
+});
+
+test('поминутный лимит не считается суточной квотой', () => {
+    const body = 'You exceeded your current quota. * Quota exceeded for metric: '
+        + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10, '
+        + 'description: Generate content requests per minute limit exceeded on Free Tier. Please retry in 23s.';
+    assert.equal(gemini.isDailyQuotaError(apiError(429, body)), false);
+});
+
+test('выведенная из обращения модель отключается из цепочки', async () => {
+    const calls = [];
+    const restore = withStubbedPost(async (url) => {
+        calls.push(url);
+        if (calls.length === 1) {
+            throw apiError(404, 'This model models/gemini-retired is no longer available to new users. '
+                + 'Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements.');
+        }
+        return { status: 200, data: { candidates: [{ content: { parts: [{ text: 'ответ' }] } }] } };
+    });
+    try {
+        const result = await gemini.generate({ contents: [], models: ['model-retired', 'model-alive'] });
+        assert.equal(result.text, 'ответ');
+        assert.equal(calls.length, 2);
+        assert.equal(gemini.getModelState('model-retired').exhausted, true);
+    } finally {
+        await restore();
+    }
+});
+
+test('исчерпанная суточная квота помечает ошибку неповторяемой', async () => {
+    const restore = withStubbedPost(async () => {
+        throw apiError(429, 'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, '
+            + 'limit: 20, description: Generate content requests per day limit exceeded on Free Tier. '
+            + 'Please retry in 19h25m58.679820436s.');
+    });
+    try {
+        await assert.rejects(() => gemini.generate({ contents: [], models: ['model-daily'] }), (error) => {
+            assert.equal(error.status, 429);
+            assert.equal(error.retryable, false);
+            assert.equal(gemini.isQuotaExhaustedError(error), true);
+            return true;
+        });
+    } finally {
+        await restore();
+    }
+});
+
+test('цепочка моделей не содержит выведенных из обращения', () => {
+    assert.ok(!gemini.MODEL_CHAIN.includes('gemini-2.5-flash-lite'));
+    assert.ok(gemini.MODEL_CHAIN.includes('gemini-2.5-flash'));
+});

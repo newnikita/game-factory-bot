@@ -38,7 +38,12 @@ function probe(model) {
         const result = await probe(model);
         const ok = result.status === 200;
         console.log(`${ok ? 'OK' : 'ОТКАЗ'} ${model}: статус ${result.status}`);
-        if (!ok) console.log(redact(result.body));
+        if (!ok) {
+            console.log(redact(result.body));
+            if (result.status === 404) {
+                console.log(`::warning::Модель ${model} выведена из обращения — замени её в GEMINI_MODEL_CHAIN (lib/gemini.js и render.yaml).`);
+            }
+        }
         if (ok) working.push(model);
     }
     console.log(`Рабочие модели: ${working.length ? working.join(', ') : 'нет'}`);

@@ -413,6 +413,7 @@ async function run() {
     prompts = prompts.slice(0, Math.max(1, args.limit));
 
     let browser = null;
+    let aborted = null;
     if (args.browser) {
         const executablePath = findChrome();
         if (!executablePath) {
@@ -439,6 +440,7 @@ async function run() {
         fallbackModel: gemini.FALLBACK_MODEL,
         modelChain: gemini.MODEL_CHAIN,
         promptVersion: bot.PROMPT_VERSION,
+        aborted: null,
         prompts: [],
         engines: [],
         summary: {}
@@ -501,8 +503,13 @@ async function run() {
             record.error = String(error && error.stack || error);
             record.durationMs = Date.now() - started;
             console.error('FAILED:', error.message);
+            if (gemini.isQuotaExhaustedError(error)) {
+                aborted = `Квота Gemini исчерпана: ${error.message}. Остальные игры пропущены.`;
+                console.error(aborted);
+            }
         }
         report.prompts.push(record);
+        if (aborted) break;
     }
 
     if (args.engines) {
@@ -542,6 +549,10 @@ async function run() {
     console.log(JSON.stringify(report.summary, null, 2));
 
     let exitCode = 0;
+    if (aborted) {
+        console.error(`\n❌ Прогон прерван: ${aborted}`);
+        exitCode = 1;
+    }
     if (args.failBelow && report.summary.avgScore < args.failBelow) {
         console.error(`\n❌ Регрессия: средний score ${report.summary.avgScore} ниже порога ${args.failBelow}`);
         exitCode = 1;

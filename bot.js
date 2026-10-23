@@ -58,6 +58,7 @@ const {
     tryConsumeRateLimit
 } = require('./lib/security');
 const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabel } = require('./lib/plans');
+const { planRefund, REFUND_MODES } = require('./lib/refunds');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -141,10 +142,12 @@ function isAdmin(id) {
 
 async function notifyAdmins(text) {
     if (!ADMIN_IDS.length) return;
-    try {
-        await bot.telegram.sendMessage(ADMIN_IDS[0], text);
-    } catch (error) {
-        // Админ мог не начать диалог с ботом.
+    for (const adminId of ADMIN_IDS) {
+        try {
+            await bot.telegram.sendMessage(adminId, text);
+        } catch (error) {
+            console.error(`[Админы] Не удалось отправить ${adminId}:`, error.message);
+        }
     }
 }
 
@@ -1832,6 +1835,19 @@ bot.on('pre_checkout_query', async (ctx) => {
 });
 
 async function handleSuccessfulPayment(ctx, payment) {
+    try {
+        await processSuccessfulPayment(ctx, payment);
+    } catch (error) {
+        const chargeId = (payment && payment.telegram_payment_charge_id) || 'unknown';
+        console.error('[Платёж] Ошибка обработки:', error.message);
+        logEvent('payment_failed', ctx.from.id, { chargeId, reason: 'handler_error' });
+        await notifyAdmins(`🚨 Ошибка обработки платежа ${chargeId}: ${String(error.message || error).slice(0, 200)}`);
+        await ctx.reply('⚠️ Платёж получен, но начислить игры не удалось. Напиши в поддержку с идентификатором платежа — всё исправим.')
+            .catch(() => {});
+    }
+}
+
+async function processSuccessfulPayment(ctx, payment) {
     const chargeId = payment.telegram_payment_charge_id;
     if (!chargeId) return;
 
@@ -1862,9 +1878,8 @@ async function handleSuccessfulPayment(ctx, payment) {
     }
 
     const expiration = Number(payment.subscription_expiration_date);
-    const subscriptionUntil = Number.isFinite(expiration) && expiration > 0
-        ? new Date(expiration * 1000).toISOString()
-        : null;
+    const untilDate = Number.isFinite(expiration) && expiration > 0 ? new Date(expiration * 1000) : null;
+    const subscriptionUntil = untilDate && Number.isFinite(untilDate.getTime()) ? untilDate.toISOString() : null;
 
     const result = recordPayment({
         telegramId: ctx.from.id,
@@ -2121,28 +2136,80 @@ bot.command('grant', async (ctx) => {
 
 bot.command('refund', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
-    const chargeId = String(ctx.message.text || '').trim().split(/\s+/)[1];
-    if (!chargeId) return ctx.reply('Использование: /refund <telegram_payment_charge_id>');
+    const [, chargeId, modeRaw] = String(ctx.message.text || '').trim().split(/\s+/);
+    if (!chargeId) {
+        return ctx.reply([
+            'Использование:',
+            '<code>/refund <charge_id></code> — вернуть Stars',
+            '<code>/refund <charge_id> games</code> — вернуть игры без денег',
+            '<code>/refund <charge_id> force</code> — вернуть Stars даже если игры потрачены'
+        ].join('\n'), { parse_mode: 'HTML' });
+    }
+    const mode = String(modeRaw || '').toLowerCase();
+    if (mode && !REFUND_MODES.has(mode)) {
+        return ctx.reply('Режим неизвестен. Доступно: <code>games</code>, <code>force</code>.', { parse_mode: 'HTML' });
+    }
     const payment = getPaymentByChargeId(chargeId);
     if (!payment) return ctx.reply('Платёж не найден.');
     if (payment.status === 'refunded') return ctx.reply('Этот платёж уже возвращён.');
+
+    const granted = Math.max(0, Number(payment.games_granted) || 0);
+    const user = findUser(payment.telegram_id);
+    const balance = user ? Number(user.balance) : 0;
+    const decision = planRefund({ balance, gamesGranted: granted, mode });
+
+    if (decision.action === 'repair') {
+        if (granted <= 0) return ctx.reply('По этому платежу игры не начислялись.');
+        const ok = credit(payment.telegram_id, granted, 'refund_repair', `refund-repair:${chargeId}`);
+        if (!ok) return ctx.reply('Не удалось начислить игры: платёж уже починен или пользователя нет.');
+        logEvent('payment_repaired', payment.telegram_id, { chargeId, games: decision.games });
+        await ctx.reply(`Игры возвращены на баланс: ${gamesLabel(decision.games)}. Деньги не возвращались.`);
+        await bot.telegram.sendMessage(payment.telegram_id, `↩️ Восстановили ${gamesLabel(decision.games)} на баланс по техническому сбою.`)
+            .catch(() => {});
+        return;
+    }
+
+    if (decision.action === 'refuse') {
+        return ctx.reply([
+            '⚠️ Игры по этому платежу уже потрачены — баланс ниже начисленного.',
+            '',
+            `Начислено: ${gamesLabel(gamesFromBalance(granted))}, сейчас доступно: ${gamesLabel(gamesFromBalance(balance))}.`,
+            '',
+            'Вернуть игры без денег: <code>/refund ' + chargeId + ' games</code>',
+            'Вернуть Stars по решению администратора: <code>/refund ' + chargeId + ' force</code>'
+        ].join('\n'), { parse_mode: 'HTML' });
+    }
+
+    const remove = decision.remove;
+    if (remove > 0 && !debit(payment.telegram_id, remove, 'refund_reversal', `refund-reversal:${chargeId}`)) {
+        return ctx.reply('Не удалось списать игры по платежу. Возврат отменён.');
+    }
 
     try {
         await bot.telegram.callApi('refundStarPayment', {
             user_id: Number(payment.telegram_id),
             telegram_payment_charge_id: chargeId
         });
-        const user = findUser(payment.telegram_id);
-        const remove = Math.min(user ? user.balance : 0, Number(payment.games_granted) || 0);
-        if (remove > 0) debit(payment.telegram_id, remove, 'refund_reversal', `refund-reversal:${chargeId}`);
-        markPaymentRefunded(chargeId);
-        logEvent('payment_refunded', payment.telegram_id, { chargeId, remove });
-        await ctx.reply(`Возврат выполнен. Списано игр: ${gamesFromBalance(remove)}.`);
     } catch (error) {
+        if (remove > 0) {
+            try {
+                credit(payment.telegram_id, remove, 'refund_reversal_rollback', `refund-rollback:${chargeId}`);
+            } catch (rollbackError) {
+                console.error('[Возврат] Не удалось вернуть игры после сбоя:', rollbackError.message);
+            }
+        }
         console.error('[Возврат] Ошибка:', error.message);
         await notifyAdmins(`🚨 Ошибка возврата ${chargeId}: ${error.message}`);
-        await ctx.reply(`Не удалось выполнить возврат: ${error.message}`);
+        return ctx.reply(`Не удалось выполнить возврат: ${error.message}`);
     }
+
+    markPaymentRefunded(chargeId);
+    logEvent('payment_refunded', payment.telegram_id, { chargeId, remove, forced: decision.forced });
+    await ctx.reply(`Возврат выполнен. Списано игр: ${gamesFromBalance(remove)}.`);
+    await bot.telegram.sendMessage(
+        payment.telegram_id,
+        `↩️ Возврат оплаты: ${gamesFromBalance(remove) > 0 ? `списано ${gamesLabel(gamesFromBalance(remove))}` : 'игры не списаны'}.`
+    ).catch(() => {});
 });
 
 bot.action(/^report_(ai_[0-9]{10,20})$/, async (ctx) => {
@@ -2692,6 +2759,8 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             source: usedHybrid ? 'hybrid' : 'ai',
             htmlPath: `${gameId}.html`
         });
+        completed = true;
+        createdGameId = gameId;
         setGameVisualStatic(gameId, quality.visualScore);
         recordGeneration({
             id: generationId,
@@ -2721,8 +2790,6 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             score: quality.score,
             criticSource: quality.criticSource
         });
-        completed = true;
-        createdGameId = gameId;
 
         const referral = qualifyReferral(userId);
         await notifyReferralReward(referral);
@@ -2743,11 +2810,11 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             [Markup.button.callback('👍 Хорошо', `rate_ai_${gameId}_5`), Markup.button.callback('👎 Плохо', `rate_ai_${gameId}_1`)]
         ];
         if (!usedHybrid) {
-            kb.push([Markup.button.callback('✏️ Улучшить', `improve_ai_${gameId}`)]);
+            kb.push([Markup.button.callback(`✏️ Улучшить · ${gamesLabel(1)}`, `improve_ai_${gameId}`)]);
         }
         kb.push(
             [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
-            [Markup.button.callback('🔁 Перегенерировать', 'regen_ai')],
+            [Markup.button.callback(`🔁 Перегенерировать · ${gamesLabel(1)}`, 'regen_ai')],
             [Markup.button.callback('💳 Купить ещё', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         );
@@ -2758,7 +2825,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
             UI_DIVIDER,
             `🎮 Доступно: <b>${gamesLabel(userGames(fresh))}</b>`,
             '',
-            'Сыграй и нажми «✏️ Улучшить», чтобы изменить механику или сложность.'
+            `Сыграй и нажми «✏️ Улучшить» (${gamesLabel(1)}), чтобы изменить механику или сложность.`
         ].join('\n');
         await bot.telegram.editMessageText(chatId, msgId, null, msg, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
     } catch (err) {
@@ -2803,7 +2870,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         }
 
         const kb = [
-            [Markup.button.callback('🔄 Повторить', 'regen_ai')],
+            [Markup.button.callback(`🔄 Повторить · ${gamesLabel(1)}`, 'regen_ai')],
             [Markup.button.callback('💳 Купить игры', 'show_plans')],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
@@ -2843,7 +2910,7 @@ bot.action(/^improve_ai_(ai_[0-9]{10,20})$/, async (ctx) => {
     ctx.session.step = 'awaiting_improve_prompt';
     ctx.session.gameData.improveGameId = gameId;
     await ctx.editMessageText(
-        '✏️ Что улучшить в игре?\n\nНапиши одной фразой: «добавь бонусы», «сделай сложнее», «ускорь персонажа».\n\nСтоимость: 1 игра.',
+        `✏️ Что улучшить в игре?\n\nНапиши одной фразой: «добавь бонусы», «сделай сложнее», «ускорь персонажа».\n\nСтоимость: ${gamesLabel(1)}.`,
         Markup.inlineKeyboard([[Markup.button.callback('⬅️ Отмена', 'main_menu')]])
     ).catch(() => {});
 });
@@ -3046,7 +3113,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
         const url = publicGameUrl(gameId);
         const kb = [
             [Markup.button.webApp('🎮 ИГРАТЬ', url)],
-            [Markup.button.callback('✏️ Улучшить ещё', `improve_ai_${gameId}`)],
+            [Markup.button.callback(`✏️ Улучшить ещё · ${gamesLabel(1)}`, `improve_ai_${gameId}`)],
             [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
@@ -3102,7 +3169,7 @@ async function handleAIImprove(chatId, msgId, instruction, gameId, ctx) {
         monitor.recordGenerationFailed({ error: String(err.message || 'unknown').slice(0, 200) });
 
         const kb = [
-            [Markup.button.callback('🔄 Попробовать снова', `improve_ai_${gameId}`)],
+            [Markup.button.callback(`🔄 Попробовать снова · ${gamesLabel(1)}`, `improve_ai_${gameId}`)],
             [Markup.button.callback('🏠 Меню', 'main_menu')]
         ];
         const refundLine = refunded ? '\nИгра не списана — баланс восстановлен.' : '';
@@ -3184,7 +3251,8 @@ bot.on('text', async (ctx) => {
         await ctx.reply([
             '5️⃣ <b>Фон игры</b>',
             UI_DIVIDER,
-            'Можно оставить атмосферный фон стиля или загрузить своё фото.'
+            'Можно оставить атмосферный фон стиля или загрузить своё фото.',
+            `<i>Стоимость сборки: ${gamesLabel(1)}</i>`
         ].join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
     }
 });
@@ -3583,6 +3651,11 @@ async function start() {
     server.on('error', (err) => {
         console.error('❌ HTTP-сервер:', err.message);
         process.exit(1);
+    });
+
+    bot.catch((error, ctx) => {
+        console.error('[Ошибка обработчика]', error.message);
+        notifyAdmins(`🚨 Ошибка в обработчике${ctx && ctx.updateType ? ` (${ctx.updateType})` : ''}: ${String(error.message || error).slice(0, 200)}`);
     });
 
     bot.launch().catch((err) => {

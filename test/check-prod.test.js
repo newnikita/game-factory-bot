@@ -19,6 +19,7 @@ function health(overrides) {
             legal_missing: []
         },
         gemini: { generation_available: true, reason: 'генерации доступны' },
+        telegram: { mode: 'webhook', webhook_url: 'https://example.com/telegram/webhook', pending_updates: 0, last_error: null },
         snapshots: { enabled: false, configured: false, requested: true, last_snapshot_at: null, last_error: null },
         alerts: [],
         ...overrides
@@ -52,6 +53,18 @@ test('снапшоты в R2 на Free-плане проходят провер�
     const names = report.warnings.map((item) => item.name);
     assert.ok(names.includes('постоянный диск'));
     assert.ok(!names.includes('первый снапшот'));
+});
+
+test('polling на проде считается провалом', () => {
+    const report = evaluateHealth(health({ telegram: { mode: 'polling', last_error: null } }), ready);
+    assert.equal(report.ok, false);
+    assert.ok(report.failed.some((item) => item.name === 'Telegram в webhook-режиме'));
+});
+
+test('ошибка webhook считается провалом', () => {
+    const report = evaluateHealth(health({ telegram: { mode: 'webhook', last_error: 'wrong response' } }), ready);
+    assert.equal(report.ok, false);
+    assert.ok(report.failed.some((item) => item.name === 'webhook без ошибок'));
 });
 
 test('ошибка снапшотов считается провалом', () => {

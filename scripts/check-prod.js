@@ -5,6 +5,7 @@ function evaluateHealth(health, ready) {
     const config = (health && health.config) || {};
     const gemini = (health && health.gemini) || {};
     const snapshots = (health && health.snapshots) || {};
+    const telegram = (health && health.telegram) || {};
     const checks = [];
     const warn = [];
 
@@ -21,6 +22,10 @@ function evaluateHealth(health, ready) {
     add('/healthz отвечает', health && health.ok === true, health && health.version ? `версия ${health.version}` : 'нет ответа');
     add('/readyz: база доступна', ready && ready.ok === true, ready && ready.error ? String(ready.error) : 'ok');
     add('данные переживают деплой', persistOk, persistDetail);
+    add('Telegram в webhook-режиме', telegram.mode === 'webhook', `mode=${telegram.mode || '—'}`);
+    if (telegram.mode === 'webhook') {
+        add('webhook без ошибок', !telegram.last_error, telegram.last_error || 'ok');
+    }
     add('админ-токен задан', config.admin_api_token === true, `admin_api_token=${String(config.admin_api_token)}`);
     add('секрет замера свой', config.visual_secret === 'own', `visual_secret=${String(config.visual_secret)}`);
     add('токен бота задан', config.bot_token === true, `bot_token=${String(config.bot_token)}`);
@@ -32,6 +37,9 @@ function evaluateHealth(health, ready) {
     const legalMissing = Array.isArray(config.legal_missing) ? config.legal_missing : [];
     if (legalMissing.length > 0) {
         warn.push({ name: 'реквизиты в юрдокументах', detail: `не заполнено: ${legalMissing.join(', ')}` });
+    }
+    if (telegram.mode === 'webhook' && Number(telegram.pending_updates) > 20) {
+        warn.push({ name: 'webhook', detail: `накопилось апдейтов: ${telegram.pending_updates}` });
     }
     if (config.data_persistent !== true && snapshots.enabled === true) {
         warn.push({ name: 'постоянный диск', detail: 'диска нет; данные выгружаются снапшотами в R2, при сбое теряется до интервала снапшота' });

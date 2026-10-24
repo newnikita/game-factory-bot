@@ -61,6 +61,13 @@ services:
         value: "true"
       - key: ALLOW_UNMODERATED_IMAGE_UPLOADS
         value: "false"
+      # Webhook включается автоматически на Render с HTTPS-доменом.
+      - key: BOT_MODE
+        value: webhook
+      - key: BOT_HANDLER_TIMEOUT_MS
+        value: "300000"
+      - key: WEBHOOK_MAX_QUEUE
+        value: "100"
       # Снапшоты данных в R2: на Free постоянного диска нет.
       - key: R2_PREFIX
         value: gamefactory/

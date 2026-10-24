@@ -11,6 +11,7 @@ const axios = require('axios');
 const vm = require('vm');
 const { createSnapshotService } = require('./lib/snapshot');
 const { enhanceGameHtml } = require('./lib/visual-enhancer');
+const { resolveBotMode, isHttpsUrl, deriveWebhookSecret, createWebhookHandler, createUpdateQueue } = require('./lib/webhook');
 
 const {
     initDb,
@@ -93,6 +94,9 @@ function envInt(name, fallback) {
 }
 
 const START_FREE_GAMES = envInt('START_FREE_GAMES', 2);
+// Генерация может идти минутами; в webhook-режиме ответ Telegram уже отправлен,
+// а в polling этот таймаут не должен обрывать длинную генерацию.
+const HANDLER_TIMEOUT_MS = envInt('BOT_HANDLER_TIMEOUT_MS', 5 * 60 * 1000);
 const REWARD_PER_REF = COST_PER_GAME * 2;
 const MAX_GENERATIONS_PER_DAY = envInt('MAX_GENERATIONS_PER_DAY', 20);
 const GENERATION_COOLDOWN_MS = envInt('GENERATION_COOLDOWN_MS', 30000);
@@ -166,7 +170,11 @@ function escapeHtmlText(value) {
     return escapeHtml(value);
 }
 
-const bot = new Telegraf(process.env.BOT_TOKEN || '0:test');
+const bot = new Telegraf(process.env.BOT_TOKEN || '0:test', { handlerTimeout: HANDLER_TIMEOUT_MS });
+const updateQueue = createUpdateQueue((update) => bot.handleUpdate(update), {
+    max: envInt('WEBHOOK_MAX_QUEUE', 100),
+    onError: (error) => console.error('[Webhook] Ошибка обработки апдейта:', error.message)
+});
 bot.use(session());
 
 bot.use((ctx, next) => {
@@ -1096,6 +1104,16 @@ const uploadsDir = path.join(DATA_DIR, 'uploads');
 const aiGamesDir = path.join(DATA_DIR, 'ai_games');
 const DATA_PERSISTENT = isPersistentDataDir(DATA_DIR, __dirname);
 const IS_RENDER = Boolean(process.env.RENDER || process.env.RENDER_GIT_COMMIT || process.env.RENDER_SERVICE_ID);
+const BOT_MODE = resolveBotMode(process.env, IS_RENDER);
+const WEBHOOK_PATH = String(process.env.TELEGRAM_WEBHOOK_PATH || '/telegram/webhook');
+const TELEGRAM_WEBHOOK_SECRET = deriveWebhookSecret(process.env.BOT_TOKEN, process.env.TELEGRAM_WEBHOOK_SECRET);
+const telegramState = {
+    mode: 'polling',
+    webhook_url: null,
+    pending_updates: null,
+    last_error: null,
+    checked_at: null
+};
 const DB_FILE = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(DATA_DIR, 'gamefactory.db');
 const referencesDir = path.join(__dirname, 'references');
 const legalDir = path.join(__dirname, 'legal');
@@ -1282,6 +1300,19 @@ function geminiStatus() {
     };
 }
 
+function telegramStatus() {
+    return {
+        mode: telegramState.mode,
+        webhook_path: WEBHOOK_PATH,
+        webhook_url: telegramState.webhook_url,
+        pending_updates: telegramState.pending_updates,
+        last_error: telegramState.last_error,
+        checked_at: telegramState.checked_at,
+        queued_updates: updateQueue.size,
+        handler_timeout_ms: HANDLER_TIMEOUT_MS
+    };
+}
+
 app.get('/healthz', (req, res) => {
     res.json({
         ok: true,
@@ -1295,6 +1326,7 @@ app.get('/healthz', (req, res) => {
             dataPersistent: DATA_PERSISTENT
         }),
         gemini: geminiStatus(),
+        telegram: telegramStatus(),
         snapshots: snapshot.status(),
         alerts: monitor.evaluate()
     });
@@ -1324,6 +1356,7 @@ app.get('/admin/stats', (req, res) => {
         version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev',
         uptime: Math.round(process.uptime()),
         monitor: monitor.snapshot(),
+        telegram: telegramStatus(),
         snapshots: snapshot.status(),
         alerts: monitor.evaluate(),
         quality,
@@ -1595,6 +1628,16 @@ app.use('/:engine', (req, res, next) => {
     const dir = path.join(__dirname, 'templates', `${engine}_core`);
     if (fs.existsSync(dir)) express.static(dir)(req, res, next); else next();
 });
+
+app.post(WEBHOOK_PATH, createWebhookHandler({
+    secret: TELEGRAM_WEBHOOK_SECRET,
+    isActive: () => telegramState.mode === 'webhook',
+    onUpdate: (update) => {
+        if (!updateQueue.push(update)) {
+            console.error('[Webhook] Очередь переполнена, апдейт', update.update_id);
+        }
+    }
+}));
 
 app.use((err, req, res, next) => {
     console.error('[HTTP] Ошибка:', err.message);
@@ -3880,6 +3923,25 @@ async function sendQualityDigest() {
 }
 
 async function runHealthCheck() {
+    if (telegramState.mode === 'webhook') {
+        try {
+            const info = await bot.telegram.getWebhookInfo();
+            telegramState.webhook_url = info.url || telegramState.webhook_url;
+            telegramState.pending_updates = info.pending_update_count;
+            telegramState.last_error = info.last_error_message || null;
+            telegramState.checked_at = new Date().toISOString();
+            if (info.last_error_message) {
+                const lastSent = sentAlerts.get('telegram_webhook') || 0;
+                if (Date.now() - lastSent >= ALERT_COOLDOWN_MS) {
+                    sentAlerts.set('telegram_webhook', Date.now());
+                    await notifyAdmins(`⚠️ Telegram сообщает об ошибке webhook: ${info.last_error_message}`);
+                }
+            }
+        } catch (error) {
+            telegramState.last_error = error.message;
+            telegramState.checked_at = new Date().toISOString();
+        }
+    }
     if (Date.now() - geminiAccess.checkedAt >= GEMINI_PROBE_INTERVAL_MS) {
         await refreshGeminiAccess();
     }
@@ -3973,9 +4035,12 @@ async function start() {
     const server = app.listen(port, () => {
         console.log(`🌐 HTTP-сервер слушает порт ${port}`);
     });
+    await new Promise((resolve, reject) => {
+        server.once('listening', resolve);
+        server.once('error', reject);
+    });
     server.on('error', (err) => {
         console.error('❌ HTTP-сервер:', err.message);
-        process.exit(1);
     });
 
     bot.catch((error, ctx) => {
@@ -3983,11 +4048,60 @@ async function start() {
         notifyAdmins(`🚨 Ошибка в обработчике${ctx && ctx.updateType ? ` (${ctx.updateType})` : ''}: ${String(error.message || error).slice(0, 200)}`);
     });
 
-    bot.launch().catch((err) => {
-        console.error('❌ Telegram bot:', err.message);
-        process.exit(1);
-    });
-    console.log('🤖 Бот запущен');
+    try {
+        if (!bot.botInfo) bot.botInfo = await bot.telegram.getMe();
+    } catch (error) {
+        console.warn('[Telegram] Не удалось получить имя бота:', error.message);
+    }
+
+    let webhookActive = false;
+    if (BOT_MODE === 'webhook') {
+        if (!isHttpsUrl(WEBAPP_URL)) {
+            console.warn('⚠️ BOT_MODE=webhook, но WEBAPP_URL не HTTPS — остаюсь на polling.');
+        } else {
+            telegramState.mode = 'webhook';
+            const webhookUrl = `${WEBAPP_URL}${WEBHOOK_PATH}`;
+            try {
+                await bot.telegram.setWebhook(webhookUrl, {
+                    secret_token: TELEGRAM_WEBHOOK_SECRET,
+                    drop_pending_updates: false,
+                    max_connections: 40
+                });
+                const info = await bot.telegram.getWebhookInfo();
+                telegramState.webhook_url = info.url || webhookUrl;
+                telegramState.pending_updates = info.pending_update_count;
+                telegramState.last_error = info.last_error_message || null;
+                telegramState.checked_at = new Date().toISOString();
+                webhookActive = true;
+                console.log(`🔗 Telegram webhook: ${telegramState.webhook_url} (в очереди ${info.pending_update_count})`);
+                if (info.last_error_message) {
+                    console.warn('⚠️ Telegram сообщает об ошибке webhook:', info.last_error_message);
+                }
+            } catch (error) {
+                telegramState.mode = 'polling';
+                telegramState.last_error = error.message;
+                telegramState.checked_at = new Date().toISOString();
+                console.error('❌ Не удалось включить webhook:', error.message);
+                await notifyAdmins(`⚠️ Webhook не включился (${error.message}). Бот перешёл на polling и будет засыпать на Free.`);
+            }
+        }
+    }
+
+    if (webhookActive) {
+        console.log('🤖 Бот запущен (webhook)');
+    } else {
+        telegramState.mode = 'polling';
+        try {
+            await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+        } catch (error) {
+            console.warn('[Webhook] Не удалось удалить старый webhook:', error.message);
+        }
+        bot.launch().catch((err) => {
+            console.error('❌ Telegram bot:', err.message);
+            process.exit(1);
+        });
+        console.log('🤖 Бот запущен (polling)');
+    }
 
     monitorTimer = setInterval(() => {
         runHealthCheck().catch((error) => console.error('[Мониторинг] Ошибка проверки:', error.message));
@@ -4000,8 +4114,19 @@ async function start() {
         stopping = true;
         console.log(`\n${signal}: остановка...`);
         if (monitorTimer) clearInterval(monitorTimer);
-        try { await bot.stop(signal); } catch (e) {}
+        try {
+            if (telegramState.mode === 'polling') await bot.stop(signal);
+        } catch (e) {}
         await new Promise((resolve) => server.close(resolve));
+        // Даём очереди шанс завершить короткие обработчики, но не держим
+        // деплой дольше 10 секунд: Render убивает процесс после SIGTERM.
+        await Promise.race([
+            updateQueue.drain(),
+            new Promise((resolve) => {
+                const timer = setTimeout(resolve, 10000);
+                if (typeof timer.unref === 'function') timer.unref();
+            })
+        ]);
         await snapshot.stop();
         try { closeDb(); } catch (e) {}
         process.exit(0);

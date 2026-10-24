@@ -41,6 +41,7 @@ test('лендинг отдаёт главное сообщение, тариф�
     assert.match(html, /Starter/);
     assert.match(html, /Попробовать/);
     assert.match(html, /\/legal\/offer\.md/);
+    assert.match(html, /\/gallery/);
     assert.match(html, /\/bubble\//, 'должна быть ссылка на живой пример');
 });
 
@@ -79,7 +80,33 @@ test('sitemap.xml перечисляет публичные страницы', a
     const text = await response.text();
     assert.match(text, /<urlset/);
     assert.match(text, /<loc>[^<]*\/legal<\/loc>/);
+    assert.match(text, /<loc>[^<]*\/gallery<\/loc>/);
     assert.match(renderSitemap('https://example.com', ['/']), /<loc>https:\/\/example\.com\/<\/loc>/);
+});
+
+test('галерея показывает опубликованные игры, а обложка отдаётся как SVG', async () => {
+    db.ensureUser(1);
+    db.recordGame({ id: 'ai_10000000001', telegramId: 1, title: 'Космический шутер', htmlPath: 'ai_10000000001.html' });
+    db.recordGame({ id: 'ai_10000000002', telegramId: 1, title: 'Секретная игра', htmlPath: 'ai_10000000002.html' });
+    db.setGamePublic('ai_10000000001', 1, true);
+
+    const response = await fetch(`${base}/gallery`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Космический шутер/);
+    assert.match(html, /\/play\/ai_10000000001/);
+    assert.match(html, /\/covers\/ai_10000000001\.svg/);
+    assert.ok(!html.includes('Секретная игра'), 'неопубликованная игра не попадает в галерею');
+
+    const cover = await fetch(`${base}/covers/ai_10000000001.svg`);
+    assert.equal(cover.status, 200);
+    assert.match(cover.headers.get('content-type'), /image\/svg\+xml/);
+    const svg = await cover.text();
+    assert.match(svg, /^<svg/);
+    assert.match(svg, /Космический шутер/);
+
+    const missing = await fetch(`${base}/covers/ai_99999999999.svg`);
+    assert.equal(missing.status, 404);
 });
 
 test('страница документов перечисляет все документы с русскими названиями', async () => {

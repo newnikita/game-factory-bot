@@ -136,6 +136,26 @@ test('recordPayment берёт дату окончания подписки из
     assert.equal(db.getUser(1).subscriptionPlan, 'starter');
 });
 
+test('в галерею попадают только опубликованные готовые игры владельца', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.ensureUser(2);
+    db.recordGame({ id: 'ai_10000000001', telegramId: 1, title: 'Моя игра', htmlPath: 'ai_10000000001.html' });
+    db.recordGame({ id: 'ai_10000000002', telegramId: 1, title: 'Скрытая', htmlPath: 'ai_10000000002.html', status: 'hidden' });
+
+    assert.equal(db.listPublicGames().length, 0);
+    assert.equal(db.setGamePublic('ai_10000000001', 2, true), false, 'чужой пользователь не может опубликовать игру');
+    assert.equal(db.setGamePublic('ai_10000000001', 1, true), true);
+    assert.equal(db.setGamePublic('ai_10000000002', 1, true), true);
+
+    const games = db.listPublicGames();
+    assert.equal(games.length, 1, 'скрытая игра не должна попадать в галерею');
+    assert.equal(games[0].id, 'ai_10000000001');
+
+    db.setGamePublic('ai_10000000001', 1, false);
+    assert.equal(db.listPublicGames().length, 0);
+});
+
 test('recordGame сохраняет параметры сборки шаблона', () => {
     freshDb();
     db.ensureUser(1);

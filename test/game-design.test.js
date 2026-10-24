@@ -26,6 +26,15 @@ test('buildDesignBrief содержит глубину, визуальный с�
     assert.match(brief, /телефон/);
 });
 
+test('визуальный контракт требует глубину, контраст и цельную HUD-панель', () => {
+    const brief = buildDesignBrief('Космический шутер', 'mobile');
+    assert.match(brief, /0\.15×/);
+    assert.match(brief, /4\.5:1/);
+    assert.match(brief, /rgba\(0,0,0,\.35\)/);
+    assert.match(brief, /никаких чистых прямоугольников/);
+    assert.match(brief, /первые 3 секунды/i);
+});
+
 test('у каждого жанрового рецепта есть глубина и визуальное описание', () => {
     for (const id of ['defense', 'runner', 'shooter', 'platformer', 'breaker', 'puzzle', 'arcade', 'racing']) {
         const recipe = getGenreRecipe(id);

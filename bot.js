@@ -10,6 +10,7 @@ const fse = require('fs-extra');
 const axios = require('axios');
 const vm = require('vm');
 const { createSnapshotService } = require('./lib/snapshot');
+const { enhanceGameHtml } = require('./lib/visual-enhancer');
 
 const {
     initDb,
@@ -26,6 +27,8 @@ const {
     recordGeneration,
     recordGame,
     getGame,
+    setGamePublic,
+    listPublicGames,
     setGameVisualStatic,
     recordVisualMeasurement,
     getVisualCalibration,
@@ -62,6 +65,8 @@ const { COST_PER_GAME, PLANS, getPlan, gamesGranted, gamesFromBalance, gamesLabe
 const { planRefund, REFUND_MODES } = require('./lib/refunds');
 const { legalValues, renderLegal, readinessReport, loadConfig, isPersistentDataDir } = require('./lib/readiness');
 const { renderLanding, renderLegalIndex, renderLegalDocument, renderRobots, renderSitemap } = require('./lib/landing');
+const { renderCoverSvg } = require('./lib/covers');
+const { renderGallery } = require('./lib/gallery');
 const { buildDesignBrief, buildRatingFeedback, detectGenre } = require('./lib/game-design');
 const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
@@ -1128,6 +1133,11 @@ function sandboxGameUrl(gameId) {
     return `${base}/sandbox/${encodeURIComponent(gameId)}`;
 }
 
+function galleryPageUrl() {
+    const base = String(GAMES_PUBLIC_URL || WEBAPP_URL || '').replace(/\/+$/, '');
+    return base ? `${base}/gallery` : '';
+}
+
 function injectDprGuard(html) {
     const guard = `<script>(function(){var cap=${MAX_DEVICE_PIXEL_RATIO};try{if((window.devicePixelRatio||1)>cap){Object.defineProperty(window,'devicePixelRatio',{get:function(){return cap;},configurable:true});}}catch(e){}})();</script>`;
     if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (match) => match + guard);
@@ -1171,7 +1181,7 @@ function publicBaseUrl(req) {
 
 function botUsername() {
     try {
-        return (bot.botInfo && bot.botInfo.username) || '';
+        return (bot.botInfo && bot.botInfo.username) || String(process.env.BOT_USERNAME || '').trim();
     } catch (error) {
         return '';
     }
@@ -1189,6 +1199,37 @@ app.get('/', (req, res) => {
     res.type('html').send(html);
 });
 
+app.get('/gallery', (req, res) => {
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = 24;
+    let games = [];
+    try {
+        games = listPublicGames({ limit, offset: (page - 1) * limit });
+    } catch (error) {
+        console.error('[Галерея] Не удалось прочитать игры:', error.message);
+    }
+    const html = renderGallery({
+        games,
+        page,
+        limit,
+        botUsername: botUsername() || APP_CONFIG.botUsername
+    });
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.type('html').send(html);
+});
+
+app.get('/covers/:file', (req, res) => {
+    const match = String(req.params.file || '').match(/^([a-z0-9_]+)\.svg$/i);
+    if (!match || !isSafeGameId(match[1])) return res.status(404).type('text').send('Не найдено');
+    const game = getGame(match[1]);
+    if (!game || game.status === 'hidden') return res.status(404).type('text').send('Не найдено');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.type('image/svg+xml').send(renderCoverSvg(game));
+});
+
 app.get('/robots.txt', (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
@@ -1198,7 +1239,7 @@ app.get('/robots.txt', (req, res) => {
 app.get('/sitemap.xml', (req, res) => {
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.send(renderSitemap(publicBaseUrl(req), ['/', '/legal']));
+    res.send(renderSitemap(publicBaseUrl(req), ['/', '/gallery', '/legal']));
 });
 
 app.get('/sdk.js', (req, res) => res.type('application/javascript').send('console.log("Mock SDK loaded");'));
@@ -1368,6 +1409,10 @@ app.get('/play/:gameId', (req, res) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>${title}</title>
+<meta name="description" content="Игра, созданная в «Фабрике Игр». Играй прямо в браузере.">
+<meta property="og:title" content="${title} — Фабрика Игр">
+<meta property="og:description" content="Игра, созданная в «Фабрике Игр». Играй прямо в браузере.">
+<meta property="og:type" content="website">
 <style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}iframe{display:block;width:100%;height:100%;border:0}</style>
 </head>
 <body>
@@ -1396,6 +1441,7 @@ app.get('/sandbox/:gameId', (req, res) => {
 
     html = injectDprGuard(html);
     html = injectCanvasProbe(html, gameId);
+    html = enhanceGameHtml(html);
     applySandboxHeaders(res);
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.type('html').send(html);
@@ -1536,6 +1582,7 @@ app.get('/:engine/', (req, res, next) => {
                .replace(/{{BOOSTER_FIRE}}/g, s.b_fire)
                .replace(/{{BOOSTER_LIGHTNING}}/g, s.b_lightning)
                .replace(/{{PLATFORM}}/g, platform);
+    html = enhanceGameHtml(html);
 
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -1711,6 +1758,8 @@ function getMainMenuKeyboard() {
         [Markup.button.callback('🎁 Пригласить друга', 'show_referral'), Markup.button.callback('❓ Как это работает', 'show_howto')],
         [Markup.button.callback('📜 Правила и оферта', 'show_legal')]
     ];
+    const galleryUrl = safeHttpsUrl(galleryPageUrl(), null);
+    if (galleryUrl) rows.push([Markup.button.url('🖼️ Галерея игр', galleryUrl)]);
     const communityUrl = safeHttpsUrl(process.env.COMMUNITY_URL || '', null);
     if (communityUrl) rows.push([Markup.button.url('🌐 Наше сообщество', communityUrl)]);
     return Markup.inlineKeyboard(rows);
@@ -1781,6 +1830,63 @@ bot.action('show_howto', async (ctx) => {
         [Markup.button.callback('⬅️ Назад', 'main_menu')]
     ];
     await ctx.editMessageText(txt, { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });
+});
+
+bot.command('gallery', async (ctx) => {
+    const url = safeHttpsUrl(galleryPageUrl(), null);
+    if (!url) return ctx.reply('Галерея появится после настройки публичного домена.');
+    await ctx.reply('🖼️ <b>Галерея игр сообщества</b>\nИграй в игры других и публикуй свои.', {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.url('Открыть галерею', url)]])
+    });
+});
+
+bot.action(/^publish_([a-z0-9_]+)$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    if (!gameId.startsWith('ai_')) {
+        return ctx.answerCbQuery('В галерею можно публиковать только игры, сделанные ИИ.', { show_alert: true });
+    }
+    const game = getGame(gameId);
+    if (!game || game.status !== 'ready' || !game.html_path) {
+        return ctx.answerCbQuery('Игра не найдена.', { show_alert: true });
+    }
+    if (Number(game.telegram_id) !== Number(ctx.from.id)) {
+        return ctx.answerCbQuery('Это чужая игра.', { show_alert: true });
+    }
+    setGamePublic(gameId, ctx.from.id, true);
+    await ctx.answerCbQuery('Опубликовано');
+    const gallery = safeHttpsUrl(galleryPageUrl(), null);
+    const gameUrl = publicGameUrl(gameId);
+    const lines = [
+        '🖼️ <b>Игра в галерее</b>',
+        UI_DIVIDER,
+        `🎮 <b>${escapeHtml(game.title || 'Игра')}</b>`,
+        `🔗 ${escapeHtml(gameUrl)}`
+    ];
+    if (gallery) lines.push(`🌐 <a href="${escapeHtml(gallery)}">Открыть галерею</a>`);
+    const rows = [[Markup.button.callback('🔒 Убрать из галереи', `unpublish_${gameId}`)]];
+    if (gallery) rows.unshift([Markup.button.url('🖼️ Галерея', gallery)]);
+    rows.push([Markup.button.callback('🏠 Меню', 'main_menu')]);
+    await ctx.reply(lines.join('\n'), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard(rows)
+    });
+});
+
+bot.action(/^unpublish_([a-z0-9_]+)$/, async (ctx) => {
+    const gameId = ctx.match[1];
+    const game = getGame(gameId);
+    if (!game || Number(game.telegram_id) !== Number(ctx.from.id)) {
+        return ctx.answerCbQuery('Это чужая игра.', { show_alert: true });
+    }
+    setGamePublic(gameId, ctx.from.id, false);
+    await ctx.answerCbQuery('Убрано из галереи');
+    try {
+        await ctx.editMessageText('🔒 Игра убрана из галереи.', Markup.inlineKeyboard([
+            [Markup.button.callback('🏠 Меню', 'main_menu')]
+        ]));
+    } catch (error) {}
 });
 
 bot.action('show_profile', async (ctx) => {
@@ -2975,6 +3081,7 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
         if (!usedHybrid) {
             kb.push([Markup.button.callback(`✏️ Улучшить · ${gamesLabel(1)}`, `improve_ai_${gameId}`)]);
         }
+        kb.push([Markup.button.callback('🖼️ Опубликовать в галерее', `publish_${gameId}`)]);
         kb.push(
             [Markup.button.callback('📦 Архив', `dl_ai_${gameId}`), Markup.button.callback('🚩 Пожаловаться', `report_${gameId}`)],
             [Markup.button.callback(`🔁 Перегенерировать · ${gamesLabel(1)}`, 'regen_ai')],
@@ -3000,7 +3107,10 @@ async function handleAIGeneration(chatId, msgId, prompt, ctx) {
                 await bot.telegram.sendMessage(
                     chatId,
                     `✅ Игра готова: ${url}`,
-                    Markup.inlineKeyboard([[Markup.button.webApp('🎮 ИГРАТЬ', url)]])
+                    Markup.inlineKeyboard([
+                        [Markup.button.webApp('🎮 ИГРАТЬ', url)],
+                        [Markup.button.callback('🖼️ Опубликовать в галерее', `publish_${createdGameId}`)]
+                    ])
                 );
             } catch (e) {}
             return;

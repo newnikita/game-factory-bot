@@ -9,6 +9,14 @@ const GAME = {
     created_at: '2026-10-24 10:00:00'
 };
 
+test('галерея всегда показывает демо-движки с обложками', () => {
+    const html = renderGallery({ games: [] });
+    assert.match(html, /Попробуй движки/);
+    assert.match(html, /href="\/bubble\/"/);
+    assert.match(html, /Демо-движок/);
+    assert.match(html, /data:image\/svg\+xml;base64,/);
+});
+
 test('галерея показывает игру, обложку и ссылку на запуск', () => {
     const html = renderGallery({ games: [GAME], botUsername: 'gamefactory_bot' });
     assert.match(html, /Космический шутер/);

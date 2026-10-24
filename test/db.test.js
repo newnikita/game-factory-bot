@@ -156,6 +156,19 @@ test('в галерею попадают только опубликованны
     assert.equal(db.listPublicGames().length, 0);
 });
 
+test('«Мои игры» показывают только свои готовые игры с файлом', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.ensureUser(2);
+    db.recordGame({ id: 'ai_10000000001', telegramId: 1, title: 'Моя', htmlPath: 'ai_10000000001.html' });
+    db.recordGame({ id: 'ai_10000000002', telegramId: 2, title: 'Чужая', htmlPath: 'ai_10000000002.html' });
+    db.recordGame({ id: 'ai_10000000003', telegramId: 1, title: 'Скрытая', htmlPath: 'ai_10000000003.html', status: 'hidden' });
+    db.recordGame({ id: 'tpl_10000000004', telegramId: 1, title: 'Шаблон' });
+
+    assert.equal(db.countUserGames(1), 1);
+    assert.deepEqual(db.listUserGames(1).map((game) => game.id), ['ai_10000000001']);
+});
+
 test('recordGame сохраняет параметры сборки шаблона', () => {
     freshDb();
     db.ensureUser(1);

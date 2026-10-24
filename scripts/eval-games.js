@@ -7,6 +7,7 @@ const axios = require('axios');
 const gemini = require('../lib/gemini');
 const { auditCanvasHud } = require('../lib/canvas-hud');
 const { auditHudLayout } = require('../lib/hud-layout');
+const { enhanceGameHtml } = require('../lib/visual-enhancer');
 
 function installDnsFallback() {
     const cache = new Map();
@@ -324,7 +325,9 @@ async function browserCheck(browser, html, outPath, pageLimitMs = 45000) {
     page.on('requestfailed', (request) => failedRequests.push(`${request.url().slice(0, 120)} :: ${request.failure()?.errorText}`));
 
     const result = { errors: consoleErrors, pageErrors, failedRequests };
-    const runnableHtml = stripRuntimeArtifacts(html);
+    // Стенд должен видеть ту же картинку, что игрок: визуальный слой добавляется
+    // при отдаче игры, поэтому применяем его и здесь.
+    const runnableHtml = enhanceGameHtml(stripRuntimeArtifacts(html));
     const canvasHudIssues = auditCanvasHud(runnableHtml).issues.map((issue) => issue.msg);
     const domHudIssues = auditHudLayout(runnableHtml).issues.map((issue) => issue.msg);
     try {

@@ -30,6 +30,8 @@ const {
     getGame,
     setGamePublic,
     listPublicGames,
+    listUserGames,
+    countUserGames,
     setGameVisualStatic,
     recordVisualMeasurement,
     getVisualCalibration,
@@ -1797,6 +1799,7 @@ function getMainMenuText(user) {
 function getMainMenuKeyboard() {
     const rows = [
         [Markup.button.callback('✨ Создать игру', 'start_creation')],
+        [Markup.button.callback('🎮 Мои игры', 'my_games')],
         [Markup.button.callback('💎 Тарифы', 'show_plans'), Markup.button.callback('👤 Профиль', 'show_profile')],
         [Markup.button.callback('🎁 Пригласить друга', 'show_referral'), Markup.button.callback('❓ Как это работает', 'show_howto')],
         [Markup.button.callback('📜 Правила и оферта', 'show_legal')]
@@ -1884,6 +1887,55 @@ bot.command('gallery', async (ctx) => {
     });
 });
 
+bot.action(/^my_games(?:_(\d+))?$/, async (ctx) => {
+    const page = Math.max(1, Number.parseInt(ctx.match[1], 10) || 1);
+    const limit = 6;
+    const total = countUserGames(ctx.from.id);
+    const games = listUserGames(ctx.from.id, { limit, offset: (page - 1) * limit });
+    if (!games.length) {
+        const empty = ['🎮 <b>Мои игры</b>', UI_DIVIDER, 'Пока пусто. Создай первую игру — она появится здесь.'].join('\n');
+        const emptyKb = Markup.inlineKeyboard([
+            [Markup.button.callback('✨ Создать игру', 'start_creation')],
+            [Markup.button.callback('⬅️ Назад', 'main_menu')]
+        ]);
+        try {
+            return await ctx.editMessageText(empty, { parse_mode: 'HTML', ...emptyKb });
+        } catch (error) {
+            return ctx.reply(empty, { parse_mode: 'HTML', ...emptyKb });
+        }
+    }
+    const rows = games.map((game) => {
+        const title = String(game.title || 'Игра');
+        const short = title.length > 24 ? `${title.slice(0, 23)}…` : title;
+        return [
+            Markup.button.webApp(`🎮 ${short}`, publicGameUrl(game.id)),
+            game.public
+                ? Markup.button.callback('🔒 Убрать', `unpublish_${game.id}`)
+                : Markup.button.callback('🌐 В галерею', `publish_${game.id}`)
+        ];
+    });
+    const pages = Math.ceil(total / limit);
+    if (pages > 1) {
+        const nav = [];
+        if (page > 1) nav.push(Markup.button.callback('← Назад', `my_games_${page - 1}`));
+        if (page < pages) nav.push(Markup.button.callback('Дальше →', `my_games_${page + 1}`));
+        if (nav.length) rows.push(nav);
+    }
+    rows.push([Markup.button.callback('⬅️ В меню', 'main_menu')]);
+    const text = [
+        '🎮 <b>Мои игры</b>',
+        UI_DIVIDER,
+        `Всего: <b>${total}</b>${pages > 1 ? ` · стр. ${page}/${pages}` : ''}`,
+        '<i>Нажми на игру, чтобы открыть. Опубликованные видны в галерее.</i>'
+    ].join('\n');
+    const options = { parse_mode: 'HTML', ...Markup.inlineKeyboard(rows) };
+    try {
+        await ctx.editMessageText(text, options);
+    } catch (error) {
+        await ctx.reply(text, options);
+    }
+});
+
 bot.action(/^publish_([a-z0-9_]+)$/, async (ctx) => {
     const gameId = ctx.match[1];
     if (!gameId.startsWith('ai_')) {
@@ -1907,8 +1959,11 @@ bot.action(/^publish_([a-z0-9_]+)$/, async (ctx) => {
         `🔗 ${escapeHtml(gameUrl)}`
     ];
     if (gallery) lines.push(`🌐 <a href="${escapeHtml(gallery)}">Открыть галерею</a>`);
-    const rows = [[Markup.button.callback('🔒 Убрать из галереи', `unpublish_${gameId}`)]];
-    if (gallery) rows.unshift([Markup.button.url('🖼️ Галерея', gallery)]);
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(gameUrl)}&text=${encodeURIComponent(`Играй в «${game.title || 'игру'}» — сделано в Фабрике Игр`)}`;
+    const rows = [];
+    if (gallery) rows.push([Markup.button.url('🖼️ Галерея', gallery)]);
+    rows.push([Markup.button.url('📤 Поделиться', shareUrl)]);
+    rows.push([Markup.button.callback('🔒 Убрать из галереи', `unpublish_${gameId}`)]);
     rows.push([Markup.button.callback('🏠 Меню', 'main_menu')]);
     await ctx.reply(lines.join('\n'), {
         parse_mode: 'HTML',
@@ -1947,6 +2002,7 @@ bot.action('show_profile', async (ctx) => {
 
     const kb = [
         [Markup.button.callback('✨ Создать игру', 'start_creation'), Markup.button.callback('💎 Пополнить', 'show_plans')],
+        [Markup.button.callback('🎮 Мои игры', 'my_games')],
         [Markup.button.callback('⬅️ Назад', 'main_menu')]
     ];
     await ctx.editMessageText(lines.join('\n'), { parse_mode: 'HTML', ...Markup.inlineKeyboard(kb) });

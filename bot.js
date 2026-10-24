@@ -9,6 +9,7 @@ const express = require('express');
 const fse = require('fs-extra');
 const axios = require('axios');
 const vm = require('vm');
+const { createSnapshotService } = require('./lib/snapshot');
 
 const {
     initDb,
@@ -1103,6 +1104,20 @@ for (const dir of [uploadsDir, aiGamesDir, referencesDir, legalDir, path.dirname
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+const snapshot = createSnapshotService({
+    dataDir: DATA_DIR,
+    dbFile: DB_FILE,
+    aiGamesDir,
+    uploadsDir
+});
+
+// Любое обновление может изменить базу (новый пользователь, списание, платёж),
+// поэтому помечаем данные для ближайшей выгрузки в R2.
+bot.use((ctx, next) => {
+    snapshot.markDirty();
+    return next();
+});
+
 function publicGameUrl(gameId) {
     const base = GAMES_PUBLIC_URL || '';
     return `${base}/play/${encodeURIComponent(gameId)}`;
@@ -1239,6 +1254,7 @@ app.get('/healthz', (req, res) => {
             dataPersistent: DATA_PERSISTENT
         }),
         gemini: geminiStatus(),
+        snapshots: snapshot.status(),
         alerts: monitor.evaluate()
     });
 });
@@ -1267,6 +1283,7 @@ app.get('/admin/stats', (req, res) => {
         version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'dev',
         uptime: Math.round(process.uptime()),
         monitor: monitor.snapshot(),
+        snapshots: snapshot.status(),
         alerts: monitor.evaluate(),
         quality,
         visualCalibration: {
@@ -2068,7 +2085,13 @@ async function processSuccessfulPayment(ctx, payment) {
         : `, баланс: ${gamesLabel(userGames(user))}`;
     await notifyAdmins(`💰 ${paymentKind}: ${plan.title}, ${payment.total_amount} Stars, пользователь ${ctx.from.id}${adminPaymentNote}`);
 
-    if (!DATA_PERSISTENT) {
+    if (snapshot.enabled) {
+        try {
+            await snapshot.flush('payment');
+        } catch (error) {
+            await notifyAdmins(`🚨 Платёж начислен, но снапшот в R2 не загрузился: ${error.message}. Баланс покупателя может потеряться при деплое.`);
+        }
+    } else if (!DATA_PERSISTENT) {
         await notifyAdmins(`🚨 Платёж начислен, но база лежит во временной ФС (${DATA_DIR}): при следующем деплое баланс покупателя исчезнет. Нужен диск Render и DATA_DIR=/var/data.`);
     }
 }
@@ -3799,7 +3822,11 @@ async function start() {
 
     if (!DATA_PERSISTENT && IS_RENDER) {
         console.warn('⚠️ Каталог данных не на постоянном диске: ' + DATA_DIR);
-        await notifyAdmins('⚠️ Каталог данных не на постоянном диске (' + DATA_DIR + '): балансы и AI-игры исчезнут при следующем деплое. Нужен диск Render и DATA_DIR=/var/data.');
+        if (snapshot.enabled) {
+            await notifyAdmins('⚠️ Постоянного диска нет: данные выгружаются снапшотами в R2. При сбое между снапшотами теряется не больше минуты работы.');
+        } else {
+            await notifyAdmins('⚠️ Каталог данных не на постоянном диске (' + DATA_DIR + '): балансы и AI-игры исчезнут при следующем деплое. Нужен диск Render или снапшоты в R2 (R2_BUCKET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY).');
+        }
     }
 
     await refreshGeminiAccess();
@@ -3813,6 +3840,14 @@ async function start() {
         await notifyAdmins('🚨 Дневная квота Gemini исчерпана до ' + startupQuota.until + ': генерации невозможны до сброса. Нужен платный ключ Gemini.');
     }
 
+    const restore = await snapshot.restore();
+    if (restore.restored) {
+        gemini.initStateFile(path.join(DATA_DIR, 'gemini-state.json'));
+        console.log(`📦 Данные восстановлены из R2: база ${Math.round(restore.dbSize / 1024)} КБ, файлов ${restore.files}`);
+    } else if (snapshot.enabled) {
+        console.log(`📦 Восстановление из R2: ${restore.reason}`);
+    }
+
     initDb({
         file: DB_FILE,
         startBalance: START_FREE_GAMES * COST_PER_GAME,
@@ -3821,6 +3856,8 @@ async function start() {
         referralsPerMonth: envInt('REFERRALS_PER_MONTH', 10)
     });
     importLegacyUsers(path.join(__dirname, 'users.json'));
+    snapshot.markDirty();
+    snapshot.start();
 
     const port = envInt('PORT', 3000);
     const server = app.listen(port, () => {
@@ -3855,6 +3892,7 @@ async function start() {
         if (monitorTimer) clearInterval(monitorTimer);
         try { await bot.stop(signal); } catch (e) {}
         await new Promise((resolve) => server.close(resolve));
+        await snapshot.stop();
         try { closeDb(); } catch (e) {}
         process.exit(0);
     };

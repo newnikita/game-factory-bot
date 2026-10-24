@@ -4,15 +4,23 @@ const REQUIRED_DATA_DIR = '/var/data';
 function evaluateHealth(health, ready) {
     const config = (health && health.config) || {};
     const gemini = (health && health.gemini) || {};
+    const snapshots = (health && health.snapshots) || {};
     const checks = [];
     const warn = [];
 
     const add = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
 
+    const snapshotOk = snapshots.enabled === true && !snapshots.last_error;
+    const persistOk = config.data_persistent === true || snapshotOk;
+    const persistDetail = config.data_persistent === true
+        ? `постоянный диск (${config.data_dir || REQUIRED_DATA_DIR})`
+        : snapshots.enabled === true
+            ? `снапшоты в R2${snapshots.last_error ? `, ошибка: ${snapshots.last_error}` : ''}`
+            : 'ни постоянного диска, ни снапшотов';
+
     add('/healthz отвечает', health && health.ok === true, health && health.version ? `версия ${health.version}` : 'нет ответа');
     add('/readyz: база доступна', ready && ready.ok === true, ready && ready.error ? String(ready.error) : 'ok');
-    add('каталог данных на диске', config.data_dir === REQUIRED_DATA_DIR, `data_dir=${config.data_dir || '—'}, нужно ${REQUIRED_DATA_DIR}`);
-    add('диск постоянный', config.data_persistent === true, `data_persistent=${String(config.data_persistent)}, нужно true`);
+    add('данные переживают деплой', persistOk, persistDetail);
     add('админ-токен задан', config.admin_api_token === true, `admin_api_token=${String(config.admin_api_token)}`);
     add('секрет замера свой', config.visual_secret === 'own', `visual_secret=${String(config.visual_secret)}`);
     add('токен бота задан', config.bot_token === true, `bot_token=${String(config.bot_token)}`);
@@ -24,6 +32,12 @@ function evaluateHealth(health, ready) {
     const legalMissing = Array.isArray(config.legal_missing) ? config.legal_missing : [];
     if (legalMissing.length > 0) {
         warn.push({ name: 'реквизиты в юрдокументах', detail: `не заполнено: ${legalMissing.join(', ')}` });
+    }
+    if (config.data_persistent !== true && snapshots.enabled === true) {
+        warn.push({ name: 'постоянный диск', detail: 'диска нет; данные выгружаются снапшотами в R2, при сбое теряется до интервала снапшота' });
+        if (!snapshots.last_snapshot_at) {
+            warn.push({ name: 'первый снапшот', detail: 'ещё не создавался' });
+        }
     }
     if (gemini.generation_available !== true) {
         warn.push({ name: 'генерация доступна', detail: gemini.reason || `generation_available=${String(gemini.generation_available)}` });

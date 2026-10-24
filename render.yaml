@@ -4,6 +4,7 @@
 # ВАЖНО: persistent disk доступен только на платных инстансах (Starter и выше).
 # На free-плане Render диск подключить нельзя, и данные будут теряться при
 # каждом рестарте/деплое. Если диск не нужен — удалите секцию disk и DATA_DIR.
+# На Free вместо диска работают снапшоты в Cloudflare R2 (переменные R2_* ниже).
 
 services:
   - type: web
@@ -60,6 +61,21 @@ services:
         value: "true"
       - key: ALLOW_UNMODERATED_IMAGE_UPLOADS
         value: "false"
+      # Снапшоты данных в R2: на Free постоянного диска нет.
+      - key: R2_PREFIX
+        value: gamefactory/
+      - key: SNAPSHOT_INTERVAL_MS
+        value: "60000"
+      - key: SNAPSHOT_TIMEOUT_MS
+        value: "20000"
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
       # Секреты и URL-ы задаются в Dashboard (sync: false).
       - key: BOT_TOKEN
         sync: false

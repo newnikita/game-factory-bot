@@ -19,6 +19,7 @@ function health(overrides) {
             legal_missing: []
         },
         gemini: { generation_available: true, reason: 'генерации доступны' },
+        snapshots: { enabled: false, configured: false, requested: true, last_snapshot_at: null, last_error: null },
         alerts: [],
         ...overrides
     };
@@ -33,14 +34,34 @@ test('здоровый прод проходит все обязательные
     assert.equal(report.warnings.length, 0);
 });
 
-test('база во временной ФС считается провалом', () => {
+test('временная ФС без снапшотов считается провалом', () => {
     const report = evaluateHealth(health({
         config: { ...health().config, data_dir: '/opt/render/project/src', data_persistent: false }
     }), ready);
     assert.equal(report.ok, false);
     const names = report.failed.map((item) => item.name);
-    assert.ok(names.includes('каталог данных на диске'));
-    assert.ok(names.includes('диск постоянный'));
+    assert.ok(names.includes('данные переживают деплой'));
+});
+
+test('снапшоты в R2 на Free-плане проходят проверку с предупреждением', () => {
+    const report = evaluateHealth(health({
+        config: { ...health().config, data_dir: '/opt/render/project/src', data_persistent: false },
+        snapshots: { enabled: true, configured: true, requested: true, last_snapshot_at: '2026-10-24T10:00:00.000Z', last_error: null }
+    }), ready);
+    assert.equal(report.ok, true);
+    const names = report.warnings.map((item) => item.name);
+    assert.ok(names.includes('постоянный диск'));
+    assert.ok(!names.includes('первый снапшот'));
+});
+
+test('ошибка снапшотов считается провалом', () => {
+    const report = evaluateHealth(health({
+        config: { ...health().config, data_dir: '/opt/render/project/src', data_persistent: false },
+        snapshots: { enabled: true, configured: true, requested: true, last_snapshot_at: null, last_error: 'HTTP 403' }
+    }), ready);
+    assert.equal(report.ok, false);
+    assert.equal(report.failed[0].name, 'данные переживают деплой');
+    assert.match(report.failed[0].detail, /HTTP 403/);
 });
 
 test('незаданные секреты считаются провалом', () => {

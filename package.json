@@ -10,6 +10,7 @@
     "start": "node bot.js",
     "test": "node --test test/*.test.js",
     "check": "node --check bot.js",
+    "check:prod": "node scripts/check-prod.js",
     "backup": "node scripts/backup.js",
     "eval:games": "node scripts/eval-games.js"
   },

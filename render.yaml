@@ -83,6 +83,15 @@ services:
         sync: false
       - key: R2_SECRET_ACCESS_KEY
         sync: false
+      # Альтернатива без S3-ключей: Supabase Storage по service-ключу.
+      - key: SNAPSHOT_PROVIDER
+        sync: false
+      - key: SNAPSHOT_BUCKET
+        sync: false
+      - key: SNAPSHOT_URL
+        sync: false
+      - key: SNAPSHOT_SERVICE_KEY
+        sync: false
       # Секреты и URL-ы задаются в Dashboard (sync: false).
       - key: BOT_TOKEN
         sync: false

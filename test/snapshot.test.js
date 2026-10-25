@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
-const { createSnapshotService, readConfig, createS3Storage } = require('../lib/snapshot');
+const { createSnapshotService, readConfig, createS3Storage, createSupabaseStorage } = require('../lib/snapshot');
 
 const ENV = {
     R2_BUCKET: 'bucket',
@@ -83,6 +83,18 @@ test('без настроек снапшоты выключены и ничег�
     assert.equal((await svc.restore()).reason, 'disabled');
 });
 
+test('Supabase Storage включается по service-ключу без S3-пары', () => {
+    const config = readConfig({
+        SNAPSHOT_PROVIDER: 'supabase',
+        SNAPSHOT_BUCKET: 'gamefactory-data',
+        SNAPSHOT_URL: 'https://ref.supabase.co',
+        SNAPSHOT_SERVICE_KEY: 'service-key'
+    });
+    assert.equal(config.provider, 'supabase');
+    assert.equal(config.configured, true);
+    assert.equal(config.enabled, true);
+});
+
 test('SNAPSHOT_ENABLED=false выключает даже полностью настроенное хранилище', () => {
     const config = readConfig({ ...ENV, SNAPSHOT_ENABLED: 'false' });
     assert.equal(config.configured, true);
@@ -117,7 +129,7 @@ test('если индекс есть, а базы в R2 нет — запуск 
     const dirs = makeWorkspace(t);
     const storage = memoryStorage({ 'gamefactory/state/index.json': index({}) });
     const svc = service(dirs, storage);
-    await assert.rejects(() => svc.restore(), /Не удалось восстановить данные из R2/);
+    await assert.rejects(() => svc.restore(), /Не удалось восстановить данные из хранилища/);
     assert.equal(fs.existsSync(dirs.dbFile), false);
 });
 
@@ -210,6 +222,65 @@ test('S3-адаптер подписывает PUT и читает GET', async (
     assert.equal((await storage.get('gamefactory/db/latest.db')).toString('utf8'), 'hello');
     assert.equal(await storage.get('gamefactory/missing'), null);
     assert.match(authorization, /AWS4-HMAC-SHA256/);
+});
+
+test('Supabase-адаптер создаёт bucket при первой записи и читает объекты', async (t) => {
+    const objects = new Map();
+    let bucketReady = false;
+    let seenKey = null;
+    let seenUpsert = null;
+    const server = http.createServer((req, res) => {
+        seenKey = req.headers.apikey;
+        if (req.headers['x-upsert']) seenUpsert = req.headers['x-upsert'];
+        if (req.method === 'POST' && req.url === '/storage/v1/bucket') {
+            bucketReady = true;
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end('{}');
+            return;
+        }
+        if (req.method === 'POST' && req.url.startsWith('/storage/v1/object/gamefactory-data/')) {
+            if (!bucketReady) {
+                res.writeHead(400, { 'content-type': 'application/json' });
+                res.end('{"error":"Bucket not found"}');
+                return;
+            }
+            const chunks = [];
+            req.on('data', (chunk) => chunks.push(chunk));
+            req.on('end', () => {
+                const key = decodeURIComponent(req.url.slice('/storage/v1/object/gamefactory-data/'.length));
+                objects.set(key, Buffer.concat(chunks));
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end('{}');
+            });
+            return;
+        }
+        if (req.method === 'GET' && req.url.startsWith('/storage/v1/object/gamefactory-data/')) {
+            const key = decodeURIComponent(req.url.slice('/storage/v1/object/gamefactory-data/'.length));
+            if (!objects.has(key)) {
+                res.writeHead(400, { 'content-type': 'application/json' });
+                res.end('{"statusCode":"404","error":"not_found"}');
+                return;
+            }
+            res.writeHead(200);
+            res.end(objects.get(key));
+            return;
+        }
+        res.writeHead(404);
+        res.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+
+    const storage = createSupabaseStorage({
+        supabaseUrl: `http://127.0.0.1:${server.address().port}`,
+        bucket: 'gamefactory-data',
+        serviceKey: 'service-key'
+    });
+    await storage.put('gamefactory/db/latest.db', Buffer.from('DB-CONTENT'));
+    assert.equal((await storage.get('gamefactory/db/latest.db')).toString('utf8'), 'DB-CONTENT');
+    assert.equal(await storage.get('gamefactory/missing.db'), null);
+    assert.equal(seenKey, 'service-key');
+    assert.equal(seenUpsert, 'true');
 });
 
 test('опасные имена из индекса не восстанавливаются', async (t) => {

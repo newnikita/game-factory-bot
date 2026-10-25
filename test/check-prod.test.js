@@ -50,9 +50,27 @@ test('снапшоты в R2 на Free-плане проходят провер�
         snapshots: { enabled: true, configured: true, requested: true, last_snapshot_at: '2026-10-24T10:00:00.000Z', last_error: null }
     }), ready);
     assert.equal(report.ok, true);
+    assert.match(report.checks.find((item) => item.name === 'данные переживают деплой').detail, /R2/);
     const names = report.warnings.map((item) => item.name);
     assert.ok(names.includes('постоянный диск'));
     assert.ok(!names.includes('первый снапшот'));
+});
+
+test('провайдер Supabase называется в отчёте явно', () => {
+    const report = evaluateHealth(health({
+        config: { ...health().config, data_dir: '/opt/render/project/src', data_persistent: false },
+        snapshots: {
+            provider: 'supabase',
+            enabled: true,
+            configured: true,
+            requested: true,
+            last_snapshot_at: '2026-10-25T11:28:00.000Z',
+            last_error: null
+        }
+    }), ready);
+    assert.equal(report.ok, true);
+    assert.match(report.checks.find((item) => item.name === 'данные переживают деплой').detail, /Supabase Storage/);
+    assert.match(report.warnings.find((item) => item.name === 'постоянный диск').detail, /Supabase Storage/);
 });
 
 test('polling на проде считается провалом', () => {

@@ -12,11 +12,12 @@ function evaluateHealth(health, ready) {
     const add = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
 
     const snapshotOk = snapshots.enabled === true && !snapshots.last_error;
+    const snapshotLabel = snapshots.provider === 'supabase' ? 'Supabase Storage' : 'R2';
     const persistOk = config.data_persistent === true || snapshotOk;
     const persistDetail = config.data_persistent === true
         ? `постоянный диск (${config.data_dir || REQUIRED_DATA_DIR})`
         : snapshots.enabled === true
-            ? `снапшоты в R2${snapshots.last_error ? `, ошибка: ${snapshots.last_error}` : ''}`
+            ? `снапшоты в ${snapshotLabel}${snapshots.last_error ? `, ошибка: ${snapshots.last_error}` : ''}`
             : 'ни постоянного диска, ни снапшотов';
 
     add('/healthz отвечает', health && health.ok === true, health && health.version ? `версия ${health.version}` : 'нет ответа');
@@ -42,7 +43,7 @@ function evaluateHealth(health, ready) {
         warn.push({ name: 'webhook', detail: `накопилось апдейтов: ${telegram.pending_updates}` });
     }
     if (config.data_persistent !== true && snapshots.enabled === true) {
-        warn.push({ name: 'постоянный диск', detail: 'диска нет; данные выгружаются снапшотами в R2, при сбое теряется до интервала снапшота' });
+        warn.push({ name: 'постоянный диск', detail: `диска нет; данные выгружаются снапшотами в ${snapshotLabel}, при сбое теряется до интервала снапшота` });
         if (!snapshots.last_snapshot_at) {
             warn.push({ name: 'первый снапшот', detail: 'ещё не создавался' });
         }

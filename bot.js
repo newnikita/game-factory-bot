@@ -887,17 +887,23 @@ async function runQualityPipeline(code, options = {}) {
                         const after = collectQualityIssues(polished.code, platform);
                         if (after.criticals.length) {
                             console.log(`[Качество] Полиш отклонён: осталось критичных замечаний (${after.criticals.length})`);
-                        } else if (after.technicalScore < current.technicalScore) {
+                        } else if (after.technicalScore < 85) {
+                            console.log(`[Качество] Полиш отклонён: технический балл ниже порога (${after.technicalScore})`);
+                        } else if (after.technicalScore + 10 < current.technicalScore) {
                             console.log(`[Качество] Полиш отклонён: технический балл упал ${current.technicalScore} → ${after.technicalScore}`);
-                        } else if (after.visual.score < current.visual.score) {
+                        } else if (after.visual.score + 5 < current.visual.score) {
                             console.log(`[Качество] Полиш отклонён: визуальный балл упал ${current.visual.score} → ${after.visual.score}`);
                         } else {
+                            const beforeTech = current.technicalScore;
                             currentCode = polished.code;
                             current = after;
                             report.polished = true;
                             report.polishModel = polished.model || null;
                             monitor.recordPipelineStage('polish', true);
-                            console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score})`);
+                            const techNote = after.technicalScore < beforeTech
+                                ? `, техбалл ${beforeTech} → ${after.technicalScore}`
+                                : '';
+                            console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score}${techNote})`);
                         }
                     }
                 } catch (error) {

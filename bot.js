@@ -1534,14 +1534,12 @@ let visionChain = Promise.resolve();
 const visionPending = new Set();
 let visionWindow = { start: 0, count: 0 };
 
-function allowVisionReview() {
+function visionBudgetAvailable() {
     const now = Date.now();
     if (now - visionWindow.start > 60 * 60 * 1000) {
         visionWindow = { start: now, count: 0 };
     }
-    if (visionWindow.count >= VISION_REVIEW_MAX_PER_HOUR) return false;
-    visionWindow.count += 1;
-    return true;
+    return visionWindow.count < VISION_REVIEW_MAX_PER_HOUR;
 }
 
 function queueVisionReview(gameId, imageBuffer) {
@@ -1549,8 +1547,9 @@ function queueVisionReview(gameId, imageBuffer) {
     if (visionPending.has(gameId)) return false;
     const game = getGame(gameId);
     if (!game || !game.html_path || game.status === 'hidden') return false;
-    if (!allowVisionReview()) return false;
+    if (!visionBudgetAvailable()) return false;
     if (!claimVisionReview(gameId)) return false;
+    visionWindow.count += 1;
     visionPending.add(gameId);
     visionChain = visionChain.then(async () => {
         try {

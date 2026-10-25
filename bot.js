@@ -1560,6 +1560,7 @@ function queueVisionReview(gameId, imageBuffer) {
             });
             if (result && !result.noVerdict) {
                 setGameVision(gameId, result);
+                snapshot.markDirty();
                 console.log(`[Vision] ${gameId}: ${result.score}/100 — ${result.verdict || ''}`);
             } else {
                 console.warn(`[Vision] ${gameId}: критик не дал вердикта`);
@@ -1589,6 +1590,7 @@ app.post('/api/canvas-metrics', (req, res) => {
     const frame = body.screenshot ? decodeScreenshot(body.screenshot) : null;
     try {
         const stored = recordVisualMeasurement(gameId, scored);
+        snapshot.markDirty();
         monitor.recordCanvasReport({ blank: scored.blank, gameId });
         if (scored.blank) handleBlankCanvas(gameId, stored);
         const queued = frame ? queueVisionReview(gameId, frame) : false;

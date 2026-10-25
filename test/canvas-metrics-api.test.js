@@ -1,6 +1,7 @@
 process.env.ADMIN_IDS = '';
 process.env.VISUAL_TOKEN_SECRET = 'test-visual-secret';
 process.env.ADMIN_API_TOKEN = 'test-admin-token';
+process.env.VISION_REVIEW_ENABLED = 'false';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -75,6 +76,43 @@ test('сервер принимает замер только с верным т
         assert.equal(game.visual_static, 80);
         assert.equal(game.visual_measured, 100);
         assert.ok(game.visual_measured_at, 'время замера должно сохраняться');
+    } finally {
+        server.close();
+    }
+});
+
+test('кадр canvas принимается вместе с метриками, мусор не ломает замер', async () => {
+    const gameId = 'ai_12345678904';
+    db.ensureUser(1);
+    db.recordGame({ id: gameId, telegramId: 1, title: 'Кадр', htmlPath: 'ai_games/x.html' });
+
+    const jpeg = Buffer.alloc(4096, 0);
+    jpeg[0] = 0xFF;
+    jpeg[1] = 0xD8;
+    jpeg[2] = 0xFF;
+    const screenshot = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+
+    const server = await startServer();
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+        const withFrame = await post(base, {
+            gameId,
+            token: visualToken(gameId),
+            metrics: { ...RICH_METRICS, fps: 55 },
+            screenshot
+        });
+        assert.equal(withFrame.status, 200);
+        assert.equal((await withFrame.json()).vision, 'disabled');
+
+        const junk = await post(base, {
+            gameId,
+            token: visualToken(gameId),
+            metrics: { ...RICH_METRICS, fps: 55 },
+            screenshot: 'data:image/png;base64,AAAA'
+        });
+        assert.equal(junk.status, 200);
+        assert.equal((await junk.json()).vision, 'invalid');
+        assert.ok(db.getGame(gameId).visual_measured_at);
     } finally {
         server.close();
     }

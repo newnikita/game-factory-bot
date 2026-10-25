@@ -4,6 +4,7 @@ const {
     buildProbeScript,
     buildForwarderScript,
     isValidMetrics,
+    decodeScreenshot,
     scoreMetrics,
     calibrationOffset
 } = require('../lib/canvas-metrics');
@@ -15,6 +16,8 @@ test('проба измеряет canvas и передаёт метрики ро
     assert.match(script, /ai_123/);
     assert.match(script, /secret-token/);
     assert.match(script, /getImageData/);
+    assert.match(script, /toDataURL\('image\/jpeg'/);
+    assert.match(script, /requestAnimationFrame\(countFps\)/);
 });
 
 test('проба отличает анимацию по пикселям и не отправляет первый одиночный кадр', () => {
@@ -30,6 +33,7 @@ test('пересылающая страница шлёт метрики на с�
     assert.match(script, /gf-game-frame/);
     assert.match(script, /event\.source !== frame\.contentWindow/);
     assert.match(script, /data\.token !== TOKEN/);
+    assert.match(script, /screenshot: data\.screenshot/);
 });
 
 test('метрики вне допустимых диапазонов не принимаются', () => {
@@ -39,6 +43,24 @@ test('метрики вне допустимых диапазонов не пр�
     assert.equal(isValidMetrics({ coverage: 0.5, colors: 10, shades: 5, contrast: -1 }), false);
     assert.equal(isValidMetrics(null), false);
     assert.equal(isValidMetrics('нет'), false);
+    assert.equal(isValidMetrics({ coverage: 0.5, colors: 10, shades: 5, contrast: 0.2, fps: 55 }), true);
+    assert.equal(isValidMetrics({ coverage: 0.5, colors: 10, shades: 5, contrast: 0.2, fps: 999 }), false);
+});
+
+test('кадр принимается только как компактный JPEG', () => {
+    const jpeg = Buffer.alloc(4096, 0);
+    jpeg[0] = 0xFF;
+    jpeg[1] = 0xD8;
+    jpeg[2] = 0xFF;
+    const valid = `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+    const decoded = decodeScreenshot(valid);
+    assert.equal(decoded.length, 4096);
+
+    assert.equal(decodeScreenshot(valid.replace('image/jpeg', 'image/png')), null);
+    assert.equal(decodeScreenshot('data:image/jpeg;base64,AAAA'), null, 'слишком короткий кадр');
+    assert.equal(decodeScreenshot(`data:image/jpeg;base64,${Buffer.alloc(200000, 1).toString('base64')}`), null,
+        'слишком большой кадр');
+    assert.equal(decodeScreenshot(null), null);
 });
 
 test('пустой экран получает нулевую оценку', () => {
@@ -54,6 +76,14 @@ test('богатая анимированная сцена получает по
     assert.equal(scored.blank, false);
     assert.equal(scored.score, 100);
     assert.deepEqual(scored.issues, []);
+});
+
+test('низкий FPS снижает оценку кадра', () => {
+    const base = { coverage: 0.6, colors: 40, shades: 10, contrast: 0.25, animated: true };
+    assert.equal(scoreMetrics({ ...base, fps: 58 }).score, 100);
+    const slow = scoreMetrics({ ...base, fps: 5 });
+    assert.ok(slow.score <= 60);
+    assert.ok(slow.issues.some((issue) => issue.code === 'low_fps'));
 });
 
 test('плоский кадр теряет баллы по каждому признаку', () => {

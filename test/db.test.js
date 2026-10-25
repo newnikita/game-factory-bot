@@ -310,6 +310,34 @@ test('замеры визуала сохраняются и дают данны�
     assert.equal(calibration[0].measuredScore, 55);
 });
 
+test('vision-проверка запускается не больше двух раз и сохраняет вердикт', () => {
+    freshDb();
+    db.ensureUser(1);
+    db.recordGame({ id: 'ai_33333333333', telegramId: 1, title: 'Город' });
+
+    assert.equal(db.claimVisionReview('ai_33333333333'), true);
+    assert.equal(db.claimVisionReview('ai_33333333333'), true);
+    assert.equal(db.claimVisionReview('ai_33333333333'), false, 'третья попытка не запускается');
+
+    assert.equal(db.setGameVision('ai_33333333333', {
+        score: 42,
+        verdict: 'пустой фон',
+        issues: [{ code: 'background_empty', level: 'critical', msg: 'фон пустой' }]
+    }), true);
+
+    const game = db.getGame('ai_33333333333');
+    assert.equal(game.vision_score, 42);
+    assert.match(game.vision_issues, /background_empty/);
+    assert.ok(game.vision_checked_at);
+    assert.equal(db.claimVisionReview('ai_33333333333'), false, 'после проверки повтор не нужен');
+
+    const stats = db.getVisionStats();
+    assert.equal(stats.scored, 1);
+    assert.equal(stats.avgScore, 42);
+    assert.equal(stats.lowScore, 1);
+    assert.equal(stats.recent[0].id, 'ai_33333333333');
+});
+
 test('пустой экран засчитывается только по нескольким кадрам, хранится лучший замер', () => {
     freshDb();
     db.ensureUser(1);

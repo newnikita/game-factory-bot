@@ -34,6 +34,9 @@ const {
     countUserGames,
     setGameVisualStatic,
     recordVisualMeasurement,
+    claimVisionReview,
+    setGameVision,
+    getVisionStats,
     getVisualCalibration,
     createComplaint,
     getComplaint,
@@ -75,12 +78,13 @@ const { auditGame, auditVisuals } = require('./lib/game-quality');
 const { checkRuntimeErrors, formatRuntimeIssue } = require('./lib/game-runtime-check');
 const { repairTdzErrors } = require('./lib/tdz-repair');
 const { patchGameCode, polishGameCode } = require('./lib/game-patch');
-const { reviewCode, criticToIssues, localCritic } = require('./lib/game-vision');
+const { reviewCode, reviewScreenshot, criticToIssues, localCritic } = require('./lib/game-vision');
 const {
     buildProbeScript,
     buildForwarderScript,
     scoreMetrics,
     isValidMetrics,
+    decodeScreenshot,
     calibrationOffset
 } = require('./lib/canvas-metrics');
 const monitor = require('./lib/health-monitor');
@@ -113,6 +117,8 @@ const PROMPT_VERSION = 'v4-quality-pipeline';
 const QUALITY_CRITIC_ENABLED = String(process.env.QUALITY_CRITIC_ENABLED || 'true') === 'true';
 const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 80));
 const QUALITY_POLISH_ENABLED = String(process.env.QUALITY_POLISH_ENABLED || 'true') === 'true';
+const VISION_REVIEW_ENABLED = String(process.env.VISION_REVIEW_ENABLED || 'true') !== 'false';
+const VISION_REVIEW_MAX_PER_HOUR = envInt('VISION_REVIEW_MAX_PER_HOUR', 20);
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
 const ADMIN_API_TOKEN = String(process.env.ADMIN_API_TOKEN || '');
 const CANVAS_BLANK_AUTOHIDE = String(process.env.CANVAS_BLANK_AUTOHIDE || 'true') === 'true';
@@ -1093,7 +1099,7 @@ async function improveAIGame(currentCode, instruction, platform = 'pc', maxRetri
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '16kb' }));
+app.use(express.json({ limit: '256kb' }));
 const PORT = envInt('PORT', 3000);
 // На Render постоянный диск монтируется в /var/data. Если DATA_DIR не задан,
 // данные уходят во временную файловую систему и исчезают при каждом деплое,
@@ -1350,8 +1356,10 @@ app.get('/admin/stats', (req, res) => {
 
     let quality = null;
     let calibration = [];
+    let vision = null;
     try { quality = getQualityStats(); } catch (error) { quality = { error: error.message }; }
     try { calibration = getVisualCalibration(); } catch (error) { calibration = []; }
+    try { vision = getVisionStats(); } catch (error) { vision = { error: error.message }; }
 
     res.json({
         ok: true,
@@ -1362,6 +1370,7 @@ app.get('/admin/stats', (req, res) => {
         snapshots: snapshot.status(),
         alerts: monitor.evaluate(),
         quality,
+        vision,
         visualCalibration: {
             samples: calibration.length,
             offset: calibrationOffset(calibration)
@@ -1521,6 +1530,50 @@ function handleBlankCanvas(gameId, stored) {
     notifyAdmins(`🚫 Игра ${gameId} скрыта: два замера показали пустой экран. Вернуть: /restore ${gameId}`);
 }
 
+let visionChain = Promise.resolve();
+const visionPending = new Set();
+let visionWindow = { start: 0, count: 0 };
+
+function allowVisionReview() {
+    const now = Date.now();
+    if (now - visionWindow.start > 60 * 60 * 1000) {
+        visionWindow = { start: now, count: 0 };
+    }
+    if (visionWindow.count >= VISION_REVIEW_MAX_PER_HOUR) return false;
+    visionWindow.count += 1;
+    return true;
+}
+
+function queueVisionReview(gameId, imageBuffer) {
+    if (!VISION_REVIEW_ENABLED) return false;
+    if (visionPending.has(gameId)) return false;
+    const game = getGame(gameId);
+    if (!game || !game.html_path || game.status === 'hidden') return false;
+    if (!allowVisionReview()) return false;
+    if (!claimVisionReview(gameId)) return false;
+    visionPending.add(gameId);
+    visionChain = visionChain.then(async () => {
+        try {
+            const result = await reviewScreenshot(imageBuffer, {
+                brief: game.title || '',
+                platform: 'mobile',
+                timeout: 60000
+            });
+            if (result && !result.noVerdict) {
+                setGameVision(gameId, result);
+                console.log(`[Vision] ${gameId}: ${result.score}/100 — ${result.verdict || ''}`);
+            } else {
+                console.warn(`[Vision] ${gameId}: критик не дал вердикта`);
+            }
+        } catch (error) {
+            console.error(`[Vision] ${gameId}: ${error.message}`);
+        } finally {
+            visionPending.delete(gameId);
+        }
+    }).catch(() => {});
+    return true;
+}
+
 app.post('/api/canvas-metrics', (req, res) => {
     const body = req.body || {};
     const gameId = String(body.gameId || '');
@@ -1533,11 +1586,21 @@ app.post('/api/canvas-metrics', (req, res) => {
 
     const scored = scoreMetrics(body.metrics);
     scored.samples = Math.max(0, Math.round(Number(body.metrics.samples) || 0));
+    scored.fps = Number.isFinite(Number(body.metrics.fps)) ? Number(body.metrics.fps) : null;
+    const frame = body.screenshot ? decodeScreenshot(body.screenshot) : null;
     try {
         const stored = recordVisualMeasurement(gameId, scored);
         monitor.recordCanvasReport({ blank: scored.blank, gameId });
         if (scored.blank) handleBlankCanvas(gameId, stored);
-        res.json({ ok: true, score: scored.score });
+        const queued = frame ? queueVisionReview(gameId, frame) : false;
+        const visionState = !body.screenshot
+            ? 'none'
+            : !frame
+                ? 'invalid'
+                : !VISION_REVIEW_ENABLED
+                    ? 'disabled'
+                    : queued ? 'queued' : 'skipped';
+        res.json({ ok: true, score: scored.score, vision: visionState });
     } catch (error) {
         console.error('[Визуал] Замер не сохранён:', error.message);
         res.status(500).json({ ok: false, error: 'server_error' });

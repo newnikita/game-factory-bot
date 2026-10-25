@@ -40,5 +40,5 @@ test('системная инструкция требует безопасно�
 });
 
 test('версия промпта помечена', () => {
-    assert.match(PROMPT_VERSION, /^v\d+-[a-z-]+$/);
+    assert.match(PROMPT_VERSION, /^v\d+-quality-pipeline$/);
 });

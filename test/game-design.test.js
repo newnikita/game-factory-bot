@@ -35,24 +35,6 @@ test('визуальный контракт требует глубину, ко�
     assert.match(brief, /первые 3 секунды/i);
 });
 
-test('арт-бриф разбирает тему на конкретные силуэты и слои', () => {
-    const brief = buildDesignBrief('Защити ворота замка от драконов', 'mobile');
-    assert.match(brief, /АРТ-БРИФ/);
-    assert.match(brief, /крыл/);
-    assert.match(brief, /хвост/);
-    assert.match(brief, /зубц/);
-    assert.match(brief, /факел/);
-    assert.match(brief, /44 px/);
-    assert.match(brief, /одним кругом/);
-});
-
-test('арт-бриф для неонового города рисует небоскрёбы и вывески', () => {
-    const brief = buildDesignBrief('Неоновый раннер по крышам Токио', 'mobile');
-    assert.match(brief, /небоскр/);
-    assert.match(brief, /вывеск/);
-    assert.match(brief, /шарф/);
-});
-
 test('у каждого жанрового рецепта есть глубина и визуальное описание', () => {
     for (const id of ['defense', 'runner', 'shooter', 'platformer', 'breaker', 'puzzle', 'arcade', 'racing']) {
         const recipe = getGenreRecipe(id);

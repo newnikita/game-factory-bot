@@ -109,9 +109,9 @@ const ADMIN_IDS = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || (Array
 const WEBAPP_URL = String(process.env.WEBAPP_URL || '').replace(/\/+$/, '');
 const GAMES_PUBLIC_URL = String(process.env.GAMES_PUBLIC_URL || WEBAPP_URL).replace(/\/+$/, '');
 const MAX_DEVICE_PIXEL_RATIO = Math.min(Math.max(Number(process.env.MAX_DEVICE_PIXEL_RATIO) || 2, 1), 3);
-const PROMPT_VERSION = 'v5-art-direction';
+const PROMPT_VERSION = 'v4-quality-pipeline';
 const QUALITY_CRITIC_ENABLED = String(process.env.QUALITY_CRITIC_ENABLED || 'true') === 'true';
-const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 83));
+const QUALITY_CRITIC_MIN_SCORE = Math.max(40, Math.min(100, Number(process.env.QUALITY_CRITIC_MIN_SCORE) || 80));
 const QUALITY_POLISH_ENABLED = String(process.env.QUALITY_POLISH_ENABLED || 'true') === 'true';
 const ALLOW_UNMODERATED_IMAGE_UPLOADS = String(process.env.ALLOW_UNMODERATED_IMAGE_UPLOADS || 'false') === 'true';
 const ADMIN_API_TOKEN = String(process.env.ADMIN_API_TOKEN || '');
@@ -328,9 +328,8 @@ const PLAN_INSTRUCTION = {
             "Правила победы: ...",
             "Правила поражения: ...",
             "Прогрессия и сложность: волны/уровни, улучшения, финальная цель или босс ...",
-            "Визуальная система: палитра 5–6 цветов; 3 слоя фона с конкретными элементами; для каждого объекта из идеи — узнаваемый силуэт из 3+ частей; декор и эффекты; стиль HUD ...",
+            "Визуальная система: палитра 5–6 цветов, 3 слоя фона, силуэты объектов, стиль HUD ...",
             "Фишка: ...",
-            "В строке «Визуальная система» назови конкретные элементы из идеи (например, крылья и хвост дракона, зубцы и факелы ворот), а не общие слова.",
             "Учитывай: один HTML-файл, Canvas, без внешних библиотек и ассетов.",
             "Бюджет: 60 FPS на телефоне, без сотен эффектов и объектов на экране."
         ].join('\n')
@@ -876,8 +875,6 @@ async function runQualityPipeline(code, options = {}) {
                 try {
                     const polished = await polishGameCode(currentCode, polishCritic, {
                         platform,
-                        brief: options.brief || '',
-                        plan: options.plan || '',
                         keepBackground: true,
                         models: gemini.criticModels(options.model || null)
                     });
@@ -887,23 +884,17 @@ async function runQualityPipeline(code, options = {}) {
                         const after = collectQualityIssues(polished.code, platform);
                         if (after.criticals.length) {
                             console.log(`[Качество] Полиш отклонён: осталось критичных замечаний (${after.criticals.length})`);
-                        } else if (after.technicalScore < 85) {
-                            console.log(`[Качество] Полиш отклонён: технический балл ниже порога (${after.technicalScore})`);
-                        } else if (after.technicalScore + 10 < current.technicalScore) {
+                        } else if (after.technicalScore < current.technicalScore) {
                             console.log(`[Качество] Полиш отклонён: технический балл упал ${current.technicalScore} → ${after.technicalScore}`);
-                        } else if (after.visual.score + 5 < current.visual.score) {
+                        } else if (after.visual.score < current.visual.score) {
                             console.log(`[Качество] Полиш отклонён: визуальный балл упал ${current.visual.score} → ${after.visual.score}`);
                         } else {
-                            const beforeTech = current.technicalScore;
                             currentCode = polished.code;
                             current = after;
                             report.polished = true;
                             report.polishModel = polished.model || null;
                             monitor.recordPipelineStage('polish', true);
-                            const techNote = after.technicalScore < beforeTech
-                                ? `, техбалл ${beforeTech} → ${after.technicalScore}`
-                                : '';
-                            console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score}${techNote})`);
+                            console.log(`[Качество] Полиш-пасс применён (графика ${current.visual.score})`);
                         }
                     }
                 } catch (error) {

@@ -65,6 +65,16 @@ test('buildPolishPrompt требует сохранить фон и полный
     assert.match(prompt, /ПОЛНЫЙ файл/);
 });
 
+test('buildPolishPrompt передаёт идею и арт-бриф в полиш', () => {
+    const prompt = patch.buildPolishPrompt('<html></html>', { issues: [] }, {
+        brief: 'Защити ворота замка от драконов'
+    });
+    assert.match(prompt, /Идея пользователя: Защити ворота замка от драконов/);
+    assert.match(prompt, /АРТ-БРИФ/);
+    assert.match(prompt, /крыл/);
+    assert.match(prompt, /зубц/);
+});
+
 test('buildPolishPrompt может запретить плейсхолдер фона', () => {
     const prompt = patch.buildPolishPrompt('<html></html>', { issues: [] }, { keepBackground: false });
     assert.match(prompt, /не используй/);

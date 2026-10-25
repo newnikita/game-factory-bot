@@ -77,7 +77,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           ENGINES: ${{ inputs.engines }}
           FAIL_BELOW: ${{ inputs.fail_below }}
-          EVAL_MAX_API_CALLS: '12'
+          EVAL_MAX_API_CALLS: '20'
         run: |
           args=(--limit "$LIMIT")
           if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
